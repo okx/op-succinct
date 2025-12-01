@@ -182,7 +182,7 @@ where
                             let is_parent_challenger_wins =
                                 is_parent_challenger_wins(game.parent_index, &self.factory).await?;
 
-                            if !is_game_over && (game.is_invalid || is_parent_challenger_wins) {
+                                if !is_game_over && (game.is_invalid || is_parent_challenger_wins) {
                                 actions.push(GameSyncAction::Update {
                                     index: game.index,
                                     status,
@@ -206,6 +206,28 @@ where
                                     should_attempt_to_resolve: true,
                                     should_attempt_to_claim_bond: false,
                                 });
+                            } else {
+                                // Update proposal_status and ensure should_attempt_to_challenge is false
+                                // even if not ready to resolve, to prevent duplicate challenges
+                                actions.push(GameSyncAction::Update {
+                                    index: game.index,
+                                    status,
+                                    proposal_status,
+                                    should_attempt_to_challenge: false,
+                                    should_attempt_to_resolve: false,
+                                    should_attempt_to_claim_bond: false,
+                                });
+                                tracing::info!(
+                                    game_index = %game.index,
+                                    game_address = ?game.address,
+                                    is_game_over = %is_game_over,
+                                    is_parent_resolved = %is_parent_resolved,
+                                    is_own_game = %is_own_game,
+                                    proposal_status = ?proposal_status,
+                                    deadline = %deadline,
+                                    now_ts = %now_ts,
+                                    "Game is Challenged but not ready to resolve, updating proposal_status"
+                                );
                             }
                         }
                     }
@@ -351,10 +373,21 @@ where
                 continue;
             }
 
+            tracing::info!(
+                game_index = %game.index,
+                game_address = ?game.address,
+                "Game challenged successfully"
+            );
+
             // Clear the challenge flag after successful challenge
             {
                 let mut state = self.state.lock().await;
                 if let Some(game_state) = state.games.get_mut(&game.index) {
+                    tracing::info!(
+                        game_index = %game.index,
+                        game_address = ?game.address,
+                        "Clearing challenge flag"
+                    );
                     game_state.should_attempt_to_challenge = false;
                 }
             }
@@ -373,7 +406,11 @@ where
                     state
                         .games
                         .values()
-                        .filter(|game| !game.should_attempt_to_challenge)
+                        .filter(|game| {
+                            // Only challenge games that are unchallenged and not already flagged for challenging
+                            !game.should_attempt_to_challenge
+                                && game.proposal_status == ProposalStatus::Unchallenged
+                        })
                         .min_by_key(|game| game.index)
                         .cloned()
                 };
