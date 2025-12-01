@@ -21,6 +21,7 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
+import {SP1Verifier} from "../../lib/sp1-contracts/contracts/src/v3.0.0-rc4/SP1VerifierPlonk.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
     function run()
@@ -194,8 +195,9 @@ contract DeployOPSuccinctLite is Script, Utils {
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
         } else {
             // Use provided verifier address from JSON config
-            sp1Config.verifierAddress = verifierAddress;
-            console.log("Using SP1 Verifier Gateway:", sp1Config.verifierAddress);
+            SP1Verifier sp1Verifier = new SP1Verifier();
+            sp1Config.verifierAddress = address(sp1Verifier);
+            console.log("Using SP1 Plonk Verifier:", address(sp1Verifier));
         }
 
         return sp1Config;
