@@ -4,3 +4,19 @@
 /book
 /audits
 .github
+.dockerignore
+
+# Ignore .env files
+.env*
+
+# Ignore docker-compose files
+docker-compose*
+
+# Ignore Dockerfile files
+Dockerfile*
+
+# Ignore markdown files
+*.md
+
+# Ignore shell scripts
+*.sh
