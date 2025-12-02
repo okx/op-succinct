@@ -8,14 +8,7 @@ COPY . .
 RUN git submodule update --init --recursive
 
 # Update sp1-contracts to v5.0.0 and fix solidity version compatibility
-RUN cd contracts/lib/sp1-contracts && \
-    git fetch --tags && \
-    git checkout v5.0.0 && \
-    cd - && \
-    sed -i 's/pragma solidity \^0.8.20;/pragma solidity >=0.8.15;/' \
-    contracts/lib/sp1-contracts/contracts/src/ISP1Verifier.sol && \
-    sed -i 's/pragma solidity \^0.8.20;/pragma solidity >=0.8.15;/' \
-    contracts/lib/sp1-contracts/contracts/src/SP1MockVerifier.sol
+RUN find contracts/lib/sp1-contracts -name "*.sol" -type f | xargs sed -i 's/pragma solidity \^0.8.20;/pragma solidity >=0.8.15;/'
 
 FROM ghcr.io/foundry-rs/foundry:stable
 WORKDIR /app/contracts

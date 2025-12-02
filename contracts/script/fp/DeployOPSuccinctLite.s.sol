@@ -21,7 +21,7 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier} from "../../lib/sp1-contracts/contracts/src/v3.0.0-rc4/SP1VerifierPlonk.sol";
+import {SP1Verifier} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierPlonk.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
     function run()
