@@ -55,8 +55,7 @@ contract DeployOPSuccinctLite is Script, Utils {
             config.useSp1MockVerifier,
             config.rollupConfigHash,
             config.aggregationVkey,
-            config.rangeVkeyCommitment,
-            config.verifierAddress
+            config.rangeVkeyCommitment
         );
 
         // Step 6: Deploy OPSuccinctFaultDisputeGame implementation
@@ -180,8 +179,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         bool useSp1MockVerifier,
         bytes32 rollupConfigHash,
         bytes32 aggregationVkey,
-        bytes32 rangeVkeyCommitment,
-        address _verifierAddress
+        bytes32 rangeVkeyCommitment
     ) internal returns (SP1Config memory) {
         SP1Config memory sp1Config;
         sp1Config.rollupConfigHash = rollupConfigHash;

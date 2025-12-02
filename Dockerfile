@@ -44,13 +44,10 @@ WORKDIR /app
 # Install only necessary runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \ 
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy all three binaries from build target directory
 COPY --from=builder /app/target/release/proposer /usr/local/bin/
 COPY --from=builder /app/target/release/challenger /usr/local/bin/
 COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
-
-# Default command
-CMD ["fetch-fault-dispute-game-config"]
