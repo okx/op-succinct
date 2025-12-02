@@ -181,7 +181,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         bytes32 rollupConfigHash,
         bytes32 aggregationVkey,
         bytes32 rangeVkeyCommitment,
-        address verifierAddress
+        address _verifierAddress
     ) internal returns (SP1Config memory) {
         SP1Config memory sp1Config;
         sp1Config.rollupConfigHash = rollupConfigHash;
