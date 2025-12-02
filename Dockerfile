@@ -1,66 +1,56 @@
-# Build stage
-FROM rust:1.90 AS builder
+# syntax=docker/dockerfile:1.4
 
-# Install build dependencies
+# Chef stage: Prepare dependency recipe
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+WORKDIR /app
+
+# Install required dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    libclang-dev \
+    clang \
     pkg-config \
     libssl-dev \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /build
+# Install project's required Rust toolchain
+COPY rust-toolchain.toml ./
+RUN rustup show  # This will install the toolchain and components from rust-toolchain.toml
 
-# Install SP1
-#RUN curl -L https://sp1.succinct.xyz | bash && \
-#    ~/.sp1/bin/sp1up && \
-#    ~/.sp1/bin/cargo-prove prove --version
+# Planner stage: Generate recipe.json
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-COPY rust-toolchain.toml .
+# Builder stage: Build dependencies then project
+FROM chef AS builder
 
-RUN rustc --version
+# Copy recipe and build dependencies (this layer will be cached)
+COPY --from=planner /app/recipe.json recipe.json
 
-# Copy only what's needed for the build
-COPY --exclude=.git --exclude=target --exclude=tests . .
+RUN cargo chef cook --release --bin proposer --bin challenger --bin fetch-fault-dispute-game-config --recipe-path recipe.json
 
-# Build the server
-RUN --mount=type=ssh \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --bin proposer --release && \
-    cp target/release/proposer /build/proposer
+# Copy source code and build binaries
+COPY . .
 
-RUN --mount=type=ssh \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --bin challenger --release && \
-    cp target/release/challenger /build/challenger
+# Build all binaries (dependencies already built, only project code will compile)
+RUN cargo build --release --bin proposer && \
+    cargo build --release --bin challenger && \
+    cargo build --release --bin fetch-fault-dispute-game-config
 
-RUN --mount=type=ssh \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --bin fetch-fault-dispute-game-config --release && \
-    cp target/release/fetch-fault-dispute-game-config /build/fetch-fault-dispute-game-config
-
-
-# Final stage
-FROM rust:1.90-slim
+# Runtime stage - minimal image
+FROM ubuntu:24.04 AS runtime
 
 WORKDIR /app
 
-# Install required runtime dependencies
+# Install only necessary runtime dependencies
 RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
     ca-certificates \
-    libclang-dev \
+    libssl3 \ 
     && rm -rf /var/lib/apt/lists/*
 
-# Copy SP1
-#COPY --from=builder ~/.sp1 ~/.sp1
+# Copy all three binaries from build target directory
+COPY --from=builder /app/target/release/proposer /usr/local/bin/
+COPY --from=builder /app/target/release/challenger /usr/local/bin/
+COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
 
-# Copy only the built binaries from builder
-COPY --from=builder /build/proposer /usr/local/bin/proposer
-COPY --from=builder /build/challenger /usr/local/bin/challenger
-COPY --from=builder /build/fetch-fault-dispute-game-config /usr/local/bin/fetch-fault-dispute-game-config
+# Default command
+CMD ["fetch-fault-dispute-game-config"]
