@@ -57,7 +57,7 @@ upgrade-l2oo l1_rpc admin_pk etherscan_api_key="":
 # Deploy OPSuccinct FDG contracts
 deploy-fdg-contracts env_file=".env" *features='':
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -aeo pipefail
     
     # First fetch FDG config using the env file
     echo "Fetching Fault Dispute Game configuration..."
@@ -95,11 +95,16 @@ deploy-fdg-contracts env_file=".env" *features='':
     
     # Change to contracts directory
     cd contracts
-    
-    # Install dependencies
-    echo "Installing forge dependencies..."
-    forge install
-    
+
+    # Install dependencies only if not already present 
+    # (avoids git lock conflicts in parallel test runs)
+    if [ ! -d "lib/forge-std" ]; then
+        echo "Installing forge dependencies..."
+        forge install
+    else
+        echo "Forge dependencies already installed, skipping..."
+    fi
+
     # Build contracts
     echo "Building contracts..."
     forge build
@@ -361,6 +366,36 @@ remove-config config_name env_file=".env":
         --private-key $PRIVATE_KEY \
         --broadcast
 
+# Generate verification key hashes for all DA variants.
+vkeys:
+    #!/usr/bin/env bash
+    set -e
+
+    echo "Generating verification key hashes..."
+    echo ""
+
+    # Ethereum DA
+    ETH_OUTPUT=$(RUST_LOG=error cargo run --release --bin config 2>&1)
+    ETH_RANGE=$(echo "$ETH_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
+    AGG_KEY=$(echo "$ETH_OUTPUT" | grep "Aggregation Verification Key Hash" | awk '{print $NF}')
+
+    # Celestia DA
+    CEL_OUTPUT=$(RUST_LOG=error cargo run --release --bin config --features celestia 2>&1)
+    CEL_RANGE=$(echo "$CEL_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
+
+    # EigenDA
+    EIGEN_OUTPUT=$(RUST_LOG=error cargo run --release --bin config --features eigenda 2>&1)
+    EIGEN_RANGE=$(echo "$EIGEN_OUTPUT" | grep "Range Verification Key Hash" | awk '{print $NF}')
+
+    echo "## Verification Key Hashes"
+    echo ""
+    echo "| Program | Verification Key Hash |"
+    echo "|--------|------------------------|"
+    echo "| Ethereum DA Range Verification Key | **$ETH_RANGE** |"
+    echo "| Celestia DA Range Verification Key | **$CEL_RANGE** |"
+    echo "| EigenDA Range Verification Key | **$EIGEN_RANGE** |"
+    echo "| Aggregation Verification Key | **$AGG_KEY** |"
+
 # Build all ELF files.
 build-elfs: build-range-elfs build-agg-elf
 
@@ -369,41 +404,52 @@ build-range-elfs:
     #!/usr/bin/env bash
 
     cd programs/range/ethereum
-    ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-bump --docker --tag v5.2.2 --output-directory ../../../elf
-    ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v5.2.2 --output-directory ../../../elf --features embedded
+    ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-bump --docker --tag v5.2.4 --output-directory ../../../elf
+    ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v5.2.4 --output-directory ../../../elf --features embedded
 
     cd ../celestia
-    ~/.sp1/bin/cargo-prove prove build --elf-name celestia-range-elf-embedded --docker --tag v5.2.2 --output-directory ../../../elf --features embedded
+    ~/.sp1/bin/cargo-prove prove build --elf-name celestia-range-elf-embedded --docker --tag v5.2.4 --output-directory ../../../elf --features embedded
 
     cd ../eigenda
-    ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v5.2.2 --output-directory ../../../elf --features embedded
+    ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v5.2.4 --output-directory ../../../elf --features embedded
 
 # Build ELF file for aggregation program.
 build-agg-elf:
     #!/usr/bin/env bash
 
     cd programs/aggregation
-    ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v5.2.2 --output-directory ../../elf
+    ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v5.2.4 --output-directory ../../elf
 
-# Run all unit and integration tests except for the specified ones.
+# Run all unit tests except for the specified ones.
 tests:
    cargo t --release \
     -- \
     --skip test_cycle_count_diff \
     --skip test_post_to_github
 
-# Run end-to-end tests.
-e2e-tests target="":
-  #!/usr/bin/env bash
+# Run fault-proof integration tests
+# target: test file (integration, sync, etc.)
+# da: DA feature (ethereum, eigenda, celestia). DA-agnostic tests like sync work with any.
+fp-integration-tests target="integration" da="ethereum":
+  cd fault-proof && cargo t --test {{target}} --release --features integration,{{da}} -- --test-threads=1 --nocapture
 
-   test_target=""
-   if [ -n "{{target}}" ]; then
-       test_target="--test {{target}}"
-   fi
+# Run DA-specific host utility tests
+# da: ethereum, eigenda, celestia
+da-integration-tests da="ethereum":
+    #!/usr/bin/env bash
+    set -euo pipefail
 
-   cd fault-proof
+    # EigenDA tests require SRS file - create symlink if needed
+    if [ "{{da}}" = "eigenda" ] && [ ! -e "utils/eigenda/host/resources" ]; then
+        if [ ! -d "resources" ]; then
+            echo "Error: resources/ directory not found. Run from workspace root."
+            exit 1
+        fi
+        ln -sf ../../../resources utils/eigenda/host/resources
+        echo "Created symlink: utils/eigenda/host/resources -> resources/"
+    fi
 
-   cargo t $test_target --release --features e2e -- --test-threads=1 --nocapture
+    cargo t -p op-succinct-{{da}}-host-utils --features integration --release -- --test-threads=1 --nocapture
 
 forge-build *ARGS:
     #!/usr/bin/env bash
