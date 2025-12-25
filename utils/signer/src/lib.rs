@@ -16,6 +16,9 @@ use gcloud_sdk::{
 };
 use tokio::{sync::Mutex, time::Duration};
 
+mod xlayer_remote_client;
+pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
+
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
 
@@ -28,6 +31,8 @@ pub enum Signer {
     LocalSigner(PrivateKeySigner),
     /// Cloud HSM signer using Google.
     CloudHsmSigner(GcpSigner),
+    /// XLayer remote signer using remote asset management service.
+    XLayerRemoteSigner(Arc<XLayerRemoteClient>, Address),
 }
 
 impl Signer {
@@ -36,6 +41,7 @@ impl Signer {
             Signer::Web3Signer(_, address) => *address,
             Signer::LocalSigner(signer) => signer.address(),
             Signer::CloudHsmSigner(signer) => signer.address(),
+            Signer::XLayerRemoteSigner(_, address) => *address,
         }
     }
 
@@ -51,7 +57,71 @@ impl Signer {
         Ok(Signer::LocalSigner(private_key))
     }
 
+    /// Creates a new XLayer remote signer from configuration.
+    pub fn new_xlayer_remote_signer(config: XLayerConfig) -> Self {
+        let address = config.address;
+        let client = XLayerRemoteClient::new(config);
+        Signer::XLayerRemoteSigner(Arc::new(client), address)
+    }
+
     pub async fn from_env() -> Result<Self> {
+        // Check for XLayer remote signer first (highest priority for production)
+        if let Ok(enabled) = std::env::var("XLAYER_SIGNER_ENABLED") {
+            if enabled.to_lowercase() == "true" {
+                let config = XLayerConfig {
+                    endpoint: std::env::var("XLAYER_SIGNER_ENDPOINT")
+                        .context("XLAYER_SIGNER_ENDPOINT is required when XLAYER_SIGNER_ENABLED=true")?,
+                    address: Address::from_str(&std::env::var("XLAYER_SIGNER_ADDRESS")
+                        .context("XLAYER_SIGNER_ADDRESS is required when XLAYER_SIGNER_ENABLED=true")?)
+                        .context("Failed to parse XLAYER_SIGNER_ADDRESS")?,
+                    user_id: std::env::var("XLAYER_USER_ID")
+                        .unwrap_or_else(|_| "0".to_string())
+                        .parse()
+                        .context("Failed to parse XLAYER_USER_ID")?,
+                    symbol: std::env::var("XLAYER_SYMBOL")
+                        .unwrap_or_else(|_| "2882".to_string())
+                        .parse()
+                        .context("Failed to parse XLAYER_SYMBOL")?,
+                    project_symbol: std::env::var("XLAYER_PROJECT_SYMBOL")
+                        .unwrap_or_else(|_| "3011".to_string())
+                        .parse()
+                        .context("Failed to parse XLAYER_PROJECT_SYMBOL")?,
+                    operate_symbol: std::env::var("XLAYER_OPERATE_SYMBOL")
+                        .unwrap_or_else(|_| "2".to_string())
+                        .parse()
+                        .context("Failed to parse XLAYER_OPERATE_SYMBOL")?,
+                    operate_amount: std::env::var("XLAYER_OPERATE_AMOUNT")
+                        .unwrap_or_else(|_| "0".to_string()),
+                    sys_from: std::env::var("XLAYER_SYS_FROM")
+                        .unwrap_or_else(|_| "3".to_string())
+                        .parse()
+                        .context("Failed to parse XLAYER_SYS_FROM")?,
+                    request_sign_uri: std::env::var("XLAYER_REQUEST_SIGN_URI")
+                        .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/ecologyOperate".to_string()),
+                    query_sign_uri: std::env::var("XLAYER_QUERY_SIGN_URI")
+                        .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string()),
+                    access_key: std::env::var("XLAYER_ACCESS_KEY")
+                        .context("XLAYER_ACCESS_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
+                    secret_key: std::env::var("XLAYER_SECRET_KEY")
+                        .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
+                    timeout: Duration::from_secs(
+                        std::env::var("XLAYER_TIMEOUT")
+                            .unwrap_or_else(|_| "30".to_string())
+                            .parse()
+                            .context("Failed to parse XLAYER_TIMEOUT")?
+                    ),
+                };
+
+                tracing::info!(
+                    "Initialized XLayer remote signer: endpoint={}, address={:?}",
+                    config.endpoint,
+                    config.address
+                );
+
+                return Ok(Signer::new_xlayer_remote_signer(config));
+            }
+        }
+
         if let (Ok(project_id), Ok(location), Ok(keyring_name)) = (
             std::env::var("GOOGLE_PROJECT_ID"),
             std::env::var("GOOGLE_LOCATION"),
@@ -86,6 +156,7 @@ impl Signer {
         } else {
             anyhow::bail!(
                 "None of the required signer configurations are set in environment:\n\
+                - For XLayer Remote Signer: XLAYER_SIGNER_ENABLED=true, XLAYER_SIGNER_ENDPOINT, XLAYER_SIGNER_ADDRESS, XLAYER_ACCESS_KEY, XLAYER_SECRET_KEY\n\
                 - For Cloud HSM: GOOGLE_PROJECT_ID, GOOGLE_LOCATION, GOOGLE_KEYRING\n\
                 - For Web3Signer: SIGNER_URL and SIGNER_ADDRESS\n\
                 - For Local: PRIVATE_KEY"
@@ -100,6 +171,46 @@ impl Signer {
         mut transaction_request: TransactionRequest,
     ) -> Result<TransactionReceipt> {
         match self {
+            Signer::XLayerRemoteSigner(client, signer_address) => {
+                // Set the from address to the signer address.
+                transaction_request.set_from(*signer_address);
+
+                // Fill the transaction request with all of the relevant gas and nonce information.
+                let provider = ProviderBuilder::new().network::<Ethereum>().connect_http(l1_rpc.clone());
+                let filled_tx = provider.fill(transaction_request.clone()).await?;
+
+                // Extract filled transaction bytes for reference
+                let filled_tx_bytes = {
+                    let mut tx = filled_tx.as_builder().unwrap().clone();
+                    tx.normalize_data();
+                    // This is just for logging/debugging, not used in signing
+                    Bytes::new()
+                };
+
+                // Sign the transaction using XLayer remote signer
+                tracing::info!("Signing transaction with XLayer remote signer");
+                let signed_tx_bytes = client
+                    .sign_transaction(&transaction_request, filled_tx_bytes)
+                    .await
+                    .context("XLayer remote signing failed")?;
+
+                // Decode signed transaction
+                let tx_envelope = TxEnvelope::decode_2718(&mut signed_tx_bytes.as_ref())
+                    .context("Failed to decode signed transaction")?;
+
+                // Send the signed transaction
+                let receipt = provider
+                    .send_tx_envelope(tx_envelope)
+                    .await
+                    .context("Failed to send XLayer-signed transaction")?
+                    .with_required_confirmations(NUM_CONFIRMATIONS)
+                    .with_timeout(Some(Duration::from_secs(TIMEOUT_SECONDS)))
+                    .get_receipt()
+                    .await?;
+
+                tracing::info!("XLayer-signed transaction confirmed: tx_hash={:?}", receipt.transaction_hash);
+                Ok(receipt)
+            }
             Signer::Web3Signer(signer_url, signer_address) => {
                 // Set the from address to the signer address.
                 transaction_request.set_from(*signer_address);
