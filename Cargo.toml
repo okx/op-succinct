@@ -57,6 +57,7 @@ rkyv = { version = "0.8", features = ["hashbrown-0_15", "std"] }
 hex = "0.4.3"
 bincode = "1.3.3"
 base64 = "0.22.1"
+aes = "0.8"
 tower-http = { version = "0.5.2", features = ["limit"] }
 lazy_static = "1.5.0"
 tracing = { version = "0.1.40", default-features = false }

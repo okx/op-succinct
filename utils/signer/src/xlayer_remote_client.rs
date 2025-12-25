@@ -7,6 +7,37 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Custom error types for XLayer remote signer
+#[derive(Debug, thiserror::Error)]
+pub enum XLayerSignerError {
+    #[error("HTTP request failed: status={status}, body={body}")]
+    HttpError { status: u16, body: String },
+
+    #[error("Signing request failed: status={status}, msg={msg}, detail={detail}")]
+    SigningFailed {
+        status: i32,
+        msg: String,
+        detail: String,
+    },
+
+    #[error("Transaction verification failed: {0}")]
+    VerificationError(String),
+
+    #[error("Invalid response: {0}")]
+    InvalidResponse(String),
+
+    #[error("Timeout waiting for signature result after {0} attempts")]
+    SignatureTimeout(u32),
+
+    #[error("Network error: {0}")]
+    #[allow(dead_code)]
+    NetworkError(String),
+
+    #[error("Configuration error: {0}")]
+    #[allow(dead_code)]
+    ConfigError(String),
+}
+
 /// Contract method signatures (4-byte selectors)
 const METHOD_SIG_DGF_CREATE: &str = "0x82ecf2f6"; // DisputeGameFactory.create
 const METHOD_SIG_PROVE: &str = "0x0e5d7305"; // FaultDisputeGame.prove
@@ -29,14 +60,6 @@ pub enum OperateType {
     ChallengerChallenge = 25,
     ChallengerResolve = 22,
     ChallengerClaimCredit = 23,
-}
-
-/// ComponentRole represents the role/type of blockchain component
-#[derive(Debug, Clone, PartialEq)]
-enum ComponentRole {
-    Proposer,
-    Challenger,
-    Unknown,
 }
 
 /// XLayerSignRequest represents the signing request structure
@@ -62,6 +85,7 @@ struct XLayerSignRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct XLayerSignResponse {
+    #[allow(dead_code)]
     code: i32,
     data: String,
     detail_msg: Option<String>,
@@ -191,6 +215,7 @@ impl XLayerRemoteClient {
         Self { config, client }
     }
 
+    /// Gracefully close underlying resources (reqwest cleans up automatically).
     /// Signs a transaction using XLayer remote signing service
     pub async fn sign_transaction(
         &self,
@@ -204,12 +229,11 @@ impl XLayerRemoteClient {
             transaction_request.nonce
         );
 
-        // Detect component type and determine operate type
-        let (component_role, operate_type) = self.detect_component_and_operate_type(transaction_request)?;
+        // Detect operate type from method signature
+        let operate_type = self.detect_operate_type(transaction_request)?;
 
         tracing::info!(
-            "Detected component role: {:?}, operate type: {:?}",
-            component_role,
+            "Detected operate type: {:?} for transaction",
             operate_type
         );
 
@@ -275,6 +299,8 @@ impl XLayerRemoteClient {
                 }
                 Err(e) => {
                     let err_str = e.to_string();
+                    // Check if error is "pending transaction" related
+                    // XLayer API may return error messages in Chinese or English
                     let is_pending_tx_error = err_str.contains("未完成交易")
                         || err_str.contains("pending transaction")
                         || err_str.contains("相同地址有未完成交易")
@@ -310,11 +336,11 @@ impl XLayerRemoteClient {
         Err(anyhow::anyhow!("Unexpected: exhausted retry attempts"))
     }
 
-    /// Detects component role and corresponding operate type
-    fn detect_component_and_operate_type(
+    /// Detects operate type from transaction method signature
+    fn detect_operate_type(
         &self,
         tx: &TransactionRequest,
-    ) -> Result<(ComponentRole, OperateType)> {
+    ) -> Result<OperateType> {
         // Extract method signature
         let empty_bytes = Bytes::new();
         let data = tx.input.input().unwrap_or(&empty_bytes);
@@ -324,15 +350,18 @@ impl XLayerRemoteClient {
 
         let method_sig = format!("0x{}", hex::encode(&data[..4]));
 
-        // Detect based on method signature
+        // Map method signature to operate type
+        // Note: resolve() and claimCredit() can be called by both Proposer and Challenger,
+        // but we use Challenger* types as they are more common. The actual caller is 
+        // determined by which service (proposer.rs or challenger.rs) invokes the signer.
         match method_sig.as_str() {
-            METHOD_SIG_DGF_CREATE => Ok((ComponentRole::Proposer, OperateType::Proposer)),
-            METHOD_SIG_PROVE => Ok((ComponentRole::Challenger, OperateType::ChallengerProve)),
-            METHOD_SIG_CHALLENGE => Ok((ComponentRole::Challenger, OperateType::ChallengerChallenge)),
-            METHOD_SIG_RESOLVE => Ok((ComponentRole::Challenger, OperateType::ChallengerResolve)),
-            METHOD_SIG_CLAIM_CREDIT => Ok((ComponentRole::Challenger, OperateType::ChallengerClaimCredit)),
+            METHOD_SIG_DGF_CREATE => Ok(OperateType::Proposer),
+            METHOD_SIG_PROVE => Ok(OperateType::ChallengerProve),
+            METHOD_SIG_CHALLENGE => Ok(OperateType::ChallengerChallenge),
+            METHOD_SIG_RESOLVE => Ok(OperateType::ChallengerResolve),
+            METHOD_SIG_CLAIM_CREDIT => Ok(OperateType::ChallengerClaimCredit),
             _ => Err(anyhow::anyhow!(
-                "Unknown component type: refusing to sign transaction (method_sig={}, data_len={})",
+                "Unknown method signature: refusing to sign transaction (method_sig={}, data_len={})",
                 method_sig,
                 data.len()
             )),
@@ -550,13 +579,11 @@ impl XLayerRemoteClient {
         // Calculate signature
         let signature = self.calculate_signature(&payload)?;
 
-        // Build headers
-        let timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        // Build headers (matching Optimism implementation)
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Content-Type", "application/json".parse()?);
-        headers.insert("FIX-ACCESS-KEY", self.config.access_key.parse()?);
-        headers.insert("FIX-SIGNATURE", signature.parse()?);
-        headers.insert("FIX-TIMESTAMP", timestamp.parse()?);
+        headers.insert("accessKey", self.config.access_key.parse()?);
+        headers.insert("sign", signature.parse()?);
 
         tracing::debug!("Posting sign request to: {}", url);
 
@@ -570,13 +597,9 @@ impl XLayerRemoteClient {
             .context("Failed to send sign request")?;
 
         if response.status().as_u16() != HTTP_STATUS_SUCCESS {
-            let status = response.status();
+            let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "HTTP error: status={}, body={}",
-                status,
-                body
-            ));
+            return Err(XLayerSignerError::HttpError { status, body }.into());
         }
 
         let sign_response: XLayerSignResponse = response
@@ -585,11 +608,12 @@ impl XLayerRemoteClient {
             .context("Failed to parse sign response")?;
 
         if !sign_response.success {
-            return Err(anyhow::anyhow!(
-                "Sign request failed: msg={}, detail={}",
-                sign_response.msg,
-                sign_response.detail_msg.unwrap_or_default()
-            ));
+            return Err(XLayerSignerError::SigningFailed {
+                status: sign_response.status,
+                msg: sign_response.msg,
+                detail: sign_response.detail_msg.unwrap_or_default(),
+            }
+            .into());
         }
 
         Ok(())
@@ -613,12 +637,10 @@ impl XLayerRemoteClient {
             let payload = self.sorted_json_marshal(&query_request)?;
             let signature = self.calculate_signature(&payload)?;
 
-            let timestamp = chrono::Utc::now().timestamp_millis().to_string();
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert("Content-Type", "application/json".parse()?);
-            headers.insert("FIX-ACCESS-KEY", self.config.access_key.parse()?);
-            headers.insert("FIX-SIGNATURE", signature.parse()?);
-            headers.insert("FIX-TIMESTAMP", timestamp.parse()?);
+            headers.insert("accessKey", self.config.access_key.parse()?);
+            headers.insert("sign", signature.parse()?);
 
             let response = self
                 .client
@@ -638,24 +660,23 @@ impl XLayerRemoteClient {
                 .await
                 .context("Failed to parse query response")?;
 
-            // Check if signing is complete
+            // Check if signing is complete (matching Optimism implementation)
+            // Only return when success=true AND data is non-empty
             if query_response.success && !query_response.data.is_empty() {
                 return Ok(query_response);
             }
 
-            // Check for error conditions
-            if !query_response.success && !query_response.msg.contains("查询不到") {
-                return Err(anyhow::anyhow!(
-                    "Query failed: msg={}, detail={}",
-                    query_response.msg,
-                    query_response.detail_msg.unwrap_or_default()
-                ));
-            }
-
-            tracing::debug!("Polling for sign result: attempt={}/{}", attempt + 1, max_attempts);
+            // Otherwise continue waiting (no error checking during polling)
+            tracing::debug!(
+                "Polling for sign result: attempt={}/{}, success={}, data_len={}",
+                attempt + 1,
+                max_attempts,
+                query_response.success,
+                query_response.data.len()
+            );
         }
 
-        Err(anyhow::anyhow!("Timeout waiting for signing result"))
+        Err(XLayerSignerError::SignatureTimeout(max_attempts).into())
     }
 
     /// Serializes JSON with sorted keys (required for signature calculation)
@@ -684,18 +705,61 @@ impl XLayerRemoteClient {
         }
     }
 
-    /// Calculates HMAC-SHA256 signature
+    /// Calculates signature using SHA256 + AES-ECB (matching Optimism implementation)
     fn calculate_signature(&self, payload: &str) -> Result<String> {
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
 
-        type HmacSha256 = Hmac<Sha256>;
+        // Step 1: SHA256 hash of the payload
+        let mut hasher = Sha256::new();
+        hasher.update(payload.as_bytes());
+        let hash = hasher.finalize();
+        let hash_hex = hex::encode(hash);
 
-        let mut mac = HmacSha256::new_from_slice(self.config.secret_key.as_bytes())
-            .context("Invalid secret key")?;
-        mac.update(payload.as_bytes());
-        let result = mac.finalize();
-        Ok(hex::encode(result.into_bytes()))
+        // Step 2: AES-ECB encryption using secret key
+        let encrypted = self.encrypt_aes_ecb(&hash_hex)?;
+
+        // Step 3: Base64 encode
+        Ok(base64::prelude::BASE64_STANDARD.encode(encrypted))
+    }
+
+    /// Encrypts data using AES-ECB mode with PKCS5 padding
+    fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
+        use aes::cipher::generic_array::GenericArray;
+        use aes::cipher::{BlockEncrypt, KeyInit};
+        use aes::Aes256;
+
+        let key_bytes = self.config.secret_key.as_bytes();
+        if key_bytes.len() != 32 {
+            return Err(anyhow::anyhow!(
+                "Secret key must be 32 bytes for AES-256, got {}",
+                key_bytes.len()
+            ));
+        }
+
+        let key = GenericArray::from_slice(key_bytes);
+        let cipher = Aes256::new(key);
+
+        // Apply PKCS5 padding
+        let plaintext_bytes = plaintext.as_bytes();
+        let padded = self.pkcs5_padding(plaintext_bytes, 16);
+
+        // Encrypt in ECB mode (block by block)
+        let mut encrypted = padded.clone();
+        for chunk in encrypted.chunks_mut(16) {
+            let block = GenericArray::from_mut_slice(chunk);
+            cipher.encrypt_block(block);
+        }
+
+        Ok(encrypted)
+    }
+
+    /// PKCS5 padding implementation
+    fn pkcs5_padding(&self, data: &[u8], block_size: usize) -> Vec<u8> {
+        let padding = block_size - (data.len() % block_size);
+        let mut result = data.to_vec();
+        result.extend(vec![padding as u8; padding]);
+        result
     }
 
     /// Verifies the signed transaction returned by remote signer
@@ -708,6 +772,9 @@ impl XLayerRemoteClient {
         let tx_envelope = TxEnvelope::decode_2718(&mut &signed_tx_bytes[..])
             .context("Failed to decode signed transaction")?;
 
+        // Recover a TransactionRequest (includes recovered signer when available via k256 feature)
+        let recovered_req: TransactionRequest = tx_envelope.clone().into();
+
         tracing::debug!(
             "Verifying signed transaction: type={:?}, from={:?}",
             tx_envelope.tx_type(),
@@ -717,6 +784,29 @@ impl XLayerRemoteClient {
         // Verify basic fields
         match &tx_envelope {
             TxEnvelope::Eip1559(signed) => {
+                // Verify chain id
+                if let Some(chain_id) = original_tx.chain_id {
+                    if recovered_req.chain_id != Some(chain_id) {
+                        return Err(anyhow::anyhow!(
+                            "ChainId mismatch: expected {:?}, got {:?}",
+                            chain_id,
+                            recovered_req.chain_id
+                        ));
+                    }
+                }
+
+                // Verify from (recover signer)
+                if let Some(expected_from) = original_tx.from {
+                    let actual_from = recovered_req.from;
+                    if actual_from != Some(expected_from) {
+                        return Err(anyhow::anyhow!(
+                            "From mismatch: expected {:?}, got {:?}",
+                            expected_from,
+                            actual_from
+                        ));
+                    }
+                }
+
                 // Verify nonce
                 if let Some(nonce) = original_tx.nonce {
                     if signed.nonce() != nonce {
@@ -733,11 +823,12 @@ impl XLayerRemoteClient {
                     match to {
                         alloy_primitives::TxKind::Call(addr) => {
                             if Some(*addr) != signed.to() {
-                                return Err(anyhow::anyhow!(
+                                return Err(XLayerSignerError::VerificationError(format!(
                                     "To address mismatch: expected {:?}, got {:?}",
                                     addr,
                                     signed.to()
-                                ));
+                                ))
+                                .into());
                             }
                         }
                         alloy_primitives::TxKind::Create => {
@@ -772,6 +863,27 @@ impl XLayerRemoteClient {
                     }
                 }
 
+                // Verify gas fees
+                if let Some(max_fee) = original_tx.max_fee_per_gas {
+                    if signed.max_fee_per_gas() != max_fee {
+                        return Err(anyhow::anyhow!(
+                            "Max fee per gas mismatch: expected {}, got {:?}",
+                            max_fee,
+                            signed.max_fee_per_gas()
+                        ));
+                    }
+                }
+
+                if let Some(max_priority_fee) = original_tx.max_priority_fee_per_gas {
+                    if signed.max_priority_fee_per_gas() != Some(max_priority_fee) {
+                        return Err(anyhow::anyhow!(
+                            "Max priority fee per gas mismatch: expected {}, got {:?}",
+                            max_priority_fee,
+                            signed.max_priority_fee_per_gas()
+                        ));
+                    }
+                }
+
                 // Verify data
                 let empty_data = Bytes::new();
                 let original_data = original_tx.input.input().unwrap_or(&empty_data);
@@ -793,6 +905,29 @@ impl XLayerRemoteClient {
                 );
             }
             TxEnvelope::Legacy(signed) => {
+                // Verify chain id
+                if let Some(chain_id) = original_tx.chain_id {
+                    if recovered_req.chain_id != Some(chain_id) {
+                        return Err(anyhow::anyhow!(
+                            "ChainId mismatch: expected {:?}, got {:?}",
+                            chain_id,
+                            recovered_req.chain_id
+                        ));
+                    }
+                }
+
+                // Verify from
+                if let Some(expected_from) = original_tx.from {
+                    let actual_from = recovered_req.from;
+                    if actual_from != Some(expected_from) {
+                        return Err(anyhow::anyhow!(
+                            "From mismatch (legacy): expected {:?}, got {:?}",
+                            expected_from,
+                            actual_from
+                        ));
+                    }
+                }
+
                 // Similar verification for legacy transactions
                 if let Some(nonce) = original_tx.nonce {
                     if signed.nonce() != nonce {
@@ -812,8 +947,41 @@ impl XLayerRemoteClient {
                         "Transaction data mismatch for legacy tx"
                     ));
                 }
+
+                if let Some(gas_price) = original_tx.gas_price {
+                    if signed.gas_price() != Some(gas_price) {
+                        return Err(anyhow::anyhow!(
+                            "Gas price mismatch (legacy): expected {}, got {:?}",
+                            gas_price,
+                            signed.gas_price()
+                        ));
+                    }
+                }
             }
             TxEnvelope::Eip4844(signed) => {
+                // Verify chain id
+                if let Some(chain_id) = original_tx.chain_id {
+                    if recovered_req.chain_id != Some(chain_id) {
+                        return Err(anyhow::anyhow!(
+                            "ChainId mismatch in blob tx: expected {:?}, got {:?}",
+                            chain_id,
+                            recovered_req.chain_id
+                        ));
+                    }
+                }
+
+                // Verify from
+                if let Some(expected_from) = original_tx.from {
+                    let actual_from = recovered_req.from;
+                    if actual_from != Some(expected_from) {
+                        return Err(anyhow::anyhow!(
+                            "From mismatch in blob tx: expected {:?}, got {:?}",
+                            expected_from,
+                            actual_from
+                        ));
+                    }
+                }
+
                 // Verify blob transaction basic fields
                 if let Some(nonce) = original_tx.nonce {
                     if signed.nonce() != nonce {
@@ -874,9 +1042,9 @@ mod tests {
     use serde::Serialize;
     use std::time::Duration;
 
-    /// Test component detection for Proposer (DisputeGameFactory.create)
+    /// Test operate type detection for Proposer (DisputeGameFactory.create)
     #[test]
-    fn test_detect_proposer_component() {
+    fn test_detect_proposer_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
@@ -888,14 +1056,13 @@ mod tests {
             "0000000000000000000000000000000000000001"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
-        let (component, operate_type) = result.unwrap();
-        assert_eq!(component, ComponentRole::Proposer);
+        let operate_type = result.unwrap();
         assert_eq!(operate_type as i32, OperateType::Proposer as i32);
     }
 
-    /// Test component detection for Challenger (prove)
+    /// Test operate type detection for Challenger (prove)
     #[test]
     fn test_detect_challenger_prove() {
         let config = XLayerConfig::default();
@@ -909,14 +1076,13 @@ mod tests {
             "0000000000000000000000000000000000000002"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
-        let (component, operate_type) = result.unwrap();
-        assert_eq!(component, ComponentRole::Challenger);
+        let operate_type = result.unwrap();
         assert_eq!(operate_type as i32, OperateType::ChallengerProve as i32);
     }
 
-    /// Test component detection for Challenger (challenge)
+    /// Test operate type detection for Challenger (challenge)
     #[test]
     fn test_detect_challenger_challenge() {
         let config = XLayerConfig::default();
@@ -930,16 +1096,15 @@ mod tests {
             "0000000000000000000000000000000000000002"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
-        let (component, operate_type) = result.unwrap();
-        assert_eq!(component, ComponentRole::Challenger);
+        let operate_type = result.unwrap();
         assert_eq!(operate_type as i32, OperateType::ChallengerChallenge as i32);
     }
 
-    /// Test component detection for Challenger (resolve)
+    /// Test operate type detection for resolve (can be called by Proposer or Challenger)
     #[test]
-    fn test_detect_challenger_resolve() {
+    fn test_detect_resolve_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
@@ -951,16 +1116,15 @@ mod tests {
             "0000000000000000000000000000000000000002"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
-        let (component, operate_type) = result.unwrap();
-        assert_eq!(component, ComponentRole::Challenger);
+        let operate_type = result.unwrap();
         assert_eq!(operate_type as i32, OperateType::ChallengerResolve as i32);
     }
 
-    /// Test component detection for Challenger (claimCredit)
+    /// Test operate type detection for claimCredit (can be called by Proposer or Challenger)
     #[test]
-    fn test_detect_challenger_claim_credit() {
+    fn test_detect_claim_credit_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
@@ -972,10 +1136,9 @@ mod tests {
             "0000000000000000000000000000000000000002"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
-        let (component, operate_type) = result.unwrap();
-        assert_eq!(component, ComponentRole::Challenger);
+        let operate_type = result.unwrap();
         assert_eq!(
             operate_type as i32,
             OperateType::ChallengerClaimCredit as i32
@@ -996,12 +1159,12 @@ mod tests {
             "0000000000000000000000000000000000000002"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("Unknown component type"));
+            .contains("Unknown method signature"));
     }
 
     /// Test transaction data too short
@@ -1018,7 +1181,7 @@ mod tests {
             "0000000000000000000000000000000000000002"
         )));
 
-        let result = client.detect_component_and_operate_type(&tx);
+        let result = client.detect_operate_type(&tx);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

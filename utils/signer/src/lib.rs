@@ -16,7 +16,7 @@ use gcloud_sdk::{
 };
 use tokio::{sync::Mutex, time::Duration};
 
-mod xlayer_remote_client;
+pub mod xlayer_remote_client;
 pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;

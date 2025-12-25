@@ -8822,6 +8822,7 @@ dependencies = [
 name = "op-succinct-signer-utils"
 version = "3.4.1"
 dependencies = [
+ "aes",
  "alloy-consensus",
  "alloy-eips",
  "alloy-network",
@@ -8833,6 +8834,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-transport-http",
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dotenv",
  "gcloud-sdk",
@@ -8844,6 +8846,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror 2.0.17",
  "tokio",
  "tracing",
  "uuid",
