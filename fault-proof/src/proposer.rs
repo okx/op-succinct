@@ -979,6 +979,16 @@ where
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
 
+        // Check if the transaction was successful
+        if !receipt.status() {
+            tracing::error!(
+                tx_hash = ?receipt.transaction_hash,
+                game_address = ?game.address(),
+                "CRITICAL ERROR: FaultDisputeGame.prove transaction failed! System will exit immediately."
+            );
+            std::process::exit(1);
+        }
+
         Ok(receipt.transaction_hash)
     }
 
@@ -1088,6 +1098,16 @@ where
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
 
+        // Check if the transaction was successful
+        if !receipt.status() {
+            tracing::error!(
+                tx_hash = ?receipt.transaction_hash,
+                output_root = ?output_root,
+                "CRITICAL ERROR: DisputeGameFactory.create transaction failed! System will exit immediately."
+            );
+            std::process::exit(1);
+        }
+
         let game_address = receipt
             .inner
             .logs()
@@ -1189,6 +1209,18 @@ where
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
 
+        // Check if the transaction was successful
+        if !receipt.status() {
+            tracing::error!(
+                tx_hash = ?receipt.transaction_hash,
+                game_address = ?game.address,
+                game_index = %game.index,
+                l2_block_end = %game.l2_block,
+                "CRITICAL ERROR: FaultDisputeGame.resolve transaction failed! System will exit immediately."
+            );
+            std::process::exit(1);
+        }
+
         tracing::info!(
             game_index = %game.index,
             game_address = ?game.address,
@@ -1210,6 +1242,18 @@ where
             .signer
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
+
+        // Check if the transaction was successful
+        if !receipt.status() {
+            tracing::error!(
+                tx_hash = ?receipt.transaction_hash,
+                game_address = ?game.address,
+                game_index = %game.index,
+                l2_block_end = %game.l2_block,
+                "CRITICAL ERROR: FaultDisputeGame.claimCredit transaction failed! System will exit immediately."
+            );
+            std::process::exit(1);
+        }
 
         tracing::info!(
             game_index = %game.index,
