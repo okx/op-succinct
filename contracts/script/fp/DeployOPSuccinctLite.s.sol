@@ -21,7 +21,9 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierPlonk.sol";
+import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierPlonk.sol";
+import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierGroth16.sol";
+import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
     function run()
@@ -192,10 +194,14 @@ contract DeployOPSuccinctLite is Script, Utils {
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
         } else {
-            // Use provided verifier address from JSON config
-            SP1Verifier sp1Verifier = new SP1Verifier();
-            sp1Config.verifierAddress = address(sp1Verifier);
-            console.log("Using SP1 Plonk Verifier:", address(sp1Verifier));
+            SP1VerifierPlonk sp1VerifierPlonk = new SP1VerifierPlonk();
+            SP1VerifierGroth16 sp1VerifierGroth16 = new SP1VerifierGroth16();
+            // Deploy gateway with current transaction sender as owner
+            SP1VerifierGateway sp1VerifierGateway = new SP1VerifierGateway(tx.origin);
+            sp1VerifierGateway.addRoute(address(sp1VerifierPlonk));
+            sp1VerifierGateway.addRoute(address(sp1VerifierGroth16));
+            sp1Config.verifierAddress = address(sp1VerifierGateway);
+            console.log("Using SP1 Verifier Gateway:", address(sp1VerifierGateway));
         }
 
         return sp1Config;
