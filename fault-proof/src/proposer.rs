@@ -979,6 +979,15 @@ where
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
 
+        // Check if the transaction was successful
+        if !receipt.status() {
+            panic!(
+                "FaultDisputeGame.prove transaction failed! tx_hash: {:?}, game_address: {:?}",
+                receipt.transaction_hash,
+                game.address()
+            );
+        }
+
         Ok(receipt.transaction_hash)
     }
 
@@ -1088,6 +1097,14 @@ where
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
 
+        // Check if the transaction was successful
+        if !receipt.status() {
+            panic!(
+                "DisputeGameFactory.create transaction failed! tx_hash: {:?}",
+                receipt.transaction_hash
+            );
+        }
+
         let game_address = receipt
             .inner
             .logs()
@@ -1189,6 +1206,16 @@ where
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
 
+        // Check if the transaction was successful
+        if !receipt.status() {
+            panic!(
+                "FaultDisputeGame.resolve transaction failed! tx_hash: {:?}, game_address: {:?}, game_index: {}",
+                receipt.transaction_hash,
+                game.address,
+                game.index
+            );
+        }
+
         tracing::info!(
             game_index = %game.index,
             game_address = ?game.address,
@@ -1210,6 +1237,16 @@ where
             .signer
             .send_transaction_request(self.config.l1_rpc.clone(), transaction_request)
             .await?;
+
+        // Check if the transaction was successful
+        if !receipt.status() {
+            panic!(
+                "FaultDisputeGame.claimCredit transaction failed! tx_hash: {:?}, game_address: {:?}, game_index: {}",
+                receipt.transaction_hash,
+                game.address,
+                game.index
+            );
+        }
 
         tracing::info!(
             game_index = %game.index,
