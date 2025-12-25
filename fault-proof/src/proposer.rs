@@ -26,6 +26,7 @@ use op_succinct_host_utils::{
 use op_succinct_proof_utils::get_range_elf_embedded;
 use op_succinct_signer_utils::SignerLock;
 use sp1_sdk::{
+    network::proto::types::FulfillmentStatus,
     NetworkProver, Prover, ProverClient, SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey,
     SP1Stdin, SP1VerifyingKey, SP1_CIRCUIT_VERSION,
 };
@@ -55,6 +56,9 @@ use crate::{
 /// The 14-day window is chosen with a 7-day challenge period in mind, plus a 7-day buffer,
 /// ensuring all actionable games are included under normal conditions.
 pub const MAX_GAME_DEADLINE_LAG: u64 = 60 * 60 * 24 * 14; // 14 days
+
+/// Maximum consecutive query failures before giving up (600 = 10 minutes).
+const MAX_QUERY_FAILURES: usize = 600;
 
 /// Type alias for task ID
 pub type TaskId = u64;
@@ -903,8 +907,8 @@ where
 
             Ok((proof, total_instruction_cycles, total_sp1_gas))
         } else {
-            // In network mode, we don't have access to execution stats
-            let proof = self
+            tracing::info!("Submitting range proof request to network");
+            let proof_id = self
                 .prover
                 .network_prover
                 .prove(&self.prover.range_pk, sp1_stdin)
@@ -917,8 +921,10 @@ where
                 .cycle_limit(self.config.range_cycle_limit)
                 .gas_limit(self.config.range_gas_limit)
                 .whitelist(self.config.whitelist.clone())
-                .run_async()
+                .request_async()
                 .await?;
+
+            let proof = self.wait_for_proof(proof_id, "range").await?;
 
             Ok((proof, 0, 0))
         }
@@ -939,7 +945,6 @@ where
                 .deferred_proof_verification(false)
                 .run()?;
 
-            // Create a mock aggregation proof with the public values.
             SP1ProofWithPublicValues::create_mock_proof(
                 &self.prover.agg_pk,
                 public_values,
@@ -947,7 +952,9 @@ where
                 SP1_CIRCUIT_VERSION,
             )
         } else {
-            self.prover
+            tracing::info!("Submitting aggregation proof request to network");
+            let proof_id = self
+                .prover
                 .network_prover
                 .prove(&self.prover.agg_pk, sp1_stdin)
                 .mode(self.prover.agg_mode)
@@ -958,8 +965,11 @@ where
                 .cycle_limit(self.config.agg_cycle_limit)
                 .gas_limit(self.config.agg_gas_limit)
                 .whitelist(self.config.whitelist.clone())
-                .run_async()
-                .await?
+                .request_async()
+                .await?;
+
+            // Wait for proof and download
+            self.wait_for_proof(proof_id, "aggregation").await?
         };
 
         let transaction_request = game.prove(agg_proof.bytes().into()).into_transaction_request();
@@ -970,6 +980,92 @@ where
             .await?;
 
         Ok(receipt.transaction_hash)
+    }
+
+    /// Polls SP1 Network for proof completion and downloads when ready.
+    /// - Query failures: retries up to 600 times (10 minutes)
+    /// - Fulfilled but data None: retries until SP1 deadline
+    /// - Unfulfillable: fails immediately
+    /// - Other statuses: continues polling until SP1 deadline
+    async fn wait_for_proof(
+        &self,
+        proof_id: B256,
+        proof_type: &str,
+    ) -> Result<SP1ProofWithPublicValues> {
+        let mut consecutive_query_failures = 0;
+        tracing::info!("Waiting for {} proof to be fulfilled. Proof ID: {:?}", proof_type, proof_id);
+        loop {
+            let current_time: u64 = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            // Query proof status
+            let (status, proof_opt) = match self.prover.network_prover.get_proof_status(proof_id).await {
+                Ok(result) => {
+                    consecutive_query_failures = 0;  // Reset on success
+                    result
+                }
+                Err(e) => {
+                    consecutive_query_failures += 1;
+                    if consecutive_query_failures >= MAX_QUERY_FAILURES {
+                        return Err(anyhow::anyhow!(
+                            "{} proof query failed after {} attempts (10 min). Proof ID: {:?}",
+                            proof_type, consecutive_query_failures, proof_id
+                        ));
+                    }
+
+                    tracing::warn!(
+                        "{} proof query failed ({} attempts): {}. Retrying...",
+                        proof_type, consecutive_query_failures, e
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            // Check SP1 Network's deadline
+            if current_time > status.deadline() {
+                return Err(anyhow::anyhow!(
+                    "{} proof SP1 deadline exceeded (SP1 deadline: {}, current: {}). Proof ID: {:?}",
+                    proof_type,
+                    status.deadline(),
+                    current_time,
+                    proof_id
+                ));
+            }
+
+            match status.fulfillment_status() {
+                s if s == FulfillmentStatus::Fulfilled as i32 => {
+                    // Proof completed - check if data is available
+                    match proof_opt {
+                        Some(proof) => {
+                            tracing::info!("{} proof downloaded successfully", proof_type);
+                            return Ok(proof);
+                        }
+                        None => {
+                            // Status says Fulfilled but proof data not ready yet (SP1 temporary state)
+                            // This is NOT a network error (query succeeded), just retry until deadline
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    }
+                }
+                s if s == FulfillmentStatus::Unfulfillable as i32 => {
+                    return Err(anyhow::anyhow!(
+                        "{} proof failed (Unfulfillable). Execution: {}. Proof ID: {:?}",
+                        proof_type,
+                        status.execution_status(),
+                        proof_id
+                    ));
+                }
+                _ => {
+                    // Still processing (Requested, Assigned, etc.) - continue polling
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     /// Creates a new game with the given parameters.
