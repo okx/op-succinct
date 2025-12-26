@@ -1765,15 +1765,58 @@ where
             .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
             .await?;
 
-        Ok((
-            finalized_l2_head_block_number
-                .map(|finalized_block| {
-                    U256::from(finalized_block) >= next_l2_block_number_for_proposal
-                })
-                .unwrap_or(false),
-            next_l2_block_number_for_proposal,
-            parent_game_index,
-        ))
+        let Some(finalized_block) = finalized_l2_head_block_number else {
+            return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+        };
+
+        // Check block interval condition
+        let blocks_ready = U256::from(finalized_block) >= next_l2_block_number_for_proposal;
+
+        // Check gas limit condition (if configured)
+        let gas_ready = if self.config.proposal_gas_limit > 0 && !blocks_ready {
+            // Only check gas if blocks condition not met and gas limit is configured
+            let start = canonical_head_l2_block.to::<u64>();
+            let end = finalized_block;
+
+            if end > start {
+                match self.fetcher.get_l2_block_data_range(start, end).await {
+                    Ok(block_infos) => {
+                        let total_gas: u64 = block_infos.iter().map(|b| b.gas_used).sum();
+                        let exceeded = total_gas >= self.config.proposal_gas_limit;
+                        if exceeded {
+                            tracing::info!(
+                                "Gas limit triggered: {} >= {} (blocks {} to {})",
+                                total_gas,
+                                self.config.proposal_gas_limit,
+                                start,
+                                end
+                            );
+                        }
+                        exceeded
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch block data for gas check: {:?}", e);
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Either condition triggers game creation
+        let should_create = blocks_ready || gas_ready;
+
+        // If gas triggered, use finalized block as the proposal target
+        let target_block = if gas_ready && !blocks_ready {
+            U256::from(finalized_block)
+        } else {
+            next_l2_block_number_for_proposal
+        };
+
+        Ok((should_create, target_block, parent_game_index))
     }
 
     /// Spawn game defense tasks if needed
