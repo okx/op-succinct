@@ -40,6 +40,11 @@ pub struct ProposerConfig {
     /// The interval in blocks between proposing new games.
     pub proposal_interval_in_blocks: u64,
 
+    /// The gas limit that triggers game creation. If > 0, a game will be created when
+    /// accumulated L2 block gas since last proposal exceeds this limit.
+    /// Works together with `proposal_interval_in_blocks` - either condition triggers game creation.
+    pub proposal_gas_limit: u64,
+
     /// The interval in seconds between checking for new proposals and game resolution.
     /// During each interval, the proposer:
     /// 1. Checks the safe L2 head block number
@@ -151,6 +156,9 @@ impl ProposerConfig {
             proposal_interval_in_blocks: env::var("PROPOSAL_INTERVAL_IN_BLOCKS")
                 .unwrap_or("1800".to_string())
                 .parse()?,
+            proposal_gas_limit: env::var("PROPOSAL_GAS_LIMIT")
+                .unwrap_or("0".to_string())
+                .parse()?,
             fetch_interval: env::var("FETCH_INTERVAL").unwrap_or("30".to_string()).parse()?,
             game_type: env::var("GAME_TYPE").expect("GAME_TYPE not set").parse()?,
             max_concurrent_defense_tasks: env::var("MAX_CONCURRENT_DEFENSE_TASKS")
@@ -205,6 +213,7 @@ impl ProposerConfig {
             fast_finality_mode = self.fast_finality_mode,
             game_type = self.game_type,
             proposal_interval_in_blocks = self.proposal_interval_in_blocks,
+            proposal_gas_limit = self.proposal_gas_limit,
             fetch_interval = self.fetch_interval,
             range_proof_strategy = ?self.range_proof_strategy,
             agg_proof_strategy = ?self.agg_proof_strategy,
