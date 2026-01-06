@@ -1,0 +1,10 @@
+[package]
+name = "test-thread"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sp1-zkvm = { version = "=5.2.4" }
+

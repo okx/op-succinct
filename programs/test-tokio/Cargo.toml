@@ -1,0 +1,12 @@
+[package]
+name = "test-tokio"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sp1-zkvm = { version = "=5.2.4" }
+# Use tokio directly since SP1 zkVM supports it
+tokio = { version = "1.44.2", features = ["rt", "time"], default-features = false }
+

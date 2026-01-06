@@ -1,0 +1,32 @@
+# Build commands for test programs in SP1 zkVM
+
+# Default SP1 version tag
+SP1_TAG := "v5.2.4"
+
+# Output directory for ELF files (relative to workspace root)
+ELF_DIR := "../elf"
+
+# Build test-thread ELF
+build-test-thread:
+    #!/usr/bin/env bash
+    cd test-thread
+    cargo prove build --elf-name test-thread-elf --docker --tag {{SP1_TAG}} --output-directory {{ELF_DIR}}
+    cd ..
+
+# Build test-tokio ELF
+build-test-tokio:
+    #!/usr/bin/env bash
+    cd test-tokio
+    cargo prove build --elf-name test-tokio-elf --docker --tag {{SP1_TAG}} --output-directory {{ELF_DIR}}
+    cd ..
+
+# Build test-tokio-thread ELF
+build-test-tokio-thread:
+    #!/usr/bin/env bash
+    cd test-tokio-thread
+    cargo prove build --elf-name test-tokio-thread-elf --docker --tag {{SP1_TAG}} --output-directory {{ELF_DIR}}
+    cd ..
+
+# Build all test programs
+build-all-tests: build-test-thread build-test-tokio build-test-tokio-thread
+

@@ -1,0 +1,12 @@
+[package]
+name = "test-tokio-thread"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sp1-zkvm = { version = "=5.2.4" }
+# Try to use tokio with minimal features
+tokio = { version = "1.44.2", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], default-features = false }
+
