@@ -54,3 +54,4 @@ config.alloy
 
 # EigenDA SRS symlink (created by `just da-integration-tests eigenda`)
 utils/eigenda/host/resources
+**/target

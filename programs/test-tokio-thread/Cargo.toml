@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 sp1-zkvm = { version = "=5.2.4" }
-# Try to use tokio with minimal features
-tokio = { version = "1.44.2", features = ["rt", "rt-multi-thread", "macros", "sync", "time"], default-features = false }
+# NOTE: Tokio runtime cannot be used in SP1 zkVM because it requires time support
+# This program demonstrates async/await without tokio runtime, using a simple block_on
+# implementation similar to kona_proof::block_on
 

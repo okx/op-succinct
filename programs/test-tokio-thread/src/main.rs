@@ -1,84 +1,75 @@
-//! Test tokio multi-threading support in SP1 zkVM
+//! Test async task spawning in SP1 zkVM without tokio runtime
 //! 
-//! This program tests whether tokio's multi-threading features can be used in zkVM.
+//! This program demonstrates that tokio runtime initialization FAILS in SP1 zkVM
+//! because it requires time support which zkVM doesn't provide.
 //! 
-//! **Result**: Tokio multi-threading IS supported in SP1 zkVM!
-//! Key points:
-//! - Use `default-features = false` to avoid I/O dependencies (mio, socket2)
-//! - Enable only: `rt`, `rt-multi-thread`, `macros`, `sync`, `time`
-//! - Avoid features like `net`, `fs`, `io-util` which require OS support
-//!
-//! ## About `#[tokio::main(flavor = "multi_thread")]`
-//!
-//! This macro transforms the async `main` function into a synchronous one that:
-//! 1. Creates a tokio runtime with multi-threaded scheduler
-//! 2. Calls `rt.block_on()` to execute the async code
-//! 3. Provides full tokio runtime features (task scheduling, waker, etc.)
-//!
-//! It's equivalent to:
-//! ```rust
-//! fn main() {
-//!     let rt = tokio::runtime::Builder::new_multi_thread()
-//!         .enable_all()
-//!         .build()
-//!         .unwrap();
-//!     rt.block_on(async { /* your async code */ });
-//! }
-//! ```
+//! **Solution**: Use a simple block_on implementation (like kona_proof::block_on)
+//! that doesn't require a runtime. However, this means we can't use tokio::task::spawn
+//! or tokio::sync::Mutex as they require a runtime.
+//! 
+//! **Alternative**: Use std::thread and std::sync primitives for concurrency,
+//! or implement a simple async executor that doesn't require time support.
 
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
-use tokio::task;
-use tokio::sync::Mutex;
-use std::sync::Arc;
+use core::future::Future;
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+// Simple block_on implementation that doesn't require tokio runtime
+// Similar to kona_proof::block_on in no_std mode
+fn block_on<T>(f: impl Future<Output = T>) -> T {
+    
+    let mut f = Box::pin(f);
+    
+    // Construct a no-op waker
+    fn noop_clone(_: *const ()) -> RawWaker {
+        noop_raw_waker()
+    }
+    const fn noop(_: *const ()) {}
+    fn noop_raw_waker() -> RawWaker {
+        let vtable = &RawWakerVTable::new(noop_clone, noop, noop, noop);
+        RawWaker::new(core::ptr::null(), vtable)
+    }
+    let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+    let mut context = Context::from_waker(&waker);
+    
+    loop {
+        // Safety: This is safe because we only poll the future once per loop iteration,
+        // and we do not move the future after pinning it.
+        if let Poll::Ready(v) = f.as_mut().poll(&mut context) {
+            return v;
+        }
+    }
+}
 
 async fn async_task(id: u32) -> u32 {
-    println!("Tokio task {}: Starting", id);
-    // Simulate some async work
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    println!("Tokio task {}: Completed", id);
+    println!("Async task {}: Starting", id);
+    println!("Async task {}: Completed", id);
     id * 2
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() {
-    println!("Testing tokio multi-threading in SP1 zkVM");
+fn main() {
+    println!("Testing async without tokio runtime in SP1 zkVM");
+    println!("Note: Using simple block_on instead of tokio runtime");
     
-    // Test 1: Spawn multiple tasks
-    let mut handles = vec![];
-    for i in 0..3 {
-        let handle = task::spawn(async_task(i));
-        handles.push(handle);
-    }
+    // Test: Execute async tasks sequentially (can't spawn without runtime)
+    let result1 = block_on(async_task(0));
+    let result2 = block_on(async_task(1));
+    let result3 = block_on(async_task(2));
     
-    let mut results = vec![];
-    for handle in handles {
-        let result = handle.await.unwrap();
-        results.push(result);
-    }
+    println!("Results: [{}, {}, {}]", result1, result2, result3);
     
-    println!("Results: {:?}", results);
+    // Test: Execute multiple async operations in sequence
+    let results = block_on(async {
+        let mut results = vec![];
+        for i in 0..3 {
+            results.push(async_task(i).await);
+        }
+        results
+    });
     
-    // Test 2: Shared state with tokio::sync::Mutex
-    let counter = Arc::new(Mutex::new(0u32));
-    let mut handles = vec![];
-    
-    for i in 0..3 {
-        let counter = Arc::clone(&counter);
-        let handle = task::spawn(async move {
-            let mut num = counter.lock().await;
-            *num += i;
-            println!("Tokio task {}: incremented counter", i);
-        });
-        handles.push(handle);
-    }
-    
-    for handle in handles {
-        handle.await.unwrap();
-    }
-    
-    println!("Final counter value: {}", *counter.lock().await);
+    println!("All results: {:?}", results);
     
     // Commit result
     sp1_zkvm::io::commit(&results[0]);

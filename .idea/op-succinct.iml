@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="Go" enabled="true" />
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/bindings/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fault-proof/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fault-proof/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/programs/aggregation/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/programs/range/celestia/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/programs/range/eigenda/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/programs/range/ethereum/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/programs/range/utils/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/scripts/prove/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/scripts/prove/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/scripts/utils/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/build/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/celestia/client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/celestia/host/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/eigenda/client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/eigenda/host/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/elfs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/ethereum/client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/ethereum/host/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/host/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/proof/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/signer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/validity/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/programs/test-runner/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/utils/eigenda/host/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/programs/test-runner/target" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

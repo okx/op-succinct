@@ -27,6 +27,24 @@ build-test-tokio-thread:
     cargo prove build --elf-name test-tokio-thread-elf --docker --tag {{SP1_TAG}} --output-directory {{ELF_DIR}}
     cd ..
 
+# Build test-runner (host program to execute ELF and generate proofs)
+# Note: Requires VK_MAP_SRC_PATH environment variable if network download fails
+# Download: curl -L https://sp1-circuits.s3.us-east-2.amazonaws.com/vk-map-v5.0.0 -o ~/vk_map.bin
+# Then: export VK_MAP_SRC_PATH=~/vk_map.bin
+build-test-runner:
+    #!/usr/bin/env bash
+    cd test-runner
+    cargo build --release
+    cd ..
+
+# Run test-runner (execute ELF and optionally generate proof)
+# Usage: just run-test-runner --elf <path> [--prove] [--mock] [--input <path>]
+run-test-runner elf *args:
+    #!/usr/bin/env bash
+    cd test-runner
+    cargo run --release -- --elf {{elf}} {{args}}
+    cd ..
+
 # Build all test programs
 build-all-tests: build-test-thread build-test-tokio build-test-tokio-thread
 

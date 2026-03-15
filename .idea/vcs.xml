@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/lib-keccak" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/lib-keccak/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/lib-keccak/lib/forge-std/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/lib-keccak/lib/solady" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/lib-keccak/lib/solady/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/openzeppelin-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/openzeppelin-contracts-upgradeable" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/kontrol-cheatcodes" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/lib-keccak" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/forge-std/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/solady" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/solady/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-upgradeable" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5/lib/erc4626-tests" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5/lib/forge-std/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/safe-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/solady" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/solady-v0.0.245" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/solady/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/solmate" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/solmate/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/optimism/packages/contracts-bedrock/lib/superchain-registry" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/solady" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/solady/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/sp1-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/sp1-contracts/contracts/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/sp1-contracts/contracts/lib/openzeppelin-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/sp1-contracts/contracts/lib/openzeppelin-contracts/lib/erc4626-tests" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/sp1-contracts/contracts/lib/openzeppelin-contracts/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/contracts/lib/sp1-contracts/contracts/lib/openzeppelin-contracts/lib/forge-std/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/kontrol-cheatcodes" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/lib-keccak" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/forge-std/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/solady" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/lib-keccak/lib/solady/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-upgradeable" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5/lib/erc4626-tests" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5/lib/forge-std" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/openzeppelin-contracts-v5/lib/forge-std/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/safe-contracts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/solady" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/solady-v0.0.245" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/solady/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/solmate" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/solmate/lib/ds-test" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/tests/optimism/packages/contracts-bedrock/lib/superchain-registry" vcs="Git" />
+  </component>
+</project>
