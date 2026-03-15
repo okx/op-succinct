@@ -1,0 +1,13 @@
+[package]
+name = "test-tokio"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sp1-zkvm = { version = "=5.2.4" }
+# Try to use tokio without time feature
+# NOTE: Even without time feature, tokio runtime initialization may still require time support
+tokio = { version = "1.44.2", features = ["rt"], default-features = false }
+

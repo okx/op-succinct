@@ -1,0 +1,13 @@
+[package]
+name = "test-tokio-thread"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+sp1-zkvm = { version = "=5.2.4" }
+# NOTE: Tokio runtime cannot be used in SP1 zkVM because it requires time support
+# This program demonstrates async/await without tokio runtime, using a simple block_on
+# implementation similar to kona_proof::block_on
+
