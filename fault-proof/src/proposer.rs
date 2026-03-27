@@ -1022,6 +1022,12 @@ where
 
         if !matches {
             tracing::info!("Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)");
+            tracing::info!("On-chain agg: {:?}", on_chain_agg);
+            tracing::info!("On-chain range: {:?}", on_chain_range);
+            tracing::info!("On-chain rollup hash: {:?}", on_chain_rollup_hash);
+            tracing::info!("Proposer agg: {:?}", self.identity.aggregation_vkey);
+            tracing::info!("Proposer range: {:?}", self.identity.range_vkey_commitment);
+            tracing::info!("Proposer rollup hash: {:?}", self.identity.rollup_config_hash);
         }
         Ok(matches)
     }
