@@ -679,6 +679,20 @@ where
             }
         };
 
+        // When skip_history_sync is enabled and this is the first sync (cursor is uninitialized),
+        // skip the backward traversal entirely and start tracking from the current index forward.
+        // This is useful when the RPC lacks sufficient historical data.
+        if self.config.skip_history_sync && cursor == Cursor::none() {
+            tracing::info!(
+                latest_index = %latest_index,
+                "SKIP_HISTORY_SYNC enabled: skipping historical game traversal, \
+                 starting from current factory index"
+            );
+            let mut state = self.state.write().await;
+            state.cursor = latest_index;
+            return Ok(());
+        }
+
         let mut index = latest_index.clone();
         let mut anchor_deadline: Option<u64> = None;
         let mut invalid_game_ids = Vec::new();

@@ -78,6 +78,12 @@ pub struct ProposerConfig {
 
     /// Optional path to backup file for persisting proposer state across restarts.
     pub backup_path: Option<PathBuf>,
+
+    /// When true, skip historical game traversal on the first sync (cursor is uninitialized).
+    /// Useful when the RPC lacks sufficient historical data (e.g., "distance to target block
+    /// exceeds maximum proof window"). The proposer will start from the current factory index
+    /// and only track newly created games going forward.
+    pub skip_history_sync: bool,
 }
 
 /// Helper function to parse a comma-separated list of addresses
@@ -139,6 +145,9 @@ impl ProposerConfig {
                 .parse()?,
             proof_provider: ProofProviderConfig::from_env()?,
             backup_path: env::var("BACKUP_PATH").ok().map(PathBuf::from),
+            skip_history_sync: env::var("SKIP_HISTORY_SYNC")
+                .unwrap_or("false".to_string())
+                .parse()?,
         })
     }
 
@@ -175,6 +184,7 @@ impl ProposerConfig {
             min_auction_period = self.proof_provider.min_auction_period,
             whitelist = ?self.proof_provider.whitelist,
             backup_path = ?self.backup_path,
+            skip_history_sync = self.skip_history_sync,
             "Proposer configuration loaded"
         );
     }
