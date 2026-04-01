@@ -1508,10 +1508,35 @@ where
         mut next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
-        let mut output_root = self
+        let mut output_root = match self
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
-            .await?;
+            .await
+        {
+            Ok(root) => root,
+            Err(e) if e.to_string().contains("exceeds maximum proof window") => {
+                // Target block is beyond the L2 node's proof history window.
+                // Fall back to the latest finalized L2 block so game creation can proceed.
+                let finalized = self
+                    .host
+                    .get_finalized_l2_block_number(
+                        &self.fetcher,
+                        next_l2_block_number_for_proposal.to::<u64>(),
+                    )
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("no finalized L2 block available"))?;
+                tracing::warn!(
+                    original_block = %next_l2_block_number_for_proposal,
+                    fallback_block = finalized,
+                    "Target block beyond proof window; falling back to latest finalized block"
+                );
+                next_l2_block_number_for_proposal = U256::from(finalized);
+                self.l2_provider
+                    .compute_output_root_at_block(next_l2_block_number_for_proposal)
+                    .await?
+            }
+            Err(e) => return Err(e),
+        };
         let mut extra_data =
             (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
         let mut maybe_existing_game = self
