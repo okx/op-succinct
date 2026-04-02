@@ -451,6 +451,10 @@ build-agg-elf:
     cd programs/aggregation
     ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v6.0.2 --output-directory ../../elf
 
+# Run Foundry contract tests for OPSuccinctFaultDisputeGame.
+fp-contract-tests *args='':
+  cd contracts && forge test --match-path "test/fp/OPSuccinctFaultDisputeGame*.t.sol" -vv {{args}}
+
 # Run all unit tests except for the specified ones.
 tests:
    cargo t --release \
