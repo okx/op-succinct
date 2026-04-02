@@ -233,6 +233,9 @@ p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p2
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-6.0.0" }
 tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-6.0.0" }
 
+# Patch sp1-sdk to add gateway proxy support
+sp1-sdk = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.0.2" }
+
 # Note: alloy-tx-macros crates.io version must match alloy-consensus version
 # Both are now at 1.4.x for hokulea v1.1.6 compatibility
 
@@ -256,3 +259,4 @@ reth-storage-api = { git = "https://github.com/succinctlabs/reth", branch = "v1.
 reth-storage-errors = { git = "https://github.com/succinctlabs/reth", branch = "v1.9.3-kona" }
 reth-trie = { git = "https://github.com/succinctlabs/reth", branch = "v1.9.3-kona" }
 reth-trie-common = { git = "https://github.com/succinctlabs/reth", branch = "v1.9.3-kona" }
+
