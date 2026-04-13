@@ -15,7 +15,8 @@ Two types of requests are proxied:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SP1_GATEWAY_HOST` | Yes | Gateway address, e.g. `http://host:port` |
-| `SP1_GATEWAY_TOKEN` | Yes* | Value for the `third-token` header, used for gateway authentication |
+| `SP1_GATEWAY_TOKEN` | Yes* | Value for the `third-token` header, used for gRPC gateway authentication |
+| `SP1_GATEWAY_S3_TOKEN` | No | Separate `third-token` value for S3 artifact requests. Falls back to `SP1_GATEWAY_TOKEN` if unset |
 | `SP1_GATEWAY_SOURCE_SERVICE` | Yes* | Value for the `source-service` header, identifies the calling service |
 
 > \* Required only when `SP1_GATEWAY_HOST` is set. If `SP1_GATEWAY_HOST` is set but `SP1_GATEWAY_TOKEN` or `SP1_GATEWAY_SOURCE_SERVICE` is missing, the program will panic on startup with a clear error message.
@@ -39,7 +40,8 @@ For presigned URLs (e.g. S3 uploads/downloads), `third-host` is dynamically extr
 
 ```bash
 export SP1_GATEWAY_HOST="http://your-gateway-host:9080"
-export SP1_GATEWAY_TOKEN="your-gateway-token"
+export SP1_GATEWAY_TOKEN="your-grpc-gateway-token"
+export SP1_GATEWAY_S3_TOKEN="your-s3-gateway-token"   # optional, falls back to SP1_GATEWAY_TOKEN
 export SP1_GATEWAY_SOURCE_SERVICE="your-service-name"
 ```
 
