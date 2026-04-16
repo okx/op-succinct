@@ -41,7 +41,7 @@
 
 ## S1: Contract Deployment Verification [P0]
 
-> Script: [`scripts/verify-sepolia-deployment.sh`](./scripts/verify-sepolia-deployment.sh)
+> Script: [`tests/scripts/verify-sepolia-deployment.sh`](../tests/scripts/verify-sepolia-deployment.sh)
 
 ```bash
 ./tests/scripts/verify-sepolia-deployment.sh [RPC_URL]
@@ -208,6 +208,8 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
 8. `refundModeCredit[address(0)]` == 0 (confirm funds are not misclassified to the REFUND channel)
 9. Proposer `claimCredit()` -> revert `NoCreditToClaim`
 
+**Foundry coverage note**: The base test `testParentGameChallengerWinsInvalidatesChild` covers steps 1-5 and 9 but does not explicitly assert `bondDistributionMode` (step 6) or `normalModeCredit[address(0)]` (step 7-8). These assertions are implicitly validated by the fact that `childGame.balance == 1 ether` and `claimCredit(challenger)` reverts, but explicit assertions would strengthen coverage.
+
 **Scenario B -- child has a challenger**:
 1-3 same as Scenario A, but challenge Game B before step 3
 4. Resolve Game B -> `CHALLENGER_WINS` (cascaded)
@@ -308,6 +310,13 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
 1. Owner calls `setChallenger(address(0), true)` -> anyone can challenge
 2. Owner calls `setChallenger(address(0), false)` -> non-whitelisted `challenge()` -> revert `BadAuth`
 
+### TC30: IncorrectDisputeGameFactory -- Same Impl Cannot Be Used Across Factories
+
+1. Deploy a second DisputeGameFactory (newFactory)
+2. Register the same game implementation in newFactory
+3. Proposer calls `newFactory.create(42, ...)` -> revert `IncorrectDisputeGameFactory`
+4. **Rationale**: The game impl stores its Factory address as an immutable; `initialize()` verifies `msg.sender == DISPUTE_GAME_FACTORY`. This prevents cross-factory replay attacks.
+
 ---
 
 ## 4. SP1 Proof Verification (Devnet Mock Verifier)
@@ -398,6 +407,41 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
 ### TC25: l2SequenceNumber Constraint
 
 1. `l2SequenceNumber <= startingOutputRoot.l2SequenceNumber` -> revert `UnexpectedRootClaim`
+
+### TC31: Parent Must Be Ahead of Anchor (PR #839)
+
+1. Finalize Game A via `closeGame()` -> anchor advances to Game A's l2SeqNum
+2. Attempt to create Game B with `parentIndex = Game A` -> revert `InvalidParentGame` (parent.l2SeqNum <= anchor.l2SeqNum)
+3. Create Game C with l2SeqNum > anchor via a valid parent (l2SeqNum > anchor) -> success
+4. **Rationale**: Prevents duplicate games when a finalized game becomes the anchor
+
+### TC32: uint32.max Path Below Anchor
+
+1. Finalize a game so anchor advances to l2SeqNum = N
+2. `Factory.create(42, ..., l2Block=N, uint32.max)` -> revert `UnexpectedRootClaim` (l2Block == anchor)
+3. `Factory.create(42, ..., l2Block=N-1, uint32.max)` -> revert `UnexpectedRootClaim` (l2Block < anchor)
+4. `Factory.create(42, ..., l2Block=N+1, uint32.max)` -> success
+
+### TC33: Chain from uint32.max Game via Parent Index
+
+1. Finalize a game -> anchor at l2SeqNum = N
+2. Create Game X via `uint32.max` with l2Block = N+1000
+3. Create Game Y with `parentIndex = Game X` (X.l2SeqNum > anchor)
+4. Verify Game Y's `startingOutputRoot` == Game X's `rootClaim()` and `startingBlockNumber` == N+1000
+
+### TC34: uint32.max Uses Latest Anchor After Multiple Advances
+
+1. Finalize Game A -> anchor at l2SeqNum = 2000
+2. Create and finalize Game B (l2SeqNum = 3000) via `uint32.max` -> anchor advances to 3000
+3. Create Game C via `uint32.max` -> verify `startingRootHash` == Game B's rootClaim and `startingBlockNumber` == 3000
+
+### TC35: Retirement Recovery from Anchor
+
+1. Finalize a game -> anchor at l2SeqNum = N
+2. Guardian calls `updateRetirementTimestamp()` to retire all existing games
+3. Create new game via `uint32.max` with l2Block > N -> success
+4. Verify new game starts from current anchor (l2SeqNum = N), not genesis (l2SeqNum = 0)
+5. **Rationale**: After retirement, the system can resume proposing from the latest anchor without losing progress
 
 ### TC26: AnchorState Advancement
 
@@ -501,7 +545,7 @@ Phase 2: Parent-Child + Cascade
   TC5, TC6a-c, TC7a-c, TC8, TC9
 
 Phase 3: Permissions and Security
-  TC10, TC11, TC12, TC13, TC14, TC15a-c, TC16, TC17
+  TC10, TC11, TC12, TC13, TC14, TC15a-c, TC16, TC17, TC30
 
 Phase 4: Proof Verification
   TC18
@@ -510,7 +554,7 @@ Phase 5: Bond + closeGame/claimCredit Edge Cases
   TC19, TC20, TC21, TC22, TC23, TC24
 
 Phase 6: Input Validation + Stress Test
-  TC25, TC26, TC27
+  TC25, TC26, TC27, TC31, TC32, TC33, TC34, TC35
 
 Phase 7: Rollback
   TC28
@@ -552,3 +596,9 @@ Phase 8: Performance and Cost Benchmark
 | TC27 | | | N=100/500/1000/2000 gas: |
 | TC28 | | | |
 | TC29 | | | See test matrix for details |
+| TC30 | | | |
+| TC31 | | | |
+| TC32 | | | |
+| TC33 | | | |
+| TC34 | | | |
+| TC35 | | | |

@@ -86,7 +86,7 @@ DisputeGameFactory --creates--> OPSuccinctFaultDisputeGame
 | rangeVkeyCommitment | `0x773d89f231d4c62d6ab68d171777f72a28c056e8366e07694d91c99530dceaab` |
 | rollupConfigHash | `0x3ed3598c92b6cd8bc44d3dba15ab51beb45bfd0093dcaf998a659a9ad1dcc851` |
 
-### Current On-chain State (As of 2026-03-31 Query)
+### Current On-chain State (As of 2026-03-31 Query, snapshot for reference only)
 
 | Item | Value |
 |------|-------|
@@ -94,7 +94,7 @@ DisputeGameFactory --creates--> OPSuccinctFaultDisputeGame
 | Current anchor state l2Block | 26458740 |
 | Latest game (index 3957) | IN_PROGRESS, l2Block=26476740 |
 
-**Note**: The Factory also contains old game implementation records (e.g., `0x7aCa261a...`), which are versions deployed before the upgrade with different parameters (e.g., MAX_CHALLENGE_DURATION=24h, CHALLENGER_BOND=0.1ETH). The currently active impl is `0xfDF25E...`.
+**Note**: The above data is a point-in-time snapshot; actual values change as new games are created and resolved. Query live state via `cast call` commands in Section 14.2. The Factory also contains old game implementation records (e.g., `0x7aCa261a...`), which are versions deployed before the upgrade with different parameters (e.g., MAX_CHALLENGE_DURATION=24h, CHALLENGER_BOND=0.1ETH). The currently active impl is `0xfDF25E...`.
 
 ## 5. Permission Model
 
