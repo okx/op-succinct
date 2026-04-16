@@ -21,8 +21,8 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierPlonk.sol";
-import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierGroth16.sol";
+import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
+import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
 import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
@@ -37,23 +37,18 @@ contract DeployOPSuccinctLite is Script, Utils {
         vm.startBroadcast();
 
         // Load configuration from JSON file (priority)
-        FDGConfig memory config = readFDGJson("config/opsuccinctfdgconfig.json");
+        FDGConfig memory config = readFDGJson("testnet/opsuccinctfdgconfig.json");
 
         // Read required contract addresses from environment variables (not in JSON)
         address factoryAddress = address(0x80388586ab4580936BCb409Cc2dC6BC0221e1B6F); // vm.envAddress("FACTORY_ADDRESS");
         address registryAddress = address(0x1A8DFc1d6ccfB3bE886b2539823539a9DC0956a5); // vm.envAddress("ANCHOR_STATE_REGISTRY");
 
-        // Step 4: Deploy AccessManager and configure it
-        AccessManager accessManagerContract = deployAccessManager(
-            config.fallbackTimeoutFpSecs,
-            factoryAddress,
-            config.permissionlessMode,
-            config.proposerAddresses,
-            config.challengerAddresses
-        );
+        // Step 4: Use existing AccessManager (already deployed)
+        AccessManager accessManagerContract = AccessManager(0x33D211daB418F65Ca71035055bCF557808aCa13f);
+        console.log("Using existing AccessManager at:", address(accessManagerContract));
 
         // Step 5: Deploy or get SP1 verifier
-        // SP1Config memory sp1Config = deploySP1Verifier(
+        // SP1Config memory sp1Config = deploySP1Verifier(registryAddress
         //     config.useSp1MockVerifier,
         //     config.rollupConfigHash,
         //     config.aggregationVkey,

@@ -21,8 +21,8 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierPlonk.sol";
-import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierGroth16.sol";
+import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
+import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
 import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
