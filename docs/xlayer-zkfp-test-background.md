@@ -130,7 +130,10 @@ Factory.create() + InitBond
    initialize()
    - Verify proposer whitelist (BadAuth)
    - Verify calldatasize == 0x7E (BadExtraData)
-   - Verify parent game validity (InvalidParentGame)
+   - Verify parent game validity (InvalidParentGame):
+     - isGameRespected, not blacklisted, not retired
+     - Parent status != CHALLENGER_WINS
+     - Parent l2SeqNum > anchor l2SeqNum (prevents duplicate games)
    - Verify l2SequenceNumber > parent's (UnexpectedRootClaim)
    - Set deadline = now + MAX_CHALLENGE_DURATION (1hr)
    - Set startingOutputRoot (from parent game or anchor state)
@@ -194,7 +197,9 @@ Fast Finality Mode is a **proposer service** (not contract) configuration (`FAST
 
 The `extraData` when creating a game = `l2BlockNumber` (32 bytes) + `parentIndex` (4 bytes). The contract validates `calldatasize() == 0x7E` via assembly; incorrect format will revert with `BadExtraData`.
 
-**Key rule**: The first game (no parent, starting from anchor state) must set `parentIndex = type(uint32).max` (i.e., `0xFFFFFFFF`). Subsequent games use the parent game's index in the Factory as `parentIndex`. If deploying on a devnet or fresh environment, the first game must use `0xFFFFFFFF` as parentIndex, otherwise initialize will attempt to read a non-existent game from the Factory and revert.
+**Key rules**:
+- The first game (no parent, starting from anchor state) must set `parentIndex = type(uint32).max` (i.e., `0xFFFFFFFF`). Subsequent games use the parent game's index in the Factory as `parentIndex`. If deploying on a devnet or fresh environment, the first game must use `0xFFFFFFFF` as parentIndex, otherwise initialize will attempt to read a non-existent game from the Factory and revert.
+- **Parent must be ahead of anchor** (added in PR #839): When using a parent game by index, the parent game's `l2SequenceNumber` must be strictly greater than the anchor state's `l2SequenceNumber`. This prevents duplicate games when a finalized game becomes the anchor. Implication: once a parent game is finalized via `closeGame()` and becomes the anchor, it can no longer be used as a parent by index — the proposer must use `uint32.max` (anchor path) instead.
 
 ## 7. Bond Distribution Rules
 
@@ -210,7 +215,7 @@ The `extraData` when creating a game = `l2BlockNumber` (32 bytes) + `parentIndex
 | Parent fails, has challenger | CHALLENGER_WINS | Loses bond | Takes all | - |
 | Parent fails, no challenger | CHALLENGER_WINS | Loses bond (locked in contract) | No one to claim | - |
 
-**Note**: In the "parent fails, no challenger" scenario, `normalModeCredit[address(0)]` is assigned the contract's entire balance. Since no one can call `claimCredit` for `address(0)`, funds are effectively permanently locked in the contract (not burned, but equivalently non-withdrawable).
+**Note**: In the "parent fails, no challenger" scenario, `normalModeCredit[address(0)]` is assigned the contract's entire balance. `claimCredit(address(0))` can be called and will succeed — ETH is transferred to address(0), which is practically irrecoverable (not burned, but equivalently non-withdrawable).
 
 ### 7.2 "No Challenge but Proactive Prove" Scenario Explanation
 
@@ -300,7 +305,7 @@ Only output roots from games satisfying all the above can be used for withdrawal
 | `AlreadyInitialized` | Game re-initialization |
 | `IncorrectDisputeGameFactory` | Non-Factory calls initialize |
 | `BadExtraData` | calldatasize != 0x7E |
-| `InvalidParentGame` | Parent game is invalid (not respected / blacklisted / retired / CHALLENGER_WINS) |
+| `InvalidParentGame` | Parent game is invalid (not respected / blacklisted / retired / CHALLENGER_WINS / parent l2SeqNum <= anchor l2SeqNum) |
 | `UnexpectedRootClaim` | l2SequenceNumber <= parent's l2SequenceNumber |
 | `ClaimAlreadyChallenged` | Duplicate challenge, or challenge after prove (since status is no longer Unchallenged, this check fires before GameOver) |
 | `GameOver` | Attempting to challenge/prove after deadline expires (note: challenge after prove will first hit ClaimAlreadyChallenged or status check) |

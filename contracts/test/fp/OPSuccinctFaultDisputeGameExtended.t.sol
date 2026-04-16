@@ -187,9 +187,10 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         vm.warp(parentGameDeadline.raw() + 1 seconds);
         parentGame.resolve();
         vm.warp(parentGame.resolvedAt().raw() + disputeGameFinalityDelaySeconds + 1 seconds);
-        parentGame.claimCredit(proposer);
 
-        // Create child game (index 1) — the main test subject
+        // Create child game (index 1) BEFORE claimCredit on parentGame.
+        // claimCredit() triggers closeGame() which advances anchor to parentGame's l2SeqNum,
+        // after which parentGame can no longer be used as a parent via index.
         game = OPSuccinctFaultDisputeGame(
             address(
                 factory.create{value: INIT_BOND}(
@@ -199,6 +200,8 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
                 )
             )
         );
+
+        parentGame.claimCredit(proposer);
 
         vm.stopPrank();
     }
@@ -601,7 +604,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         uint256 childBalance = address(childGame).balance;
         assertGt(childBalance, 0);
 
-        // claimCredit(address(0)) succeeds — ETH is burned
+        // claimCredit(address(0)) succeeds — ETH is sent to address(0), practically irrecoverable
         uint256 zeroBalanceBefore = address(0).balance;
         childGame.claimCredit(address(0));
         assertEq(address(childGame).balance, 0);
@@ -665,11 +668,15 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
 
     /// @notice TC26: Anchor state does not regress when older game finalizes after newer one.
     function testTC26_AnchorStateNoRegression() public {
-        // game at index 1, l2Block = 2000
-        // Create game2 with higher block (also child of parentGame index 0)
-        OPSuccinctFaultDisputeGame game2 = _createGame(5000, 0, keccak256("tc26-high"));
+        // game at index 1, l2Block = 2000 (parent = parentGame index 0, l2Block = 1000)
+        // After setUp, anchor is at l2SeqNum=1000 (parentGame was finalized via claimCredit).
+        // All child games must use parentIndex=1 (game, l2SeqNum=2000 > anchor 1000).
+        // Create all games BEFORE any closeGame, since closeGame advances anchor
+        // and the constraint requires parent.l2SeqNum > anchor.l2SeqNum at creation time.
+        OPSuccinctFaultDisputeGame game2 = _createGame(5000, 1, keccak256("tc26-high"));
+        OPSuccinctFaultDisputeGame game3 = _createGame(3000, 1, keccak256("tc26-low"));
 
-        // Resolve game (lower block) first — it's needed as parent is already resolved
+        // Resolve game (l2Block=2000) first
         _waitAndResolve(game);
         _waitFinality(game);
         game.closeGame();
@@ -677,7 +684,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         (, uint256 anchorBlockAfterGame) = anchorStateRegistry.getAnchorRoot();
         assertEq(anchorBlockAfterGame, 2000);
 
-        // Now resolve game2 (higher block) — parentGame (index 0) already resolved
+        // Now resolve game2 (l2Block=5000)
         _waitAndResolve(game2);
         _waitFinality(game2);
         game2.closeGame();
@@ -686,8 +693,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         (, uint256 anchorBlock) = anchorStateRegistry.getAnchorRoot();
         assertEq(anchorBlock, 5000);
 
-        // Create and resolve game3 (lower block = 3000) — should not regress anchor
-        OPSuccinctFaultDisputeGame game3 = _createGame(3000, 0, keccak256("tc26-low"));
+        // Resolve game3 (l2Block=3000, created earlier) — should not regress anchor
         _waitAndResolve(game3);
         _waitFinality(game3);
         game3.closeGame();

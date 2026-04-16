@@ -191,7 +191,9 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
    - Game B's `l2SequenceNumber` > Game A's
 4. Game B resolves normally
 
-**Note**: In `initialize()`, parent validation only rejects `CHALLENGER_WINS` (L273); `IN_PROGRESS` parents also allow child creation. TC5 resolves first to test the happy path.
+**Notes**:
+- In `initialize()`, parent validation only rejects `CHALLENGER_WINS` (L273); `IN_PROGRESS` parents also allow child creation. TC5 resolves first to test the happy path.
+- **Important (PR #839)**: Game B must be created BEFORE Game A is finalized via `closeGame()`. Once `closeGame()` advances the anchor to Game A's l2SeqNum, Game A can no longer serve as parent by index (its l2SeqNum would equal the anchor's). The proposer service handles this by using `uint32.max` (anchor path) when the canonical head is the anchor game.
 
 ### TC6: Cascade Effect of Parent Failure
 
@@ -347,7 +349,7 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
 4. `claimCredit(challenger)` -> challenger receives CHALLENGER_BOND
 5. Assert game balance == 0 (confirm refund is complete, no residual funds)
 
-**Important**: Switching `respectedGameType` **does not** trigger REFUND -- need to verify whether ASR's `isGameProper()` checks the `wasRespectedGameTypeWhenCreated` field (contract L306-307 records this flag; if ASR uses this field then switching would trigger REFUND -- needs confirmation).
+**Confirmed**: Switching `respectedGameType` **does not** trigger REFUND. `isGameProper()` does NOT check `wasRespectedGameTypeWhenCreated` -- it only checks `isGameRegistered`, `isGameBlacklisted`, `isGameRetired`, and `paused`. Verified by Foundry test `testTC19c_RespectedGameTypeChange_StillNormal`.
 
 ---
 
@@ -367,16 +369,17 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
 ### TC22: claimCredit(address(0))
 
 1. Complete a cascade-failed game with no challenger -> `normalModeCredit[address(0)]` > 0
-2. `claimCredit(address(0))` -> **succeeds** (in EVM, call to address(0) returns success, ETH is permanently destroyed)
-3. Verify game balance decreases and credit is zeroed out
+2. `claimCredit(address(0))` -> **succeeds** (in EVM, call to address(0) returns success, ETH is sent to address(0) and is practically irrecoverable)
+3. Verify game balance == 0, credit is zeroed out, and `address(0).balance` increased by the corresponding amount
 
 ### TC23: MaliciousRecipient Reentrancy Attack
 
 **Attack surface A -- direct reentrancy via claimCredit**:
 1. Deploy MaliciousRecipient (reenters `claimCredit` in `receive()`)
 2. Complete the full game flow normally, making MaliciousRecipient the prover (call prove with that address as msg.sender)
-3. `claimCredit(MaliciousRecipient)` -> reentrant call reverts with `NoCreditToClaim`
-4. **Rationale**: L512-513 zeroes out credit before L516 external call, following the CEI pattern
+3. `claimCredit(MaliciousRecipient)` -> revert `BondTransferFailed`
+4. **Rationale**: CEI pattern clears credit before transfer. Re-entrant `claimCredit` in `receive()` reverts with `NoCreditToClaim`, which makes `receive()` revert, which causes the ETH transfer to fail → `BondTransferFailed`. The entire tx reverts, so credit is restored (attacker gets nothing).
+5. Verify credit remains intact: `normalModeCredit[MaliciousRecipient]` == original amount (tx reverted, state rolled back)
 
 **Attack surface B -- reentrancy via ASR through closeGame**:
 5. **Trust assumption**: `ANCHOR_STATE_REGISTRY` is a CWIA immutable trusted contract. The `setAnchorState()` external call occurs before `bondDistributionMode` is set. If ASR were compromised, reentrancy could occur, but ASR is trusted in the current deployment.
@@ -401,7 +404,7 @@ Step 2: Start proposer + malicious challenger, run S2 (several hours)
 1. Complete DEFENDER_WINS game full flow (resolve + finality delay + closeGame)
 2. `anchors(42)` l2Block advances
 3. CHALLENGER_WINS game -> closeGame does not advance anchor
-4. **Anchor rollback protection**: Create Game X (block N) and Game Y (block N+1000). Resolve Y first -> anchor advances to N+1000. Then resolve X -> closeGame -> verify `anchors(42).l2SequenceNumber` remains N+1000 (no rollback)
+4. **Anchor rollback protection**: Create Game X (block N), Game Y (block N+3000), and Game Z (block N+1000) **all before any closeGame** (since PR #839 requires parent.l2SeqNum > anchor.l2SeqNum at creation time). Resolve and close Y first -> anchor advances to N+3000. Then resolve and close Z -> verify `anchors(42).l2SequenceNumber` remains N+3000 (no rollback)
 
 ### TC27: getLastProposalTimestamp() Gas DoS Stress Test
 

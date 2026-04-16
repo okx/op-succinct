@@ -9,6 +9,7 @@ RUN git submodule update --init --recursive
 
 # Update sp1-contracts to v5.0.0 and fix solidity version compatibility
 RUN find contracts/lib/sp1-contracts -name "*.sol" -type f | xargs sed -i 's/pragma solidity \^0.8.20;/pragma solidity >=0.8.15;/'
+RUN find contracts/lib/sp1-contracts -name "*.sol" -type f | xargs sed -i 's/pragma solidity 0.8.20;/pragma solidity >=0.8.15;/'
 
 FROM ghcr.io/foundry-rs/foundry:stable
 WORKDIR /app/contracts
