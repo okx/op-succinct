@@ -65,7 +65,7 @@ This feature is implemented via a patched `sp1-sdk` in `Cargo.toml`:
 
 ```toml
 [patch.crates-io]
-sp1-sdk = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.0.2" }
+sp1-sdk = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 ```
 
-Based on SP1 v6.0.2. Only the `sp1-sdk` crate is modified; no other SP1 components are affected.
+Based on SP1 v6.1.0. Only the `sp1-sdk` crate is modified; no other SP1 components are affected.
