@@ -58,3 +58,5 @@ utils/eigenda/host/resources
 # Forge build artifacts in tests/
 tests/cache/
 tests/out/
+
+.idea/
