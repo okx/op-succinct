@@ -82,6 +82,11 @@ pub fn is_cluster_mode() -> bool {
     std::env::var("SP1_PROVER").unwrap_or_default() == "cluster"
 }
 
+/// Returns true if `SP1_PROVER` is set to `"local"` (local CUDA GPU proving).
+pub fn is_local_mode() -> bool {
+    std::env::var("SP1_PROVER").unwrap_or_default() == "local"
+}
+
 /// Set up range and aggregation proving/verifying keys via blocking CpuProver.
 ///
 /// Runs in `spawn_blocking` because `CpuProver` creates its own tokio runtime

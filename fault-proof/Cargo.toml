@@ -31,6 +31,7 @@ op-succinct-signer-utils.workspace = true
 # sp1
 sp1-sdk.workspace = true
 sp1-cluster-utils.workspace = true
+sp1-cuda = { workspace = true, optional = true }
 
 # alloy
 alloy-contract.workspace = true
@@ -87,3 +88,4 @@ celestia = ["op-succinct-proof-utils/celestia"]
 eigenda = ["op-succinct-proof-utils/eigenda"]
 ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
+cuda = ["sp1-sdk/cuda", "dep:sp1-cuda"]

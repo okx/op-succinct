@@ -207,6 +207,7 @@ sp1-prover-types = "=6.1.0"
 sp1-core-executor = "=6.1.0"
 sp1-hypercube = "=6.1.0"
 sp1-primitives = "=6.1.0"
+sp1-cuda = "=6.1.0"
 sp1-cluster-artifact = { git = "https://github.com/succinctlabs/sp1-cluster.git", tag = "v2.1.2" }
 sp1-cluster-common = { git = "https://github.com/succinctlabs/sp1-cluster.git", tag = "v2.1.2" }
 sp1-cluster-utils = { git = "https://github.com/succinctlabs/sp1-cluster.git", tag = "v2.1.2" }

@@ -26,7 +26,9 @@ use op_succinct_host_utils::{
     network::{determine_network_mode, get_network_signer},
     witness_generation::WitnessGenerator,
 };
-use op_succinct_proof_utils::{cluster_setup_keys, get_range_elf_embedded, is_cluster_mode};
+use op_succinct_proof_utils::{
+    cluster_setup_keys, get_range_elf_embedded, is_cluster_mode, is_local_mode,
+};
 use op_succinct_signer_utils::SignerLock;
 use sp1_sdk::{
     Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1ProofWithPublicValues, SP1Stdin,
@@ -51,6 +53,8 @@ use crate::{
     },
     FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
+#[cfg(feature = "cuda")]
+use crate::prover::LocalProofProvider;
 
 /// Max allowed time (secs) between a game's deadline and the anchor game's deadline.
 ///
@@ -288,30 +292,46 @@ where
         host: Arc<H>,
     ) -> Result<Self> {
         let is_cluster = is_cluster_mode();
+        let is_local = is_local_mode();
 
         anyhow::ensure!(
             !(is_cluster && config.mock_mode),
             "mock and cluster modes are mutually exclusive — set only one of SP1_PROVER=cluster or mock_mode=true"
         );
+        anyhow::ensure!(
+            !(is_local && config.mock_mode),
+            "mock and local modes are mutually exclusive — set only one of SP1_PROVER=local or mock_mode=true"
+        );
+        anyhow::ensure!(
+            !(is_local && is_cluster),
+            "local and cluster modes are mutually exclusive"
+        );
 
-        let (range_pk, range_vk, agg_pk, agg_vk, network_prover, network_mode) = if is_cluster {
-            let (range_pk, range_vk, agg_pk, agg_vk) = cluster_setup_keys().await?;
-            (range_pk, range_vk, agg_pk, agg_vk, None, None)
-        } else {
-            let network_signer = get_network_signer(config.use_kms_requester).await?;
-            let nm = determine_network_mode(
-                config.proof_provider.range_proof_strategy,
-                config.proof_provider.agg_proof_strategy,
-            )?;
-            let np = Arc::new(
-                ProverClient::builder().network_for(nm).signer(network_signer).build().await,
-            );
-            let range_pk = np.setup(Elf::Static(get_range_elf_embedded())).await?;
-            let range_vk = range_pk.verifying_key().clone();
-            let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
-            let agg_vk = agg_pk.verifying_key().clone();
-            (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
-        };
+        #[cfg(not(feature = "cuda"))]
+        anyhow::ensure!(
+            !is_local,
+            "SP1_PROVER=local requires the `cuda` feature — rebuild with `--features cuda`"
+        );
+
+        let (range_pk, range_vk, agg_pk, agg_vk, network_prover, network_mode) =
+            if is_cluster || is_local {
+                let (range_pk, range_vk, agg_pk, agg_vk) = cluster_setup_keys().await?;
+                (range_pk, range_vk, agg_pk, agg_vk, None, None)
+            } else {
+                let network_signer = get_network_signer(config.use_kms_requester).await?;
+                let nm = determine_network_mode(
+                    config.proof_provider.range_proof_strategy,
+                    config.proof_provider.agg_proof_strategy,
+                )?;
+                let np = Arc::new(
+                    ProverClient::builder().network_for(nm).signer(network_signer).build().await,
+                );
+                let range_pk = np.setup(Elf::Static(get_range_elf_embedded())).await?;
+                let range_vk = range_pk.verifying_key().clone();
+                let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
+                let agg_vk = agg_pk.verifying_key().clone();
+                (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
+            };
 
         let aggregation_vkey = B256::from(agg_vk.bytes32_raw());
         let range_vkey_commitment = B256::from(range_vk.hash_bytes());
@@ -335,6 +355,23 @@ where
                 keys.clone(),
                 config.proof_provider.clone(),
             ))
+        } else if is_local {
+            #[cfg(feature = "cuda")]
+            {
+                ProofProvider::Local(
+                    LocalProofProvider::new(
+                        &config.gpu_ids,
+                        keys.clone(),
+                        config.proof_provider.clone(),
+                    )
+                    .await?,
+                )
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                // Guarded by the ensure! above; this is unreachable.
+                bail!("SP1_PROVER=local requires the `cuda` feature");
+            }
         } else if config.mock_mode {
             ProofProvider::Mock(MockProofProvider::new(
                 network_prover
@@ -1065,7 +1102,14 @@ where
             let this = self.clone();
             async move {
                 tracing::info!("Generating Range Proof for blocks {start} to {end}");
+                let witness_start = std::time::Instant::now();
                 let sp1_stdin = this.range_proof_stdin(start, end, l1_head_hash.into()).await?;
+                let witness_elapsed = witness_start.elapsed();
+                tracing::info!(
+                    blocks = ?(start, end),
+                    elapsed = ?witness_elapsed,
+                    "Witness generation completed"
+                );
                 let (range_proof, inst_cycles, sp1_gas) =
                     this.prover.generate_range_proof(sp1_stdin).await?;
                 Ok::<_, anyhow::Error>((idx, range_proof, inst_cycles, sp1_gas))

@@ -73,6 +73,10 @@ pub struct ProposerConfig {
     /// on observed latency, and system resources before deviating from default.
     pub max_concurrent_range_proofs: NonZeroUsize,
 
+    /// GPU device IDs for local CUDA proving (parsed from `CUDA_GPU_IDS`, e.g. "0,1,2,3").
+    /// Only used when `SP1_PROVER=local`. Defaults to `[0]`.
+    pub gpu_ids: Vec<u32>,
+
     /// Configuration for proof provider operations.
     pub proof_provider: ProofProviderConfig,
 
@@ -106,6 +110,17 @@ fn parse_whitelist(whitelist_str: &str) -> Result<Option<Vec<Address>>> {
         .collect();
 
     addresses.map(|addrs| if addrs.is_empty() { None } else { Some(addrs) })
+}
+
+/// Parse a comma-separated list of GPU device IDs (e.g. "0,1,2,3").
+fn parse_gpu_ids(s: &str) -> Result<Vec<u32>> {
+    s.split(',')
+        .map(|id| {
+            id.trim()
+                .parse::<u32>()
+                .map_err(|e| anyhow::anyhow!("invalid GPU device ID '{}': {}", id.trim(), e))
+        })
+        .collect()
 }
 
 impl ProposerConfig {
@@ -145,6 +160,7 @@ impl ProposerConfig {
             max_concurrent_range_proofs: env::var("MAX_CONCURRENT_RANGE_PROOFS")
                 .unwrap_or("1".to_string())
                 .parse()?,
+            gpu_ids: parse_gpu_ids(&env::var("CUDA_GPU_IDS").unwrap_or("0".to_string()))?,
             proof_provider: ProofProviderConfig::from_env()?,
             backup_path: env::var("BACKUP_PATH").ok().map(PathBuf::from),
             tx_confirmation_timeout: env::var("TX_CONFIRMATION_TIMEOUT")
@@ -171,6 +187,7 @@ impl ProposerConfig {
             use_kms_requester = self.use_kms_requester,
             range_split_count = ?self.range_split_count,
             max_concurrent_range_proofs = ?self.max_concurrent_range_proofs,
+            gpu_ids = ?self.gpu_ids,
             // Proof provider fields
             timeout = self.proof_provider.timeout,
             network_calls_timeout = self.proof_provider.network_calls_timeout,

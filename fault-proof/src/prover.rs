@@ -11,6 +11,15 @@ use sp1_sdk::{
 };
 use tokio::time::sleep;
 
+#[cfg(feature = "cuda")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(feature = "cuda")]
+use op_succinct_elfs::AGGREGATION_ELF;
+
+#[cfg(feature = "cuda")]
+use sp1_sdk::{CudaProver as SdkCudaProver, ProverClient};
+
 use crate::{config::ProofProviderConfig, prometheus::ProposerGauge};
 
 /// Polling interval (in seconds) for checking proof status.
@@ -43,7 +52,7 @@ pub struct ProofKeys {
 /// Proof provider abstraction for generating range and aggregation proofs.
 ///
 /// This enum wraps the concrete provider implementations, allowing the proposer
-/// to be agnostic about how proofs are generated (network vs mock).
+/// to be agnostic about how proofs are generated (network vs mock vs local GPU).
 #[derive(Clone)]
 pub enum ProofProvider {
     /// Network-based proving via SP1 prover network.
@@ -52,6 +61,9 @@ pub enum ProofProvider {
     Mock(MockProofProvider),
     /// Self-hosted cluster proving via sp1-cluster API.
     Cluster(ClusterProofProvider),
+    /// Local GPU proving via CUDA (requires `cuda` feature).
+    #[cfg(feature = "cuda")]
+    Local(LocalProofProvider),
 }
 
 impl ProofProvider {
@@ -69,6 +81,8 @@ impl ProofProvider {
             ProofProvider::Network(p) => p.generate_range_proof(stdin).await,
             ProofProvider::Mock(p) => p.generate_range_proof(stdin).await,
             ProofProvider::Cluster(p) => p.generate_range_proof(stdin).await,
+            #[cfg(feature = "cuda")]
+            ProofProvider::Local(p) => p.generate_range_proof(stdin).await,
         }
     }
 
@@ -77,11 +91,14 @@ impl ProofProvider {
     /// In mock mode: executes locally and creates mock proof.
     /// In network mode: submits to network, waits for completion.
     /// In cluster mode: submits to self-hosted cluster, waits for completion.
+    /// In local mode: proves on a local CUDA GPU.
     pub async fn generate_agg_proof(&self, stdin: SP1Stdin) -> Result<SP1ProofWithPublicValues> {
         match self {
             ProofProvider::Network(p) => p.generate_agg_proof(stdin).await,
             ProofProvider::Mock(p) => p.generate_agg_proof(stdin).await,
             ProofProvider::Cluster(p) => p.generate_agg_proof(stdin).await,
+            #[cfg(feature = "cuda")]
+            ProofProvider::Local(p) => p.generate_agg_proof(stdin).await,
         }
     }
 
@@ -91,6 +108,8 @@ impl ProofProvider {
             ProofProvider::Network(p) => &p.keys,
             ProofProvider::Mock(p) => &p.keys,
             ProofProvider::Cluster(p) => &p.keys,
+            #[cfg(feature = "cuda")]
+            ProofProvider::Local(p) => &p.keys,
         }
     }
 
@@ -100,6 +119,8 @@ impl ProofProvider {
             ProofProvider::Network(p) => &p.config,
             ProofProvider::Mock(p) => &p.config,
             ProofProvider::Cluster(p) => &p.config,
+            #[cfg(feature = "cuda")]
+            ProofProvider::Local(p) => &p.config,
         }
     }
 }
@@ -560,6 +581,109 @@ pub fn check_status(status: i32) -> ProofStatus {
         Ok(FulfillmentStatus::Fulfilled) => ProofStatus::Ready,
         Ok(FulfillmentStatus::Unfulfillable) => ProofStatus::Failed,
         _ => ProofStatus::Pending,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Local GPU proof provider (requires `cuda` feature)
+// ---------------------------------------------------------------------------
+
+/// A single GPU slot holding a CUDA prover and its per-GPU proving keys.
+#[cfg(feature = "cuda")]
+#[derive(Clone)]
+struct GpuSlot {
+    prover: SdkCudaProver,
+    range_pk: sp1_cuda::CudaProvingKey,
+    agg_pk: sp1_cuda::CudaProvingKey,
+}
+
+/// Local GPU proof provider that distributes proving work across CUDA devices.
+///
+/// Each GPU has its own `CudaProver` instance and proving keys. Range proof
+/// tasks are assigned to GPUs via round-robin. Aggregation proofs always run
+/// on the first GPU.
+#[cfg(feature = "cuda")]
+#[derive(Clone)]
+pub struct LocalProofProvider {
+    slots: Arc<Vec<GpuSlot>>,
+    next: Arc<AtomicUsize>,
+    keys: ProofKeys,
+    config: ProofProviderConfig,
+}
+
+#[cfg(feature = "cuda")]
+impl LocalProofProvider {
+    /// Initialize CUDA provers for the given GPU device IDs and set up proving keys on each.
+    pub async fn new(
+        gpu_ids: &[u32],
+        keys: ProofKeys,
+        config: ProofProviderConfig,
+    ) -> Result<Self> {
+        anyhow::ensure!(!gpu_ids.is_empty(), "at least one GPU ID required for local mode");
+
+        let range_elf = get_range_elf_embedded();
+        let mut slots = Vec::with_capacity(gpu_ids.len());
+
+        for &gpu_id in gpu_ids {
+            tracing::info!(gpu_id, "Initializing CUDA prover");
+            let prover = ProverClient::builder()
+                .cuda()
+                .with_device_id(gpu_id)
+                .build()
+                .await;
+
+            let range_pk = Prover::setup(&prover, Elf::Static(range_elf))
+                .await
+                .map_err(|e| anyhow::anyhow!("CUDA range ELF setup failed on GPU {gpu_id}: {e}"))?;
+            let agg_pk = Prover::setup(&prover, Elf::Static(AGGREGATION_ELF))
+                .await
+                .map_err(|e| anyhow::anyhow!("CUDA agg ELF setup failed on GPU {gpu_id}: {e}"))?;
+
+            slots.push(GpuSlot { prover, range_pk, agg_pk });
+            tracing::info!(gpu_id, "CUDA prover initialized");
+        }
+
+        tracing::info!(gpu_count = slots.len(), "Local GPU proof provider ready");
+        Ok(Self {
+            slots: Arc::new(slots),
+            next: Arc::new(AtomicUsize::new(0)),
+            keys,
+            config,
+        })
+    }
+
+    /// Select the next GPU slot using round-robin.
+    fn next_slot(&self) -> &GpuSlot {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len();
+        &self.slots[idx]
+    }
+
+    /// Generate a compressed range proof on a local GPU (round-robin).
+    pub async fn generate_range_proof(
+        &self,
+        stdin: SP1Stdin,
+    ) -> Result<(SP1ProofWithPublicValues, u64, u64)> {
+        let slot = self.next_slot();
+        tracing::info!("Generating range proof on local GPU");
+        let proof = slot
+            .prover
+            .prove(&slot.range_pk, stdin)
+            .compressed()
+            .await
+            .map_err(|e| anyhow::anyhow!("CUDA range proof failed: {e}"))?;
+        // Local CUDA proving does not report execution cycle or gas metrics.
+        Ok((proof, 0, 0))
+    }
+
+    /// Generate an aggregation proof on the first GPU.
+    pub async fn generate_agg_proof(&self, stdin: SP1Stdin) -> Result<SP1ProofWithPublicValues> {
+        let slot = &self.slots[0];
+        tracing::info!("Generating aggregation proof on local GPU");
+        slot.prover
+            .prove(&slot.agg_pk, stdin)
+            .mode(self.config.agg_proof_mode)
+            .await
+            .map_err(|e| anyhow::anyhow!("CUDA aggregation proof failed: {e}"))
     }
 }
 
