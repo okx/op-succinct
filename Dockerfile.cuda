@@ -1,17 +1,13 @@
 # syntax=docker/dockerfile:1.4
 
-# Versions are pinned to match `sp1-sdk`/`sp1-cuda` in the workspace lockfile.
-# See https://github.com/succinctlabs/sp1/releases for release assets.
+# Versions pinned to sp1-sdk/sp1-cuda in the workspace lockfile.
 ARG SP1_VERSION=v6.1.0
 ARG SP1_CIRCUIT_VERSION=v6.1.0
 ARG ICICLE_VERSION=3.4.0
-# Which agg-proof modes' trusted-setup params to bake into the image. Comma-separated.
-# Valid values: groth16, plonk. Set AGG_PROOF_MODE in your proposer env to match.
+# Trusted-setup params to bake in. Comma-separated: groth16, plonk.
 ARG SP1_BAKE_PARAMS=groth16
 
-# ---------------------------------------------------------------------------
-# Chef: shared base for cargo-chef stages
-# ---------------------------------------------------------------------------
+# === chef: shared base for cargo-chef stages ===
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /app
 
@@ -26,24 +22,17 @@ RUN apt-get update && apt-get install -y \
 COPY rust-toolchain.toml ./
 RUN rustup show
 
-# ---------------------------------------------------------------------------
-# Planner: generate recipe.json from current sources
-# ---------------------------------------------------------------------------
+# === planner ===
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# ---------------------------------------------------------------------------
-# Builder: op-succinct binaries
-#   proposer                         → needs `cuda` (calls sp1-cuda)
-#   challenger                       → no `cuda` (doesn't prove)
-#   fetch-fault-dispute-game-config  → no `cuda` (crate has no such feature)
-# ---------------------------------------------------------------------------
+# === builder: op-succinct binaries ===
+# Only `proposer` needs the `cuda` feature (it calls sp1-cuda).
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
 
-# Cook deps: one pass with `cuda` (proposer) and one without (challenger/fetch-config).
 RUN cargo chef cook --release --features cuda --bin proposer \
         --recipe-path recipe.json && \
     cargo chef cook --release --bin challenger --bin fetch-fault-dispute-game-config \
@@ -55,24 +44,12 @@ RUN cargo build --release --features cuda --bin proposer && \
     cargo build --release --bin challenger && \
     cargo build --release --bin fetch-fault-dispute-game-config
 
-# ---------------------------------------------------------------------------
-# icicle downloader: fetch core libs + CUDA backend as tarballs.
-# Split into its own stage so the big downloads are cached independently.
-# Must come before sp1-gpu-server-builder since those libs are linked at
-# build time (see sp1-recursion-gnark-ffi/build.rs when `groth16-cuda` is on).
-#
-# If you already have the icicle tarballs locally, skip the download via:
-#
-#   docker build \
-#       --build-context icicle-cache=/path/to/dir-with-icicle-tarballs \
-#       -f Dockerfile.cuda -t op-succinct-cuda:latest .
-#
-# The stage looks for `<ICICLE_TAG>-ubuntu22.tar.gz` (core) and
-# `<ICICLE_TAG>-ubuntu22-cuda122.tar.gz` (CUDA backend) in that dir, where
-# ICICLE_TAG is e.g. `icicle_3_4` for v3.4.0 (trailing .0 dropped, dots → _).
-# ---------------------------------------------------------------------------
-# Empty default for the local-cache build context. Override with
-# `--build-context icicle-cache=<host-dir>` to supply pre-downloaded tarballs.
+# === icicle: core libs + CUDA backend tarballs ===
+# Skip download with pre-fetched tarballs:
+#   docker build --build-context icicle-cache=<dir> -f Dockerfile.cuda -t op-succinct-cuda .
+# Dir must contain <ICICLE_TAG>-ubuntu22.tar.gz (core) and
+# <ICICLE_TAG>-ubuntu22-cuda122.tar.gz (backend). ICICLE_TAG drops trailing .0
+# and replaces dots with `_` (3.4.0 → icicle_3_4).
 FROM scratch AS icicle-cache
 
 FROM ubuntu:22.04 AS icicle-dl
@@ -80,12 +57,9 @@ ARG ICICLE_VERSION
 
 RUN apt-get update && apt-get install -y ca-certificates curl tar && rm -rf /var/lib/apt/lists/*
 
-# Pull in any locally-cached tarballs (empty scratch stage by default).
 COPY --from=icicle-cache / /cache/
 
 WORKDIR /icicle
-# Asset naming rule (from xlayer-toolkit benchmark script): 3.4.0 → icicle_3_4,
-# 3.9.2 → icicle_3_9_2. Trailing `.0` is dropped.
 RUN ICICLE_TAG="icicle_$(echo "${ICICLE_VERSION}" | sed 's/\.0$//; s/\./_/g')" && \
     BASE="https://github.com/ingonyama-zk/icicle/releases/download/v${ICICLE_VERSION}" && \
     mkdir -p /cache && \
@@ -107,20 +81,10 @@ RUN ICICLE_TAG="icicle_$(echo "${ICICLE_VERSION}" | sed 's/\.0$//; s/\./_/g')" &
     find extract -name 'libicicle_*.so' ! -name 'libicicle_backend_*' -exec cp -v {} /out/lib/ \; && \
     find extract -name 'libicicle_backend_cuda_*.so' -exec cp -v {} /out/lib/backend/ \;
 
-# ---------------------------------------------------------------------------
-# Trusted-setup params downloader: circuit keys for agg proof (groth16/plonk).
-# Each tarball is ~1GB. If you already have a tarball locally (e.g. downloaded
-# as `v6.1.0-groth16.tar.gz`), skip the download by passing a build context:
-#
-#   docker build \
-#       --build-context sp1-params-cache=/path/to/dir-with-tarballs \
-#       -f Dockerfile.cuda -t op-succinct-cuda:latest .
-#
-# The stage looks for `<SP1_CIRCUIT_VERSION>-<mode>.tar.gz` in that dir and
-# only falls back to S3 when the file is missing.
-# ---------------------------------------------------------------------------
-# Empty default for the local-cache build context. Override with
-# `--build-context sp1-params-cache=<host-dir>` to supply pre-downloaded tarballs.
+# === sp1 trusted-setup params (~1GB/mode) ===
+# Skip download with pre-fetched tarballs:
+#   docker build --build-context sp1-params-cache=<dir> -f Dockerfile.cuda -t op-succinct-cuda .
+# Expects <SP1_CIRCUIT_VERSION>-<mode>.tar.gz in dir.
 FROM scratch AS sp1-params-cache
 
 FROM ubuntu:22.04 AS params-dl
@@ -129,7 +93,6 @@ ARG SP1_BAKE_PARAMS
 
 RUN apt-get update && apt-get install -y ca-certificates curl tar && rm -rf /var/lib/apt/lists/*
 
-# Pull in any locally-cached tarballs (empty scratch stage by default).
 COPY --from=sp1-params-cache / /cache/
 
 WORKDIR /params
@@ -149,24 +112,27 @@ RUN BASE="https://sp1-circuits.s3-us-east-2.amazonaws.com" && \
       fi; \
     done
 
-# ---------------------------------------------------------------------------
-# sp1-gpu-server builder: rebuild with `groth16-cuda` so icicle symbols are
-# linked into the daemon. The pre-built binary shipped in SP1 releases does
-# NOT include groth16-cuda, so the final Groth16/Plonk wrap would otherwise
-# run on CPU.
-#
-# gnark itself is not built explicitly — `sp1-recursion-gnark-ffi/build.rs`
-# invokes `go build -buildmode=c-archive` transparently during `cargo build`
-# (chef stage already provides `golang-go`). The `groth16-cuda` feature just
-# adds `-tags=icicle` for Go and links the icicle .so files for Rust.
-# ---------------------------------------------------------------------------
-FROM chef AS sp1-gpu-server-builder
+# === sp1-gpu-server: rebuild with groth16-cuda ===
+# Official SP1 release binary is CPU-only for Groth16 wrap — we relink with
+# `groth16-cuda` so icicle symbols are pulled in. Uses CUDA devel image
+# (nvcc + headers + libcudart) matching the runtime stage, since sp1-gpu-cudart
+# compiles a C/CUDA shim. Chef can't be reused: it's Debian trixie and NVIDIA
+# has no trixie apt channel.
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS sp1-gpu-server-builder
 ARG SP1_VERSION
 
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential clang pkg-config \
+        libssl-dev protobuf-compiler golang-go \
+    && rm -rf /var/lib/apt/lists/*
 
-# icicle core libs must be present at link time (build.rs adds
-# `cargo:rustc-link-lib=dylib=icicle_*`). Only core libs needed — not backend.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="${CUDA_HOME}/bin:${PATH}"
+
 COPY --from=icicle-dl /out/lib/ /usr/local/lib/
 RUN ldconfig
 
@@ -175,9 +141,7 @@ RUN git clone --depth 1 --branch ${SP1_VERSION} https://github.com/succinctlabs/
 WORKDIR /build/sp1
 RUN cargo build --release -p sp1-gpu-server --features groth16-cuda
 
-# ---------------------------------------------------------------------------
-# Runtime stage: NVIDIA CUDA runtime + op-succinct binaries + GPU toolchain
-# ---------------------------------------------------------------------------
+# === runtime ===
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS runtime
 
 WORKDIR /app
@@ -191,22 +155,20 @@ COPY --from=builder /app/target/release/proposer /usr/local/bin/
 COPY --from=builder /app/target/release/challenger /usr/local/bin/
 COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
 
-# icicle libs: core in /usr/local/lib, CUDA backend in /usr/local/lib/backend.
 COPY --from=icicle-dl /out/lib/ /usr/local/lib/
 RUN ldconfig
 
-# sp1-gpu-server: sp1-cuda forks this from $HOME/.sp1/bin/sp1-gpu-server on
-# first proof. Version must match `sp1_primitives::SP1_CRATE_VERSION`
-# (checked via `sp1-gpu-server --version`), otherwise sp1-cuda will
-# redownload the CPU-only official binary and overwrite our build.
+# sp1-cuda forks this binary on first proof. Its version must match
+# `sp1_primitives::SP1_CRATE_VERSION`, else sp1-cuda overwrites it with the
+# official CPU-only build.
 COPY --from=sp1-gpu-server-builder /build/sp1/target/release/sp1-gpu-server /root/.sp1/bin/sp1-gpu-server
 RUN chmod +x /root/.sp1/bin/sp1-gpu-server
 
-# Pre-baked trusted-setup params (default: plonk; override via SP1_BAKE_PARAMS build arg).
 COPY --from=params-dl /out/ /root/.sp1/circuits/
 
-# Runtime env for icicle + local GPU proving.
+# LD_LIBRARY_PATH must keep /usr/local/nvidia/lib{,64} — nvidia-container-toolkit
+# injects driver libs (libcuda.so.1) there at runtime.
 ENV ICICLE_BACKEND_INSTALL_DIR=/usr/local/lib/backend
-ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 ENV SP1_PROVER=local
 ENV CUDA_GPU_IDS=0,1,2,3
