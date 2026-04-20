@@ -60,19 +60,46 @@ RUN cargo build --release --features cuda --bin proposer && \
 # Split into its own stage so the big downloads are cached independently.
 # Must come before sp1-gpu-server-builder since those libs are linked at
 # build time (see sp1-recursion-gnark-ffi/build.rs when `groth16-cuda` is on).
+#
+# If you already have the icicle tarballs locally, skip the download via:
+#
+#   docker build \
+#       --build-context icicle-cache=/path/to/dir-with-icicle-tarballs \
+#       -f Dockerfile.cuda -t op-succinct-cuda:latest .
+#
+# The stage looks for `<ICICLE_TAG>-ubuntu22.tar.gz` (core) and
+# `<ICICLE_TAG>-ubuntu22-cuda122.tar.gz` (CUDA backend) in that dir, where
+# ICICLE_TAG is e.g. `icicle_3_4` for v3.4.0 (trailing .0 dropped, dots → _).
 # ---------------------------------------------------------------------------
+# Empty default for the local-cache build context. Override with
+# `--build-context icicle-cache=<host-dir>` to supply pre-downloaded tarballs.
+FROM scratch AS icicle-cache
+
 FROM ubuntu:22.04 AS icicle-dl
 ARG ICICLE_VERSION
 
 RUN apt-get update && apt-get install -y ca-certificates curl tar && rm -rf /var/lib/apt/lists/*
+
+# Pull in any locally-cached tarballs (empty scratch stage by default).
+COPY --from=icicle-cache / /cache/
 
 WORKDIR /icicle
 # Asset naming rule (from xlayer-toolkit benchmark script): 3.4.0 → icicle_3_4,
 # 3.9.2 → icicle_3_9_2. Trailing `.0` is dropped.
 RUN ICICLE_TAG="icicle_$(echo "${ICICLE_VERSION}" | sed 's/\.0$//; s/\./_/g')" && \
     BASE="https://github.com/ingonyama-zk/icicle/releases/download/v${ICICLE_VERSION}" && \
-    curl -L -o core.tar.gz  "${BASE}/${ICICLE_TAG}-ubuntu22.tar.gz" && \
-    curl -L -o cuda.tar.gz  "${BASE}/${ICICLE_TAG}-ubuntu22-cuda122.tar.gz" && \
+    mkdir -p /cache && \
+    for asset in "${ICICLE_TAG}-ubuntu22.tar.gz" "${ICICLE_TAG}-ubuntu22-cuda122.tar.gz"; do \
+      if [ -s "/cache/${asset}" ]; then \
+        echo "Using cached /cache/${asset}"; \
+        cp "/cache/${asset}" "${asset}"; \
+      else \
+        echo "Downloading ${asset}..."; \
+        curl -L -o "${asset}" "${BASE}/${asset}"; \
+      fi; \
+    done && \
+    mv "${ICICLE_TAG}-ubuntu22.tar.gz" core.tar.gz && \
+    mv "${ICICLE_TAG}-ubuntu22-cuda122.tar.gz" cuda.tar.gz && \
     mkdir extract && \
     tar xzf core.tar.gz -C extract && \
     tar xzf cuda.tar.gz -C extract && \
