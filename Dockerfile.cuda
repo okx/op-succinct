@@ -139,7 +139,7 @@ ARG SP1_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git build-essential clang pkg-config \
+        ca-certificates curl git build-essential clang cmake pkg-config \
         libssl-dev protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
