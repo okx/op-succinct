@@ -29,20 +29,35 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # === builder: op-succinct binaries ===
 # Only `proposer` needs the `cuda` feature (it calls sp1-cuda).
+# Cache mounts persist cargo registry/git/target across rebuilds — first build
+# still pays the cost; subsequent rebuilds skip dep download + recompile.
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
 
-RUN cargo chef cook --release --features cuda --bin proposer \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --features cuda --bin proposer \
         --recipe-path recipe.json && \
     cargo chef cook --release --bin challenger --bin fetch-fault-dispute-game-config \
         --recipe-path recipe.json
 
 COPY . .
 
-RUN cargo build --release --features cuda --bin proposer && \
+# /app/target is a cache mount, so it disappears after the RUN. Copy binaries
+# into /out/ (non-cached) so the runtime stage can COPY --from=builder them.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --features cuda --bin proposer && \
     cargo build --release --bin challenger && \
-    cargo build --release --bin fetch-fault-dispute-game-config
+    cargo build --release --bin fetch-fault-dispute-game-config && \
+    mkdir -p /out && \
+    cp target/release/proposer \
+       target/release/challenger \
+       target/release/fetch-fault-dispute-game-config \
+       /out/
 
 # === icicle: core libs + CUDA backend tarballs ===
 # Skip download with pre-fetched tarballs:
@@ -139,7 +154,11 @@ RUN ldconfig
 WORKDIR /build
 RUN git clone --depth 1 --branch ${SP1_VERSION} https://github.com/succinctlabs/sp1 sp1
 WORKDIR /build/sp1
-RUN cargo build --release -p sp1-gpu-server --features groth16-cuda
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/sp1/target \
+    cargo build --release -p sp1-gpu-server --features groth16-cuda && \
+    mkdir -p /out && cp target/release/sp1-gpu-server /out/
 
 # === runtime ===
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS runtime
@@ -151,9 +170,9 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/proposer /usr/local/bin/
-COPY --from=builder /app/target/release/challenger /usr/local/bin/
-COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
+COPY --from=builder /out/proposer /usr/local/bin/
+COPY --from=builder /out/challenger /usr/local/bin/
+COPY --from=builder /out/fetch-fault-dispute-game-config /usr/local/bin/
 
 COPY --from=icicle-dl /out/lib/ /usr/local/lib/
 RUN ldconfig
@@ -161,7 +180,7 @@ RUN ldconfig
 # sp1-cuda forks this binary on first proof. Its version must match
 # `sp1_primitives::SP1_CRATE_VERSION`, else sp1-cuda overwrites it with the
 # official CPU-only build.
-COPY --from=sp1-gpu-server-builder /build/sp1/target/release/sp1-gpu-server /root/.sp1/bin/sp1-gpu-server
+COPY --from=sp1-gpu-server-builder /out/sp1-gpu-server /root/.sp1/bin/sp1-gpu-server
 RUN chmod +x /root/.sp1/bin/sp1-gpu-server
 
 COPY --from=params-dl /out/ /root/.sp1/circuits/
