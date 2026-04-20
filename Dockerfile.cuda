@@ -18,8 +18,13 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     protobuf-compiler \
     libprotobuf-dev \
-    golang-go \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Go 1.24 — sp1-recursion-gnark-ffi's go.mod declares `go 1.24.0`
+# (three-component version), which needs Go >= 1.21 to parse.
+RUN curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 COPY rust-toolchain.toml ./
 RUN rustup show
@@ -29,8 +34,10 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# === builder: op-succinct binaries ===
-# Only `proposer` needs the `cuda` feature (it calls sp1-cuda).
+# === builder: op-succinct proposer (CUDA) ===
+# This image is CUDA-only — just the proposer binary with `cuda` feature.
+# challenger and fetch-fault-dispute-game-config don't touch GPU and are built
+# by the non-CUDA Dockerfile for deployment on CPU nodes.
 # Cache mounts persist cargo registry/git/target across rebuilds — first build
 # still pays the cost; subsequent rebuilds skip dep download + recompile.
 FROM chef AS builder
@@ -41,25 +48,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo chef cook --release --features cuda --bin proposer \
-        --recipe-path recipe.json && \
-    cargo chef cook --release --bin challenger --bin fetch-fault-dispute-game-config \
         --recipe-path recipe.json
 
 COPY . .
 
-# /app/target is a cache mount, so it disappears after the RUN. Copy binaries
-# into /out/ (non-cached) so the runtime stage can COPY --from=builder them.
+# /app/target is a cache mount — copy the binary into /out/ (non-cached)
+# before the RUN exits so the runtime stage can COPY --from=builder it.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --release --features cuda --bin proposer && \
-    cargo build --release --bin challenger && \
-    cargo build --release --bin fetch-fault-dispute-game-config && \
-    mkdir -p /out && \
-    cp target/release/proposer \
-       target/release/challenger \
-       target/release/fetch-fault-dispute-game-config \
-       /out/
+    mkdir -p /out && cp target/release/proposer /out/
 
 # === icicle: core libs + CUDA backend tarballs ===
 # Skip download with pre-fetched tarballs:
@@ -141,8 +140,13 @@ ARG SP1_VERSION
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git build-essential clang pkg-config \
-        libssl-dev protobuf-compiler libprotobuf-dev golang-go \
+        libssl-dev protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Go 1.24 — sp1-recursion-gnark-ffi's go.mod needs >= 1.21 to parse
+# three-component version format (apt's golang-go on Ubuntu 22.04 is 1.18).
+RUN curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable --profile minimal
@@ -173,8 +177,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/proposer /usr/local/bin/
-COPY --from=builder /out/challenger /usr/local/bin/
-COPY --from=builder /out/fetch-fault-dispute-game-config /usr/local/bin/
 
 COPY --from=icicle-dl /out/lib/ /usr/local/lib/
 RUN ldconfig
