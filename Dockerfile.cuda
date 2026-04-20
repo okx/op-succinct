@@ -139,7 +139,7 @@ ARG SP1_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git build-essential clang cmake pkg-config \
+        ca-certificates curl git build-essential clang libclang-dev pkg-config \
         libssl-dev protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -147,6 +147,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # three-component version format (apt's golang-go on Ubuntu 22.04 is 1.18).
 RUN curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
+
+# CMake 3.30+ — sp1-gpu-sys's CMakeLists.txt requires >= 3.30.
+# Ubuntu 22.04 apt ships 3.22, too old.
+RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz \
+    | tar -C /usr/local --strip-components=1 -xz
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable --profile minimal
