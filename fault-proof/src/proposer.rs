@@ -1220,9 +1220,16 @@ where
 
         let agg_prove_start = std::time::Instant::now();
         let agg_proof = self.prover.generate_agg_proof(sp1_stdin).await?;
+        let agg_prove_elapsed = agg_prove_start.elapsed();
         tracing::info!(
-            elapsed_s = agg_prove_start.elapsed().as_secs_f64(),
+            elapsed_s = agg_prove_elapsed.as_secs_f64(),
             "Aggregation proof generation completed"
+        );
+        tracing::info!(
+            range_phase_wall_s = range_phase_elapsed.as_secs_f64(),
+            agg_prove_s = agg_prove_elapsed.as_secs_f64(),
+            total_prove_s = (range_phase_elapsed + agg_prove_elapsed).as_secs_f64(),
+            "All proof phases completed"
         );
 
         let transaction_request = game.prove(agg_proof.bytes().into()).into_transaction_request();
@@ -1238,6 +1245,15 @@ where
         if !receipt.status() {
             bail!("{TX_REVERTED_PREFIX} {receipt:?}");
         }
+
+        tracing::info!(
+            tx_hash = ?receipt.transaction_hash,
+            block_number = ?receipt.block_number,
+            gas_used = receipt.gas_used,
+            effective_gas_price_wei = receipt.effective_gas_price,
+            gas_cost_wei = (receipt.gas_used as u128).saturating_mul(receipt.effective_gas_price),
+            "Prove transaction confirmed"
+        );
 
         Ok((receipt.transaction_hash, total_instruction_cycles, total_sp1_gas))
     }
