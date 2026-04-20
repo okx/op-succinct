@@ -1110,23 +1110,47 @@ where
                     elapsed = ?witness_elapsed,
                     "Witness generation completed"
                 );
+                let prove_start = std::time::Instant::now();
                 let (range_proof, inst_cycles, sp1_gas) =
                     this.prover.generate_range_proof(sp1_stdin).await?;
-                Ok::<_, anyhow::Error>((idx, range_proof, inst_cycles, sp1_gas))
+                let prove_elapsed = prove_start.elapsed();
+                tracing::info!(
+                    blocks = ?(start, end),
+                    elapsed = ?prove_elapsed,
+                    "Range proof generation completed"
+                );
+                Ok::<_, anyhow::Error>((
+                    idx,
+                    range_proof,
+                    inst_cycles,
+                    sp1_gas,
+                    witness_elapsed,
+                    prove_elapsed,
+                ))
             }
         });
 
         let max_concurrent = self.config.max_concurrent_range_proofs.get().min(num_ranges);
+        let range_phase_start = std::time::Instant::now();
         let prove_stream = stream::iter(tasks);
-        let results: Vec<(usize, SP1ProofWithPublicValues, u64, u64)> =
-            prove_stream.buffer_unordered(max_concurrent).try_collect().await?;
+        let results: Vec<(
+            usize,
+            SP1ProofWithPublicValues,
+            u64,
+            u64,
+            std::time::Duration,
+            std::time::Duration,
+        )> = prove_stream.buffer_unordered(max_concurrent).try_collect().await?;
+        let range_phase_elapsed = range_phase_start.elapsed();
 
         let mut proofs = vec![None; num_ranges];
         let mut boot_infos = vec![None; num_ranges];
         let mut total_instruction_cycles: u64 = 0;
         let mut total_sp1_gas: u64 = 0;
+        let mut witness_total = std::time::Duration::ZERO;
+        let mut range_prove_total = std::time::Duration::ZERO;
 
-        for (idx, range_proof, inst_cycles, sp1_gas) in results {
+        for (idx, range_proof, inst_cycles, sp1_gas, witness_elapsed, prove_elapsed) in results {
             let proof = range_proof.proof.clone();
             let mut public_values = range_proof.public_values.clone();
             let boot_info: BootInfoStruct = public_values.read();
@@ -1139,7 +1163,18 @@ where
             total_sp1_gas = total_sp1_gas
                 .checked_add(sp1_gas)
                 .ok_or_else(|| anyhow::anyhow!("SP1 gas overflow"))?;
+            witness_total += witness_elapsed;
+            range_prove_total += prove_elapsed;
         }
+
+        tracing::info!(
+            num_ranges,
+            max_concurrent,
+            witness_total_s = witness_total.as_secs_f64(),
+            range_prove_total_s = range_prove_total.as_secs_f64(),
+            range_phase_wall_s = range_phase_elapsed.as_secs_f64(),
+            "Range phase completed"
+        );
 
         let proofs = proofs
             .into_iter()
@@ -1183,7 +1218,12 @@ where
             }
         };
 
+        let agg_prove_start = std::time::Instant::now();
         let agg_proof = self.prover.generate_agg_proof(sp1_stdin).await?;
+        tracing::info!(
+            elapsed_s = agg_prove_start.elapsed().as_secs_f64(),
+            "Aggregation proof generation completed"
+        );
 
         let transaction_request = game.prove(agg_proof.bytes().into()).into_transaction_request();
         let receipt = self
