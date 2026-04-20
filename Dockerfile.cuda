@@ -13,9 +13,11 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     clang \
+    libclang-dev \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    libprotobuf-dev \
     golang-go \
     && rm -rf /var/lib/apt/lists/*
 
@@ -139,7 +141,7 @@ ARG SP1_VERSION
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git build-essential clang pkg-config \
-        libssl-dev protobuf-compiler golang-go \
+        libssl-dev protobuf-compiler libprotobuf-dev golang-go \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
