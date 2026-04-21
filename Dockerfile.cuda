@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1.4
 
 # Versions pinned to sp1-sdk/sp1-cuda in the workspace lockfile.
-ARG SP1_VERSION=v6.1.0
+# SP1_REPO + SP1_VERSION point at the fork branch that carries the
+# bind-before-CUDA-init fix (see sp1-gpu/crates/server/src/main.rs). That patch
+# is required for multi-GPU: cold CUDA init on a fresh device takes >1s, which
+# exceeds the sp1-cuda client's retry window if bind happens after init.
+ARG SP1_REPO=okx/sp1
+ARG SP1_VERSION=feat/bind-before-cuda-init-v6.1.0
 ARG SP1_CIRCUIT_VERSION=v6.1.0
 ARG ICICLE_VERSION=3.4.0
 # Trusted-setup params to bake in. Comma-separated: groth16, plonk.
@@ -142,6 +147,7 @@ RUN BASE="https://sp1-circuits.s3-us-east-2.amazonaws.com" && \
 # compiles a C/CUDA shim. Chef can't be reused: it's Debian trixie and NVIDIA
 # has no trixie apt channel.
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS sp1-gpu-server-builder
+ARG SP1_REPO
 ARG SP1_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -170,7 +176,7 @@ COPY --from=icicle-dl /out/lib/ /usr/local/lib/
 RUN ldconfig
 
 WORKDIR /build
-RUN git clone --depth 1 --branch ${SP1_VERSION} https://github.com/succinctlabs/sp1 sp1
+RUN git clone --depth 1 --branch ${SP1_VERSION} https://github.com/${SP1_REPO} sp1
 WORKDIR /build/sp1
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
@@ -206,4 +212,3 @@ COPY --from=params-dl /out/ /root/.sp1/circuits/
 ENV ICICLE_BACKEND_INSTALL_DIR=/usr/local/lib/backend
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 ENV SP1_PROVER=local
-ENV CUDA_GPU_IDS=0,1,2,3
