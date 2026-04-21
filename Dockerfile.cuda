@@ -8,18 +8,25 @@ ARG ICICLE_VERSION=3.4.0
 ARG SP1_BAKE_PARAMS=groth16
 
 # === chef: shared base for cargo-chef stages ===
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+# Use ubuntu:22.04 to match the runtime stage's glibc 2.35 / libstdc++ 11.
+# Previously this stage used lukemathwalker/cargo-chef:latest-rust-1 which is
+# based on Debian trixie (glibc 2.40, libstdc++ 13) — proposer linked against
+# CXXABI_1.3.15 / GLIBC_2.38+ symbols that Ubuntu 22.04 runtime doesn't have.
+FROM ubuntu:22.04 AS chef
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    clang \
-    libclang-dev \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
-    libprotobuf-dev \
-    curl \
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git build-essential \
+    clang libclang-dev pkg-config \
+    libssl-dev protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# rustup + cargo-chef (no longer inherited from lukemathwalker image).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install cargo-chef --locked
 
 # Go 1.24 — sp1-recursion-gnark-ffi's go.mod declares `go 1.24.0`
 # (three-component version), which needs Go >= 1.21 to parse.
@@ -44,8 +51,8 @@ FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/app/target \
     cargo chef cook --release --features cuda --bin proposer \
         --recipe-path recipe.json
@@ -54,8 +61,8 @@ COPY . .
 
 # /app/target is a cache mount — copy the binary into /out/ (non-cached)
 # before the RUN exits so the runtime stage can COPY --from=builder it.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --release --features cuda --bin proposer && \
     mkdir -p /out && cp target/release/proposer /out/
