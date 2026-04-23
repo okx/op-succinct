@@ -1,12 +1,10 @@
 # syntax=docker/dockerfile:1.4
 
 # Versions pinned to sp1-sdk/sp1-cuda in the workspace lockfile.
-# SP1_REPO + SP1_VERSION point at the fork branch that carries the
-# bind-before-CUDA-init fix (see sp1-gpu/crates/server/src/main.rs). That patch
-# is required for multi-GPU: cold CUDA init on a fresh device takes >1s, which
-# exceeds the sp1-cuda client's retry window if bind happens after init.
+# SP1_REPO + SP1_VERSION point at the okx fork's gateway-proxy branch
+# (adds gateway proxy support on top of upstream v6.1.0).
 ARG SP1_REPO=okx/sp1
-ARG SP1_VERSION=feat/bind-before-cuda-init-v6.1.0
+ARG SP1_VERSION=feat/gateway-proxy-v6.1.0
 ARG SP1_CIRCUIT_VERSION=v6.1.0
 ARG ICICLE_VERSION=3.4.0
 # Trusted-setup params to bake in. Comma-separated: groth16, plonk.
