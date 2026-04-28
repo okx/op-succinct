@@ -1,59 +1,212 @@
 # syntax=docker/dockerfile:1.4
 
-# Chef stage: Prepare dependency recipe
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+# Versions pinned to sp1-sdk/sp1-cuda in the workspace lockfile.
+# SP1_REPO + SP1_VERSION point at the okx fork's gateway-proxy branch
+# (adds gateway proxy support on top of upstream v6.1.0).
+ARG SP1_REPO=okx/sp1
+ARG SP1_VERSION=feat/gateway-proxy-v6.1.0
+ARG SP1_CIRCUIT_VERSION=v6.1.0
+ARG ICICLE_VERSION=3.4.0
+# Trusted-setup params to bake in. Comma-separated: groth16, plonk.
+ARG SP1_BAKE_PARAMS=groth16
+
+# === chef: shared base for cargo-chef stages ===
+# Use ubuntu:22.04 to match the runtime stage's glibc 2.35 / libstdc++ 11.
+# Previously this stage used lukemathwalker/cargo-chef:latest-rust-1 which is
+# based on Debian trixie (glibc 2.40, libstdc++ 13) — proposer linked against
+# CXXABI_1.3.15 / GLIBC_2.38+ symbols that Ubuntu 22.04 runtime doesn't have.
+FROM ubuntu:22.04 AS chef
 WORKDIR /app
 
-# Install required dependencies
-RUN apt-get update && apt-get install -y \
-    clang \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
-    golang-go \
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git build-essential \
+    clang libclang-dev pkg-config \
+    libssl-dev protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install project's required Rust toolchain
-COPY rust-toolchain.toml ./
-RUN rustup show  # This will install the toolchain and components from rust-toolchain.toml
+# rustup + cargo-chef (no longer inherited from lukemathwalker image).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install cargo-chef --locked
 
-# Planner stage: Generate recipe.json
+# Go 1.24 — sp1-recursion-gnark-ffi's go.mod declares `go 1.24.0`
+# (three-component version), which needs Go >= 1.21 to parse.
+RUN curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+COPY rust-toolchain.toml ./
+RUN rustup show
+
+# === planner ===
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# Builder stage: Build dependencies then project
+# === builder: op-succinct proposer (CUDA) ===
+# This image is CUDA-only — just the proposer binary with `cuda` feature.
+# challenger and fetch-fault-dispute-game-config don't touch GPU and are built
+# by the non-CUDA Dockerfile for deployment on CPU nodes.
+# Cache mounts persist cargo registry/git/target across rebuilds — first build
+# still pays the cost; subsequent rebuilds skip dep download + recompile.
 FROM chef AS builder
 
-# Copy recipe and build dependencies (this layer will be cached)
 COPY --from=planner /app/recipe.json recipe.json
 
-RUN cargo chef cook --release --features cuda --bin proposer --bin challenger --bin fetch-fault-dispute-game-config --recipe-path recipe.json
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --features cuda --bin proposer \
+        --recipe-path recipe.json
 
-# Copy source code and build binaries
 COPY . .
 
-# Build all binaries with CUDA support
-RUN cargo build --release --features cuda --bin proposer && \
-    cargo build --release --features cuda --bin challenger && \
-    cargo build --release --features cuda --bin fetch-fault-dispute-game-config
+# /app/target is a cache mount — copy the binary into /out/ (non-cached)
+# before the RUN exits so the runtime stage can COPY --from=builder it.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --features cuda --bin proposer && \
+    mkdir -p /out && cp target/release/proposer /out/
 
-# Runtime stage - NVIDIA CUDA runtime
-FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS runtime
+# === icicle: core libs + CUDA backend tarballs ===
+# Skip download with pre-fetched tarballs:
+#   docker build --build-context icicle-cache=<dir> -f Dockerfile.cuda -t op-succinct-cuda .
+# Dir must contain <ICICLE_TAG>-ubuntu22.tar.gz (core) and
+# <ICICLE_TAG>-ubuntu22-cuda122.tar.gz (backend). ICICLE_TAG drops trailing .0
+# and replaces dots with `_` (3.4.0 → icicle_3_4).
+FROM scratch AS icicle-cache
+
+FROM ubuntu:22.04 AS icicle-dl
+ARG ICICLE_VERSION
+
+RUN apt-get update && apt-get install -y ca-certificates curl tar && rm -rf /var/lib/apt/lists/*
+
+COPY --from=icicle-cache / /cache/
+
+WORKDIR /icicle
+RUN ICICLE_TAG="icicle_$(echo "${ICICLE_VERSION}" | sed 's/\.0$//; s/\./_/g')" && \
+    BASE="https://github.com/ingonyama-zk/icicle/releases/download/v${ICICLE_VERSION}" && \
+    mkdir -p /cache && \
+    for asset in "${ICICLE_TAG}-ubuntu22.tar.gz" "${ICICLE_TAG}-ubuntu22-cuda122.tar.gz"; do \
+      if [ -s "/cache/${asset}" ]; then \
+        echo "Using cached /cache/${asset}"; \
+        cp "/cache/${asset}" "${asset}"; \
+      else \
+        echo "Downloading ${asset}..."; \
+        curl -L -o "${asset}" "${BASE}/${asset}"; \
+      fi; \
+    done && \
+    mv "${ICICLE_TAG}-ubuntu22.tar.gz" core.tar.gz && \
+    mv "${ICICLE_TAG}-ubuntu22-cuda122.tar.gz" cuda.tar.gz && \
+    mkdir extract && \
+    tar xzf core.tar.gz -C extract && \
+    tar xzf cuda.tar.gz -C extract && \
+    mkdir -p /out/lib /out/lib/backend && \
+    find extract -name 'libicicle_*.so' ! -name 'libicicle_backend_*' -exec cp -v {} /out/lib/ \; && \
+    find extract -name 'libicicle_backend_cuda_*.so' -exec cp -v {} /out/lib/backend/ \;
+
+# === sp1 trusted-setup params (~1GB/mode) ===
+# Skip download with pre-fetched tarballs:
+#   docker build --build-context sp1-params-cache=<dir> -f Dockerfile.cuda -t op-succinct-cuda .
+# Expects <SP1_CIRCUIT_VERSION>-<mode>.tar.gz in dir.
+FROM scratch AS sp1-params-cache
+
+FROM ubuntu:22.04 AS params-dl
+ARG SP1_CIRCUIT_VERSION
+ARG SP1_BAKE_PARAMS
+
+RUN apt-get update && apt-get install -y ca-certificates curl tar && rm -rf /var/lib/apt/lists/*
+
+COPY --from=sp1-params-cache / /cache/
+
+WORKDIR /params
+RUN BASE="https://sp1-circuits.s3-us-east-2.amazonaws.com" && \
+    mkdir -p /out /cache && \
+    for mode in $(echo "${SP1_BAKE_PARAMS}" | tr ',' ' '); do \
+      tarball="${SP1_CIRCUIT_VERSION}-${mode}.tar.gz"; \
+      mkdir -p "/out/${mode}/${SP1_CIRCUIT_VERSION}"; \
+      if [ -s "/cache/${tarball}" ]; then \
+        echo "Using cached /cache/${tarball}"; \
+        tar xzf "/cache/${tarball}" -C "/out/${mode}/${SP1_CIRCUIT_VERSION}"; \
+      else \
+        echo "Downloading ${tarball} from S3..."; \
+        curl -L -o "/tmp/${tarball}" "${BASE}/${tarball}"; \
+        tar xzf "/tmp/${tarball}" -C "/out/${mode}/${SP1_CIRCUIT_VERSION}"; \
+        rm "/tmp/${tarball}"; \
+      fi; \
+    done
+
+# === sp1-gpu-server: rebuild with groth16-cuda ===
+# Official SP1 release binary is CPU-only for Groth16 wrap — we relink with
+# `groth16-cuda` so icicle symbols are pulled in. Uses CUDA devel image
+# (nvcc + headers + libcudart) matching the runtime stage, since sp1-gpu-cudart
+# compiles a C/CUDA shim. Chef can't be reused: it's Debian trixie and NVIDIA
+# has no trixie apt channel.
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS sp1-gpu-server-builder
+ARG SP1_REPO
+ARG SP1_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential clang libclang-dev pkg-config \
+        libssl-dev protobuf-compiler libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go 1.24 — sp1-recursion-gnark-ffi's go.mod needs >= 1.21 to parse
+# three-component version format (apt's golang-go on Ubuntu 22.04 is 1.18).
+RUN curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# CMake 3.30+ — sp1-gpu-sys's CMakeLists.txt requires >= 3.30.
+# Ubuntu 22.04 apt ships 3.22, too old.
+RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz \
+    | tar -C /usr/local --strip-components=1 -xz
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="${CUDA_HOME}/bin:${PATH}"
+
+COPY --from=icicle-dl /out/lib/ /usr/local/lib/
+RUN ldconfig
+
+WORKDIR /build
+RUN git clone --depth 1 --branch ${SP1_VERSION} https://github.com/${SP1_REPO} sp1
+WORKDIR /build/sp1
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/sp1/target \
+    cargo build --release -p sp1-gpu-server --features groth16-cuda && \
+    mkdir -p /out && cp target/release/sp1-gpu-server /out/
+
+# === runtime ===
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS runtime
 
 WORKDIR /app
 
-# Install only necessary runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy all three binaries from build target directory
-COPY --from=builder /app/target/release/proposer /usr/local/bin/
-COPY --from=builder /app/target/release/challenger /usr/local/bin/
-COPY --from=builder /app/target/release/fetch-fault-dispute-game-config /usr/local/bin/
+COPY --from=builder /out/proposer /usr/local/bin/
 
-# Default environment for local GPU proving
+COPY --from=icicle-dl /out/lib/ /usr/local/lib/
+RUN ldconfig
+
+# sp1-cuda forks this binary on first proof. Its version must match
+# `sp1_primitives::SP1_CRATE_VERSION`, else sp1-cuda overwrites it with the
+# official CPU-only build.
+COPY --from=sp1-gpu-server-builder /out/sp1-gpu-server /root/.sp1/bin/sp1-gpu-server
+RUN chmod +x /root/.sp1/bin/sp1-gpu-server
+
+COPY --from=params-dl /out/ /root/.sp1/circuits/
+
+# LD_LIBRARY_PATH must keep /usr/local/nvidia/lib{,64} — nvidia-container-toolkit
+# injects driver libs (libcuda.so.1) there at runtime.
+ENV ICICLE_BACKEND_INSTALL_DIR=/usr/local/lib/backend
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 ENV SP1_PROVER=local
-ENV CUDA_GPU_IDS=0,1,2,3
