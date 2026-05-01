@@ -1,6 +1,6 @@
 use std::{
     env,
-    num::{NonZeroU8, NonZeroUsize},
+    num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
     str::FromStr,
 };
@@ -64,7 +64,7 @@ pub struct ProposerConfig {
     /// plaintext private key.
     pub use_kms_requester: bool,
 
-    /// The number of segments to split the range into (1-16).
+    /// The number of segments to split the range into (must be ≥ 1).
     pub range_split_count: RangeSplitCount,
 
     /// The maximum number of concurrent range proof tasks. (default: 1)
@@ -402,20 +402,14 @@ pub struct FaultDisputeGameConfig {
     pub verifier_address: String,
 }
 
-/// How many chunks the range proof input is partitioned into (1-16 inclusive).
+/// How many chunks the range proof input is partitioned into (must be ≥ 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RangeSplitCount(NonZeroU8);
+pub struct RangeSplitCount(NonZeroU32);
 
 impl RangeSplitCount {
-    pub const MAX: u8 = 16;
-
-    /// Create a new `RangeSplitCount`.
-    pub fn new(count: u8) -> Result<Self> {
-        if count == 0 || count > Self::MAX {
-            bail!("range splits must be between 1 and 16, got {count}");
-        }
-
-        let count = NonZeroU8::new(count)
+    /// Create a new `RangeSplitCount`. Any non-zero value is accepted.
+    pub fn new(count: u32) -> Result<Self> {
+        let count = NonZeroU32::new(count)
             .ok_or_else(|| anyhow::anyhow!("range splits must be non zero"))?;
 
         Ok(Self(count))
@@ -423,7 +417,7 @@ impl RangeSplitCount {
 
     /// Returns a `RangeSplitCount` of one.
     pub fn one() -> Self {
-        Self(NonZeroU8::new(1).expect("1 is non-zero"))
+        Self(NonZeroU32::new(1).expect("1 is non-zero"))
     }
 
     /// Convert to `usize`.
@@ -487,9 +481,9 @@ impl TryFrom<u64> for RangeSplitCount {
     type Error = anyhow::Error;
 
     fn try_from(value: u64) -> Result<Self> {
-        let count: u8 = value
+        let count: u32 = value
             .try_into()
-            .map_err(|_| anyhow::anyhow!("range splits must be between 1 and 16, got {value}"))?;
+            .map_err(|_| anyhow::anyhow!("range splits {value} exceeds u32::MAX"))?;
         Self::new(count)
     }
 }
@@ -508,7 +502,7 @@ mod split_range_tests {
     use crate::config::RangeSplitCount;
     use rstest::rstest;
 
-    fn range_split_count(count: u8) -> RangeSplitCount {
+    fn range_split_count(count: u32) -> RangeSplitCount {
         RangeSplitCount::new(count).expect("valid range split count")
     }
 
@@ -534,7 +528,7 @@ mod split_range_tests {
     #[case::even_split(range_split_count(4), 0, 10, &[(0, 3), (3, 6), (6, 9), (9, 10)])]
     #[case::large_splits_small_range(range_split_count(15), 0, 1, &[(0, 1)])]
     #[case::max_splits_exact(
-        range_split_count(RangeSplitCount::MAX),
+        range_split_count(16),
         0,
         16,
         &[
@@ -556,7 +550,7 @@ mod split_range_tests {
             (15, 16)
         ]
     )]
-    #[case::max_splits_caps(range_split_count(RangeSplitCount::MAX), 0, 3, &[(0, 1), (1, 2), (2, 3)])]
+    #[case::max_splits_caps(range_split_count(16), 0, 3, &[(0, 1), (1, 2), (2, 3)])]
     #[case::stop_when_done(
         RangeSplitCount::new(15).unwrap(),
         0,
@@ -602,12 +596,12 @@ mod split_range_tests {
     #[test]
     fn test_rejects_zero() {
         let err = RangeSplitCount::new(0).unwrap_err();
-        assert!(err.to_string().contains("between 1 and 16"), "unexpected error: {err}");
+        assert!(err.to_string().contains("non zero"), "unexpected error: {err}");
     }
 
     #[test]
-    fn test_rejects_above_max_from_str() {
-        let err = "17".parse::<RangeSplitCount>().unwrap_err();
-        assert!(err.to_string().contains("between 1 and 16"), "unexpected error: {err}");
+    fn test_accepts_arbitrary_count() {
+        let count = "200".parse::<RangeSplitCount>().expect("200 is valid after cap removal");
+        assert_eq!(count.to_usize(), 200);
     }
 }
