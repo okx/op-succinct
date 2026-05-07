@@ -588,32 +588,38 @@ pub fn check_status(status: i32) -> ProofStatus {
 // Local GPU proof provider (requires `cuda` feature)
 // ---------------------------------------------------------------------------
 
-/// A single GPU slot holding a CUDA prover and its per-GPU proving keys.
-#[cfg(feature = "cuda")]
-#[derive(Clone)]
-struct GpuSlot {
-    prover: SdkCudaProver,
-    range_pk: sp1_cuda::CudaProvingKey,
-    agg_pk: sp1_cuda::CudaProvingKey,
-}
-
-/// Local GPU proof provider that distributes proving work across CUDA devices.
+/// Local GPU proof provider that spawns a fresh `sp1-gpu-server` for every prove
+/// and tears it down when the prove returns.
 ///
-/// Each GPU has its own `CudaProver` instance and proving keys. Range proof
-/// tasks are assigned to GPUs via round-robin. Aggregation proofs always run
-/// on the first GPU.
+/// Why per-prove rebuild: a long-lived `sp1-gpu-server` retains its peak working
+/// set in glibc/jemalloc heap arenas (trace tables, FRI buffers, recursion
+/// scaffolding). With four GPUs that becomes a multi-hundred-GB idle baseline
+/// that pushes the host past its physical RAM on the next prove and triggers
+/// the OOM killer. Dropping the prover after each prove kills the subprocess
+/// and the kernel reclaims its RSS before the next chunk runs on that GPU.
+///
+/// Trade-off: each prove pays a one-shot ProvingKey setup (~30-60s on L20).
+/// Range proofs are dispatched round-robin across GPUs; aggregation always
+/// runs on the first GPU.
 #[cfg(feature = "cuda")]
 #[derive(Clone)]
 pub struct LocalProofProvider {
-    slots: Arc<Vec<GpuSlot>>,
+    /// Per-GPU serialization lock. Different GPUs run in parallel; same-GPU calls queue.
+    slot_locks: Arc<Vec<tokio::sync::Mutex<()>>>,
+    /// GPU device IDs in slot order.
+    gpu_ids: Arc<Vec<u32>>,
+    /// Round-robin index into `gpu_ids`.
     next: Arc<AtomicUsize>,
+    #[allow(dead_code)] // retained for API parity with other providers
     keys: ProofKeys,
     config: ProofProviderConfig,
+    range_elf: &'static [u8],
 }
 
 #[cfg(feature = "cuda")]
 impl LocalProofProvider {
-    /// Initialize CUDA provers for the given GPU device IDs and set up proving keys on each.
+    /// Register the GPU IDs without doing any CUDA setup. Each prove call will
+    /// spawn its own short-lived prover.
     pub async fn new(
         gpu_ids: &[u32],
         keys: ProofKeys,
@@ -621,69 +627,100 @@ impl LocalProofProvider {
     ) -> Result<Self> {
         anyhow::ensure!(!gpu_ids.is_empty(), "at least one GPU ID required for local mode");
 
-        let range_elf = get_range_elf_embedded();
-        let mut slots = Vec::with_capacity(gpu_ids.len());
+        let slot_locks =
+            (0..gpu_ids.len()).map(|_| tokio::sync::Mutex::new(())).collect::<Vec<_>>();
 
-        for &gpu_id in gpu_ids {
-            tracing::info!(gpu_id, "Initializing CUDA prover");
-            let prover = ProverClient::builder()
-                .cuda()
-                .with_device_id(gpu_id)
-                .build()
-                .await;
-
-            let range_pk = Prover::setup(&prover, Elf::Static(range_elf))
-                .await
-                .map_err(|e| anyhow::anyhow!("CUDA range ELF setup failed on GPU {gpu_id}: {e}"))?;
-            let agg_pk = Prover::setup(&prover, Elf::Static(AGGREGATION_ELF))
-                .await
-                .map_err(|e| anyhow::anyhow!("CUDA agg ELF setup failed on GPU {gpu_id}: {e}"))?;
-
-            slots.push(GpuSlot { prover, range_pk, agg_pk });
-            tracing::info!(gpu_id, "CUDA prover initialized");
-        }
-
-        tracing::info!(gpu_count = slots.len(), "Local GPU proof provider ready");
+        tracing::info!(
+            gpu_count = gpu_ids.len(),
+            "Local GPU proof provider ready (per-prove rebuild mode)"
+        );
         Ok(Self {
-            slots: Arc::new(slots),
+            slot_locks: Arc::new(slot_locks),
+            gpu_ids: Arc::new(gpu_ids.to_vec()),
             next: Arc::new(AtomicUsize::new(0)),
             keys,
             config,
+            range_elf: get_range_elf_embedded(),
         })
     }
 
-    /// Select the next GPU slot using round-robin.
-    fn next_slot(&self) -> &GpuSlot {
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len();
-        &self.slots[idx]
+    /// Spawn a CudaProver bound to `gpu_id` and load `elf` as its proving key.
+    /// Caller is responsible for dropping the returned prover when done so the
+    /// underlying sp1-gpu-server subprocess exits.
+    async fn spawn_prover(
+        gpu_id: u32,
+        elf: &'static [u8],
+        kind: &'static str,
+    ) -> Result<(SdkCudaProver, sp1_cuda::CudaProvingKey)> {
+        let prover = ProverClient::builder().cuda().with_device_id(gpu_id).build().await;
+        let pk = Prover::setup(&prover, Elf::Static(elf))
+            .await
+            .map_err(|e| anyhow::anyhow!("CUDA {kind} ELF setup failed on GPU {gpu_id}: {e}"))?;
+        Ok((prover, pk))
     }
 
-    /// Generate a compressed range proof on a local GPU (round-robin).
+    /// Generate a compressed range proof. Spawns a fresh sp1-gpu-server, runs
+    /// the prove, and tears it down before returning.
     pub async fn generate_range_proof(
         &self,
         stdin: SP1Stdin,
     ) -> Result<(SP1ProofWithPublicValues, u64, u64)> {
-        let slot = self.next_slot();
-        tracing::info!("Generating range proof on local GPU");
-        let proof = slot
-            .prover
-            .prove(&slot.range_pk, stdin)
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.gpu_ids.len();
+        let gpu_id = self.gpu_ids[idx];
+
+        // Serialize same-GPU prove calls. Different GPUs run in parallel.
+        let _guard = self.slot_locks[idx].lock().await;
+
+        let setup_start = std::time::Instant::now();
+        let (prover, range_pk) = Self::spawn_prover(gpu_id, self.range_elf, "range").await?;
+        tracing::info!(
+            gpu_id,
+            setup_ms = setup_start.elapsed().as_millis() as u64,
+            "CUDA range prover spawned"
+        );
+
+        let proof = prover
+            .prove(&range_pk, stdin)
             .compressed()
             .await
-            .map_err(|e| anyhow::anyhow!("CUDA range proof failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("CUDA range proof failed on GPU {gpu_id}: {e}"))?;
+
+        // Drop in reverse order. Dropping the prover closes the IPC channel so
+        // sp1-gpu-server exits and the kernel reclaims its anon RSS before the
+        // next prove reuses this GPU.
+        drop(range_pk);
+        drop(prover);
+        tracing::info!(gpu_id, "Released CUDA range prover");
+
         // Local CUDA proving does not report execution cycle or gas metrics.
         Ok((proof, 0, 0))
     }
 
-    /// Generate an aggregation proof on the first GPU.
+    /// Generate an aggregation proof on the first GPU. Same spawn-and-drop
+    /// lifecycle as `generate_range_proof`.
     pub async fn generate_agg_proof(&self, stdin: SP1Stdin) -> Result<SP1ProofWithPublicValues> {
-        let slot = &self.slots[0];
-        tracing::info!("Generating aggregation proof on local GPU");
-        slot.prover
-            .prove(&slot.agg_pk, stdin)
+        let gpu_id = self.gpu_ids[0];
+        let _guard = self.slot_locks[0].lock().await;
+
+        let setup_start = std::time::Instant::now();
+        let (prover, agg_pk) = Self::spawn_prover(gpu_id, AGGREGATION_ELF, "agg").await?;
+        tracing::info!(
+            gpu_id,
+            setup_ms = setup_start.elapsed().as_millis() as u64,
+            "CUDA agg prover spawned"
+        );
+
+        let proof = prover
+            .prove(&agg_pk, stdin)
             .mode(self.config.agg_proof_mode)
             .await
-            .map_err(|e| anyhow::anyhow!("CUDA aggregation proof failed: {e}"))
+            .map_err(|e| anyhow::anyhow!("CUDA aggregation proof failed on GPU {gpu_id}: {e}"))?;
+
+        drop(agg_pk);
+        drop(prover);
+        tracing::info!(gpu_id, "Released CUDA agg prover");
+
+        Ok(proof)
     }
 }
 
