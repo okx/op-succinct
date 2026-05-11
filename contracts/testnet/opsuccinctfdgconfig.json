@@ -1,0 +1,25 @@
+{
+  "challengerBondWei": 10000000000,
+  "disputeGameFinalityDelaySeconds": 604800,
+  "fallbackTimeoutFpSecs": 604800,
+  "gameType": 42,
+  "initialBondWei": 10000000000,
+  "maxChallengeDuration": 3600,
+  "maxProveDuration": 604800,
+  "permissionlessMode": false,
+  "proposerAddresses": [
+    "0x829D57F38D2A94514a3dbA2297fDD1Bc52bB1938"
+  ],
+  "challengerAddresses": [
+    "0x7c3787bf0d78a9e2f802916110e4ddd6e3ed262c"
+  ],
+  "startingL2BlockNumber": 8594221,
+  "startingRoot": "0x8efd417266ee9d5c39a3ce7a0301368924216501300531b540a717c4e3b83d5e",
+  "rollupConfigHash": "0x3ed3598c92b6cd8bc44d3dba15ab51beb45bfd0093dcaf998a659a9ad1dcc851",
+  "systemConfigAddress": "0x06be4b4a9a28ff8eed6da09447bc5daa676efac3",
+  "optimismPortal2Address": "0x1529a34331d7d85c8868fc88ec730ae56d3ec9c0",
+  "useSp1MockVerifier": false,
+  "rangeVkeyCommitment": "0x3f0914400d4a8eb2488defa97d9da17833a1c8b42fda59cc5996d1c44554d5d0",
+  "aggregationVkey": "0x000226bca14e2ed117d333539fae5c91d299f33f74f13aefc3185f1798a4f911",
+  "verifierAddress": "0x397A5f7f3dBd538f23DE225B51f532c34448dA9B"
+}

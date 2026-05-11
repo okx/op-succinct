@@ -38,6 +38,7 @@ pub struct EnvironmentConfig {
     pub whitelist: Option<Vec<Address>>,
     pub min_auction_period: u64,
     pub auction_timeout: u64,
+    pub tx_confirmation_timeout: u64,
 }
 
 /// Helper function to get environment variables with a default value and parse them.
@@ -90,11 +91,11 @@ pub async fn read_proposer_env() -> Result<EnvironmentConfig> {
     let range_proof_strategy = parse_fulfillment_strategy(get_env_var(
         "RANGE_PROOF_STRATEGY",
         Some("reserved".to_string()),
-    )?);
+    )?)?;
     let agg_proof_strategy = parse_fulfillment_strategy(get_env_var(
         "AGG_PROOF_STRATEGY",
         Some("reserved".to_string()),
-    )?);
+    )?)?;
 
     // Parse proof mode
     let agg_proof_mode =
@@ -140,6 +141,7 @@ pub async fn read_proposer_env() -> Result<EnvironmentConfig> {
         whitelist: parse_whitelist(&get_env_var("WHITELIST", Some("".to_string()))?)?,
         min_auction_period: get_env_var("MIN_AUCTION_PERIOD", Some(1))?,
         auction_timeout: get_env_var("AUCTION_TIMEOUT", Some(60))?, // 1 minute
+        tx_confirmation_timeout: get_env_var("TX_CONFIRMATION_TIMEOUT", Some(60))?,
     };
 
     Ok(config)

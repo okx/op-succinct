@@ -37,6 +37,7 @@ Create a `.env.proposer` file in the `fault-proof` directory with all required v
 |----------|-------------|
 | `L1_RPC` | L1 RPC endpoint URL |
 | `L2_RPC` | L2 RPC endpoint URL |
+| `ANCHOR_STATE_REGISTRY_ADDRESS` | Address of the AnchorStateRegistry contract |
 | `FACTORY_ADDRESS` | Address of the DisputeGameFactory contract |
 | `GAME_TYPE` | Type identifier for the dispute game |
 | `NETWORK_PRIVATE_KEY` | Private key for the Succinct Prover Network. See the [Succinct Prover Network Quickstart](https://docs.succinct.xyz/docs/sp1/prover-network/quickstart) for setup instructions. (Set to `0x0000000000000000000000000000000000000000000000000000000000000001` if not using fast finality mode) |
@@ -79,7 +80,7 @@ Depending on the one you choose, you must provide the corresponding environment 
 | Variable | Description | Default Value |
 |----------|-------------|---------------|
 | `L1_CONFIG_DIR` | The directory containing the L1 chain configuration files. | `<project-root>/configs/L1` |
-| `L2_CONFIG_DIR` | Directory containing L2 chain configuration files | `<project-root>/configs/L2` |
+| `L2_CONFIG_DIR` | Directory containing L2 chain configuration files. On first run, the rollup config is fetched from the node RPC and cached here. On subsequent runs, the cached file is used. Delete the cached file and restart to force a refresh (e.g., after a hardfork activates). | `<project-root>/configs/L2` |
 | `MOCK_MODE` | Whether to use mock mode | `false` |
 | `FAST_FINALITY_MODE` | Whether to use fast finality mode | `false` |
 | `RANGE_PROOF_STRATEGY` | Proof fulfillment strategy for range proofs. Set to `hosted` to use the hosted proof strategy. | `reserved` |
@@ -96,7 +97,9 @@ Depending on the one you choose, you must provide the corresponding environment 
 | `USE_KMS_REQUESTER` | Whether to expect NETWORK_PRIVATE_KEY to be an AWS KMS key ARN instead of a plaintext private key. | `false` |
 | `MAX_PRICE_PER_PGU` | The maximum price per pgu for proving. | `300,000,000` |
 | `MIN_AUCTION_PERIOD` | The minimum auction period (in seconds). | `1` |
-| `TIMEOUT` | The timeout to use for proving (in seconds). | `14,400` (4 hours) |
+| `TIMEOUT` | The proving timeout (in seconds). Used as the server-side deadline for proof requests and as the client-side maximum wait time when polling for proof completion. | `14,400` (4 hours) |
+| `NETWORK_CALLS_TIMEOUT` | The timeout for individual network API calls like `get_proof_status` (in seconds). If a single call exceeds this, it will be retried. | `15` |
+| `AUCTION_TIMEOUT` | The auction timeout (in seconds). If a proof request remains in "Requested" state (no prover picked it up) beyond this duration after creation, the request is canceled. | `60` (1 minute) |
 | `RANGE_CYCLE_LIMIT` | The cycle limit to use for range proofs. | `1,000,000,000,000` |
 | `RANGE_GAS_LIMIT` | The gas limit to use for range proofs. | `1,000,000,000,000` |
 | `RANGE_SPLIT_COUNT` | The number of splits to use for range proofs. | `1` |
@@ -104,29 +107,34 @@ Depending on the one you choose, you must provide the corresponding environment 
 | `AGG_CYCLE_LIMIT` | The cycle limit to use for aggregation proofs. | `1,000,000,000,000` |
 | `AGG_GAS_LIMIT` | The gas limit to use for aggregation proofs. | `1,000,000,000,000` |
 | `WHITELIST` | The list of prover addresses that are allowed to bid on proof requests. | `` |
+| `BACKUP_PATH` | Path to backup file for persisting proposer state across restarts. Enables faster recovery by restoring cached state instead of re-syncing from the factory. | (disabled) |
+| `TX_CONFIRMATION_TIMEOUT` | Maximum time (in seconds) to wait for an L1 transaction to reach the required number of confirmations. Setting this too low risks timeout-triggered retries that can produce duplicate sibling games. | `60` |
 
 ```env
 # Required Configuration
-L1_RPC=                  # L1 RPC endpoint URL
-L2_RPC=                  # L2 RPC endpoint URL
-FACTORY_ADDRESS=         # Address of the DisputeGameFactory contract (obtained from deployment)
-GAME_TYPE=               # Type identifier for the dispute game (must match factory configuration)
+L1_RPC=                          # L1 RPC endpoint URL
+L2_RPC=                          # L2 RPC endpoint URL
+ANCHOR_STATE_REGISTRY_ADDRESS=   # Address of the AnchorStateRegistry contract
+FACTORY_ADDRESS=                 # Address of the DisputeGameFactory contract (obtained from deployment)
+GAME_TYPE=                       # Type identifier for the dispute game (must match factory configuration)
 
 # Transaction Signing Configuration (Choose one)
 # Option 1: Private Key Signer
-PRIVATE_KEY=             # Private key for transaction signing
+PRIVATE_KEY=                     # Private key for transaction signing
 # Option 2: Web3 Signer
-SIGNER_URL=              # URL of the web3 signer service
-SIGNER_ADDRESS=          # Address of the account managed by the web3 signer
+SIGNER_URL=                      # URL of the web3 signer service
+SIGNER_ADDRESS=                  # Address of the account managed by the web3 signer
 
 # Optional Configuration
-MOCK_MODE=false                          # Whether to use mock mode
-FAST_FINALITY_MODE=false                 # Whether to use fast finality mode
-RANGE_PROOF_STRATEGY=reserved            # Set to hosted to use hosted proof strategy
-AGG_PROOF_STRATEGY=reserved              # Set to hosted to use hosted proof strategy
-PROPOSAL_INTERVAL_IN_BLOCKS=1800         # Number of L2 blocks between proposals
-FETCH_INTERVAL=30                        # Polling interval in seconds
-PROPOSER_METRICS_PORT=9000               # The port to expose metrics on
+MOCK_MODE=false                  # Whether to use mock mode
+FAST_FINALITY_MODE=false         # Whether to use fast finality mode
+RANGE_PROOF_STRATEGY=reserved    # Set to hosted to use hosted proof strategy
+AGG_PROOF_STRATEGY=reserved      # Set to hosted to use hosted proof strategy
+PROPOSAL_INTERVAL_IN_BLOCKS=1800 # Number of L2 blocks between proposals
+FETCH_INTERVAL=30                # Polling interval in seconds
+PROPOSER_METRICS_PORT=9000       # The port to expose metrics on
+BACKUP_PATH=                     # persist state across restarts (e.g. /backup/proposer_state.json)
+TX_CONFIRMATION_TIMEOUT=60       # L1 tx confirmation timeout in seconds (raise for congested L1s)
 ```
 
 ### Configuration Steps
@@ -239,6 +247,127 @@ Key components:
 - `handle_game_creation`: Builds new games once the finalized head crosses the proposal interval and optionally triggers fast finality proving.
 - `resolve_games` / `claim_bonds`: Submit on-chain transactions for eligible games and trim settled entries from the cache.
 - `run`: Orchestrates the periodic loop, delegating work to the task scheduler.
+
+## Hardfork Transitions
+
+The proposer supports zero-downtime hardfork transitions through automatic vkey validation. When on-chain verification keys change (indicating a new game implementation), the old proposer gracefully stops creating new games while continuing to service its existing games until completion.
+
+### Proposer Identity
+
+At startup, the proposer computes its identity from three fields derived from the SP1 ELF programs and rollup configuration:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `aggregation_vkey` | Aggregation program ELF | Identifies the aggregation circuit version |
+| `range_vkey_commitment` | Range program ELF | Identifies the range circuit version |
+| `rollup_config_hash` | Rollup config file | Identifies the chain configuration |
+
+These values are logged at startup for operator visibility:
+
+```
+INFO Proposer initialized version="3.4.1-ethereum" aggregation_vkey="0x1234abcd..." range_vkey_commitment="0x5678efgh..." rollup_config_hash="0x9abc..."
+```
+
+### Owned vs Foreign Games
+
+The proposer classifies each game in the dispute DAG as either **owned** or **foreign** based on whether the game's identity fields match the proposer's:
+
+| Classification | Condition | Proposer Actions |
+|---------------|-----------|------------------|
+| **Owned** | All 3 identity fields match | Create, defend, prove, resolve, claim bonds |
+| **Foreign** | Any identity field differs | Track in DAG for canonical head calculation only |
+
+Foreign games are still tracked because they affect the canonical head calculation—new games must be proposed on top of the current canonical head regardless of which proposer created it.
+
+### Hardfork Detection
+
+Before creating a new game, the proposer calls `on_chain_vkeys_match()` to compare its identity against the factory's current game implementation:
+
+1. Query the factory for the current game implementation address
+2. Read `aggregationVkey`, `rangeVkeyCommitment`, and `rollupConfigHash` from the implementation
+3. Compare all three values against the proposer's identity
+
+If any value differs, the proposer logs:
+```
+INFO Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)
+```
+
+This check runs on every iteration of the proposer loop, so the transition is immediate once the on-chain implementation is upgraded.
+
+### Behavior During Hardfork
+
+When a hardfork is detected, the proposer's behavior changes:
+
+| Operation | Before Hardfork | After Hardfork |
+|-----------|-----------------|----------------|
+| **Game Creation** | Creates new games | Skips (vkey mismatch) |
+| **Game Defense** | Defends challenged games | Defends owned games only |
+| **Game Resolution** | Resolves eligible games | Resolves owned games only |
+| **Bond Claiming** | Claims from finalized games | Claims from owned games only |
+
+The proposer continues running and servicing owned games until all have been resolved and bonds claimed.
+
+### Zero-Downtime Transition Workflow
+
+To perform a hardfork with zero downtime:
+
+1. **Deploy new game implementation**
+   ```bash
+   just upgrade-game-impl
+   ```
+   This updates the factory to use the new implementation with updated vkeys.
+
+2. **Start new proposer**
+
+   Launch a new proposer instance with the updated ELF programs. It will immediately begin creating games using the new vkeys.
+
+3. **Keep old proposer running**
+
+   The old proposer detects the hardfork and stops creating games, but continues to:
+   - Defend any challenged owned games
+   - Resolve owned games once eligible
+   - Claim bonds from finalized owned games
+
+4. **Monitor transition**
+
+   Watch logs from both proposers. The old proposer will show:
+   ```
+   INFO Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)
+   ```
+
+5. **Shutdown old proposer**
+
+   Once the old proposer has no remaining owned games (all resolved and bonds claimed), it can be safely shut down.
+
+**Timeline**: Games may take up to `MAX_CHALLENGE_DURATION + MAX_PROVE_DURATION` to fully resolve after the hardfork. Plan for the old proposer to run for this duration.
+
+### Rollup Config During Hardforks
+
+The proposer caches the rollup config to `{L2_CONFIG_DIR}/{chain_id}.json` on first run and reuses the cached file on subsequent startups. This prevents the proposer from picking up a premature post-hardfork config when the node is upgraded before hardfork activation.
+
+**Normal operation**: No action needed. The config is fetched once and cached.
+
+**During hardfork transition**: If the node is upgraded before hardfork activation, the cached config protects the proposer from receiving the wrong config. A `WARN` log will appear if the cached config differs from the node RPC. The proposer's on-chain vkey check (`on_chain_vkeys_match`) independently prevents it from creating games with a mismatched config, so no operator action is needed.
+
+**New proposer setup**: When standing up a new proposer for a hardfork, it fetches the config fresh from RPC. If the node has already been upgraded but the hardfork hasn't activated yet, manually place the correct pre-hardfork config at `configs/L2/{chain_id}.json` before starting.
+
+### Logging and Monitoring
+
+Key log messages to monitor during transitions:
+
+| Log Message | Meaning |
+|-------------|---------|
+| `Proposer initialized version=...` | Proposer started with specific identity |
+| `Proposer vkeys mismatch...hardfork detected` | Hardfork detected, game creation disabled |
+| `Game created successfully` | New game proposed (new proposer) |
+| `Game proven successfully` | Defense completed for owned game |
+| `Resolved game` | Game resolution transaction submitted |
+| `Claimed bond` | Bond recovered from finalized game |
+
+Recommended alerts:
+- Alert when hardfork detection message appears (transition in progress)
+- Alert if old proposer has owned games remaining after expected duration
+- Monitor both proposers' game counts during transition period
 
 ## Development
 

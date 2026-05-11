@@ -1,8 +1,10 @@
+pub mod backup;
 pub mod challenger;
 pub mod config;
 pub mod contract;
 pub mod prometheus;
 pub mod proposer;
+pub mod prover;
 
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{address, keccak256, Address, FixedBytes, B256, U256};
@@ -15,8 +17,7 @@ use op_alloy_network::Optimism;
 use op_alloy_rpc_types::Transaction;
 
 use crate::contract::{
-    AnchorStateRegistry, DisputeGameFactory::DisputeGameFactoryInstance, GameStatus, IDisputeGame,
-    IFaultDisputeGame, IFaultDisputeGame::IFaultDisputeGameInstance, L2Output,
+    DisputeGameFactory::DisputeGameFactoryInstance, GameStatus, IDisputeGame, L2Output,
     OPSuccinctFaultDisputeGame,
 };
 
@@ -24,8 +25,13 @@ pub type L1Provider = RootProvider;
 pub type L2Provider = RootProvider<Optimism>;
 pub type L2NodeProvider = RootProvider<Optimism>;
 
+/// L2ToL1MessagePasser predeploy address (OP Stack).
+/// Ref: `op_alloy_consensus::L2_TO_L1_MESSAGE_PASSER_ADDRESS` (available from op-alloy v0.23+).
+const L2_TO_L1_MESSAGE_PASSER: Address = address!("0x4200000000000000000000000000000000000016");
+
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
+
 #[async_trait]
 pub trait L2ProviderTrait {
     /// Get the L2 block by number.
@@ -83,12 +89,18 @@ impl L2ProviderTrait for L2Provider {
             .await?;
         let l2_state_root = l2_block.header.state_root;
         let l2_claim_hash = l2_block.header.hash;
-        let l2_storage_root = self
-            .get_l2_storage_root(
-                address!("0x4200000000000000000000000000000000000016"),
-                BlockNumberOrTag::Number(l2_block_number.to::<u64>()),
-            )
-            .await?;
+        // Post-Isthmus: withdrawals_root carries the L2ToL1MessagePasser storage root.
+        // Pre-Isthmus: it's nil or EMPTY_ROOT_HASH, so fall back to eth_getProof.
+        let l2_storage_root = match l2_block.header.withdrawals_root {
+            Some(root) if root != alloy_trie::EMPTY_ROOT_HASH => root,
+            _ => {
+                self.get_l2_storage_root(
+                    L2_TO_L1_MESSAGE_PASSER,
+                    BlockNumberOrTag::Number(l2_block_number.to::<u64>()),
+                )
+                .await?
+            }
+        };
 
         let l2_claim_encoded = L2Output {
             zero: 0,
@@ -106,28 +118,18 @@ pub trait FactoryTrait<P>
 where
     P: Provider + Clone,
 {
+    /// Returns the game implementation for the given game type.
+    /// Errors if the game type is not registered (zero address).
+    async fn game_impl(
+        &self,
+        game_type: u32,
+    ) -> Result<OPSuccinctFaultDisputeGame::OPSuccinctFaultDisputeGameInstance<P>>;
+
     /// Fetches the bond required to create a game.
     async fn fetch_init_bond(&self, game_type: u32) -> Result<U256>;
 
-    /// Fetches the challenger bond required to challenge a game.
-    async fn fetch_challenger_bond(&self, game_type: u32) -> Result<U256>;
-
     /// Fetches the latest game index.
     async fn fetch_latest_game_index(&self) -> Result<Option<U256>>;
-
-    /// Get the anchor state registry address.
-    async fn get_anchor_state_registry_address(&self, game_type: u32) -> Result<Address>;
-
-    /// Get the anchor L2 block number.
-    ///
-    /// This function returns the L2 block number of the anchor game for a given game type.
-    async fn get_anchor_l2_block_number(&self, game_type: u32) -> Result<U256>;
-
-    /// Get the anchor game for the given game type.
-    async fn get_anchor_game(&self, game_type: u32) -> Result<IFaultDisputeGameInstance<P>>;
-
-    /// Check if a game is finalized.
-    async fn is_game_finalized(&self, game_type: u32, game_address: Address) -> Result<bool>;
 }
 
 #[async_trait]
@@ -135,18 +137,23 @@ impl<P> FactoryTrait<P> for DisputeGameFactoryInstance<P>
 where
     P: Provider + Clone,
 {
+    /// Returns the game implementation for the given game type.
+    /// Errors if the game type is not registered (zero address).
+    async fn game_impl(
+        &self,
+        game_type: u32,
+    ) -> Result<OPSuccinctFaultDisputeGame::OPSuccinctFaultDisputeGameInstance<P>> {
+        let game_impl_address = self.gameImpls(game_type).call().await?;
+        if game_impl_address == Address::ZERO {
+            bail!("Game type {game_type} is not registered in the factory");
+        }
+        Ok(OPSuccinctFaultDisputeGame::new(game_impl_address, self.provider().clone()))
+    }
+
     /// Fetches the bond required to create a game.
     async fn fetch_init_bond(&self, game_type: u32) -> Result<U256> {
         let init_bond = self.initBonds(game_type).call().await?;
         Ok(init_bond)
-    }
-
-    /// Fetches the challenger bond required to challenge a game.
-    async fn fetch_challenger_bond(&self, game_type: u32) -> Result<U256> {
-        let game_impl_address = self.gameImpls(game_type).call().await?;
-        let game_impl = OPSuccinctFaultDisputeGame::new(game_impl_address, self.provider());
-        let challenger_bond = game_impl.challengerBond().call().await?;
-        Ok(challenger_bond)
     }
 
     /// Fetches the latest game index.
@@ -162,47 +169,6 @@ where
         tracing::debug!("Latest game index: {:?}", latest_game_index);
 
         Ok(Some(latest_game_index))
-    }
-
-    /// Get the anchor state registry address.
-    async fn get_anchor_state_registry_address(&self, game_type: u32) -> Result<Address> {
-        let game_impl_address = self.gameImpls(game_type).call().await?;
-        let game_impl = OPSuccinctFaultDisputeGame::new(game_impl_address, self.provider());
-        let anchor_state_registry_address = game_impl.anchorStateRegistry().call().await?;
-        Ok(anchor_state_registry_address)
-    }
-
-    /// Get the anchor L2 block number.
-    ///
-    /// This function returns the L2 block number of the anchor game for a given game type.
-    async fn get_anchor_l2_block_number(&self, game_type: u32) -> Result<U256> {
-        let anchor_state_registry_address =
-            self.get_anchor_state_registry_address(game_type).await?;
-        let anchor_state_registry =
-            AnchorStateRegistry::new(anchor_state_registry_address, self.provider());
-        let anchor_l2_block_number = anchor_state_registry.getAnchorRoot().call().await?._1;
-        Ok(anchor_l2_block_number)
-    }
-
-    /// Get the anchor game for the given game type.
-    async fn get_anchor_game(&self, game_type: u32) -> Result<IFaultDisputeGameInstance<P>> {
-        let anchor_state_registry_address =
-            self.get_anchor_state_registry_address(game_type).await?;
-        let anchor_state_registry =
-            AnchorStateRegistry::new(anchor_state_registry_address, self.provider());
-        let anchor_game = anchor_state_registry.anchorGame().call().await?;
-        let anchor_game = IFaultDisputeGame::new(anchor_game, self.provider().clone());
-        Ok(anchor_game)
-    }
-
-    /// Check if a game is finalized.
-    async fn is_game_finalized(&self, game_type: u32, game_address: Address) -> Result<bool> {
-        let anchor_state_registry_address =
-            self.get_anchor_state_registry_address(game_type).await?;
-        let anchor_state_registry =
-            AnchorStateRegistry::new(anchor_state_registry_address, self.provider());
-        let is_finalized = anchor_state_registry.isGameFinalized(game_address).call().await?;
-        Ok(is_finalized)
     }
 }
 
@@ -238,4 +204,19 @@ where
     let parent_game_contract = IDisputeGame::new(parent_game_address, factory.provider());
 
     Ok(parent_game_contract.status().call().await? == GameStatus::CHALLENGER_WINS)
+}
+
+/// Prefix used for transaction revert errors.
+pub const TX_REVERTED_PREFIX: &str = "transaction reverted:";
+
+/// Extension trait for checking transaction error types.
+pub trait TxErrorExt {
+    /// Returns true if this error indicates a transaction revert (definitive failure).
+    fn is_revert(&self) -> bool;
+}
+
+impl TxErrorExt for anyhow::Error {
+    fn is_revert(&self) -> bool {
+        self.to_string().starts_with(TX_REVERTED_PREFIX)
+    }
 }

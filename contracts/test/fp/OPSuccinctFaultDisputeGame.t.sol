@@ -3,10 +3,12 @@ pragma solidity ^0.8.15;
 
 // Testing
 import "forge-std/Test.sol";
+import {Proxy} from "@optimism/src/universal/Proxy.sol";
+import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 // Libraries
-import {Claim, Duration, GameStatus, GameType, Hash, OutputRoot, Timestamp} from "src/dispute/lib/Types.sol";
+import {Claim, Duration, GameStatus, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
 import {
     BadAuth,
     IncorrectBondAmount,
@@ -31,19 +33,18 @@ import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {OPSuccinctFaultDisputeGame} from "src/fp/OPSuccinctFaultDisputeGame.sol";
 import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
 import {AnchorStateRegistry} from "src/dispute/AnchorStateRegistry.sol";
-import {SuperchainConfig} from "src/L1/SuperchainConfig.sol";
 import {AccessManager} from "src/fp/AccessManager.sol";
 
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
-import {ISuperchainConfig} from "interfaces/L1/ISuperchainConfig.sol";
-import {IOptimismPortal2} from "interfaces/L1/IOptimismPortal2.sol";
+import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 // Utils
 import {MockOptimismPortal2} from "../../src/utils/MockOptimismPortal2.sol";
+import {MockSystemConfig} from "../../src/utils/MockSystemConfig.sol";
 
 contract OPSuccinctFaultDisputeGameTest is Test {
     // Event definitions matching those in OPSuccinctFaultDisputeGame.
@@ -52,7 +53,8 @@ contract OPSuccinctFaultDisputeGameTest is Test {
     event Resolved(GameStatus indexed status);
 
     DisputeGameFactory factory;
-    ERC1967Proxy factoryProxy;
+    Proxy factoryProxy;
+    ProxyAdmin proxyAdmin;
 
     OPSuccinctFaultDisputeGame gameImpl;
     OPSuccinctFaultDisputeGame parentGame;
@@ -83,12 +85,20 @@ contract OPSuccinctFaultDisputeGameTest is Test {
     OPSuccinctFaultDisputeGame separateParentGame;
 
     function setUp() public {
+        // Deploy ProxyAdmin with this test contract as owner.
+        proxyAdmin = new ProxyAdmin(address(this));
+
         // Deploy the implementation contract for DisputeGameFactory.
         DisputeGameFactory factoryImpl = new DisputeGameFactory();
 
-        // Deploy a proxy pointing to the factory implementation.
-        factoryProxy = new ERC1967Proxy(
-            address(factoryImpl), abi.encodeWithSelector(DisputeGameFactory.initialize.selector, address(this))
+        // Deploy an Optimism Proxy pointing to ProxyAdmin.
+        factoryProxy = new Proxy(address(proxyAdmin));
+
+        // Initialize the factory through ProxyAdmin.
+        proxyAdmin.upgradeAndCall(
+            payable(address(factoryProxy)),
+            address(factoryImpl),
+            abi.encodeWithSelector(DisputeGameFactory.initialize.selector, address(this))
         );
 
         // Cast the proxy to the factory contract.
@@ -98,25 +108,29 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         SP1MockVerifier sp1Verifier = new SP1MockVerifier();
 
         // Create an anchor state registry.
-        SuperchainConfig superchainConfig = new SuperchainConfig();
+        // Pass address(this) as guardian so the test contract can call guardian-restricted functions.
+        MockSystemConfig mockSystemConfig = new MockSystemConfig(address(this));
         portal = new MockOptimismPortal2(gameType, disputeGameFinalityDelaySeconds);
-        OutputRoot memory startingAnchorRoot = OutputRoot({root: Hash.wrap(keccak256("genesis")), l2BlockNumber: 0});
+        Proposal memory startingAnchorRoot = Proposal({root: Hash.wrap(keccak256("genesis")), l2SequenceNumber: 0});
 
-        ERC1967Proxy proxy = new ERC1967Proxy(
-            address(new AnchorStateRegistry()),
+        AnchorStateRegistry registryImpl = new AnchorStateRegistry(disputeGameFinalityDelaySeconds);
+        Proxy registryProxy = new Proxy(address(proxyAdmin));
+        proxyAdmin.upgradeAndCall(
+            payable(address(registryProxy)),
+            address(registryImpl),
             abi.encodeCall(
                 AnchorStateRegistry.initialize,
                 (
-                    ISuperchainConfig(address(superchainConfig)),
+                    ISystemConfig(address(mockSystemConfig)),
                     IDisputeGameFactory(address(factory)),
-                    IOptimismPortal2(payable(address(portal))),
-                    startingAnchorRoot
+                    startingAnchorRoot,
+                    gameType
                 )
             )
         );
-        anchorStateRegistry = AnchorStateRegistry(address(proxy));
+        anchorStateRegistry = AnchorStateRegistry(address(registryProxy));
 
-        // Create a new access manager with 1 hour permissionless timeout.
+        // Create a new access manager with a 2 week permissionless timeout.
         accessManager = new AccessManager(2 weeks, IDisputeGameFactory(address(factory)));
         accessManager.setProposer(proposer, true);
         accessManager.setChallenger(challenger, true);
@@ -172,10 +186,10 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         parentGame.resolve();
 
         vm.warp(parentGame.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1 seconds);
-        parentGame.claimCredit(proposer);
 
-        // Create the child game referencing parent index = 0.
-        // The child game is at index 1.
+        // Create the child game BEFORE claiming credit on parentGame. claimCredit() triggers
+        // closeGame() which sets parentGame as anchor — after that, parentGame can no longer be
+        // used as a parent via index (its l2SeqNum would equal the anchor's).
         game = OPSuccinctFaultDisputeGame(
             address(
                 factory.create{value: 1 ether}(
@@ -186,6 +200,8 @@ contract OPSuccinctFaultDisputeGameTest is Test {
                 )
             )
         );
+
+        parentGame.claimCredit(proposer);
 
         vm.stopPrank();
     }
@@ -209,8 +225,14 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         assertEq(game.rootClaim().raw(), rootClaim.raw());
         assertEq(game.maxChallengeDuration().raw(), maxChallengeDuration.raw());
         assertEq(game.maxProveDuration().raw(), maxProveDuration.raw());
+        assertEq(game.l2SequenceNumber(), l2BlockNumber);
+        assertEq(game.createdAt().raw(), block.timestamp);
+        assertEq(game.extraData(), abi.encodePacked(l2BlockNumber, parentIndex));
+        assertEq(game.parentIndex(), parentIndex);
+        assertEq(address(game.anchorStateRegistry()), address(anchorStateRegistry));
+        assertEq(address(game.accessManager()), address(accessManager));
         assertEq(address(game.disputeGameFactory()), address(factory));
-        assertEq(game.l2BlockNumber(), l2BlockNumber);
+        assertTrue(game.wasRespectedGameTypeWhenCreated());
 
         // The parent's block number was 1000.
         assertEq(game.startingBlockNumber(), 1000);
@@ -268,10 +290,17 @@ contract OPSuccinctFaultDisputeGameTest is Test {
 
         // Proposer gets the bond back.
         vm.warp(game.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1 seconds);
+
+        // Returns normal mode credit
+        assertEq(game.credit(proposer), 1 ether);
+
         game.claimCredit(proposer);
+
+        assertEq(game.credit(proposer), 0);
 
         // Check final state
         assertEq(uint8(game.status()), uint8(GameStatus.DEFENDER_WINS));
+        assertTrue(game.gameOver());
         // The contract should have paid back the proposer.
         assertEq(address(game).balance, 0);
         // Proposer posted 1 ether, so they get it back.
@@ -460,23 +489,17 @@ contract OPSuccinctFaultDisputeGameTest is Test {
     // This triggers UnexpectedRootClaim in initialize().
     // =========================================
     function testCannotCreateChildWithSmallerBlockThanParent() public {
-        // The parent game used L2 block 1234567890.
-        // Try to create a child game that references l2BlockNumber = 1.
+        // Use game (index 1, l2SeqNum=2000) as parent — it's ahead of anchor (l2SeqNum=1000).
+        // Try to create a child game with l2BlockNumber = 1, which is smaller than parent's 2000.
         vm.startPrank(proposer);
         vm.deal(proposer, 1 ether);
 
-        // We expect revert
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                UnexpectedRootClaim.selector,
-                Claim.wrap(keccak256("rootClaim")) // The rootClaim we pass.
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(UnexpectedRootClaim.selector, Claim.wrap(keccak256("rootClaim"))));
 
         factory.create{value: 1 ether}(
             gameType,
             rootClaim,
-            abi.encodePacked(uint256(1), uint32(0)) // L2 block is smaller than parent's block.
+            abi.encodePacked(uint256(1), uint32(1)) // L2 block is smaller than parent's block.
         );
         vm.stopPrank();
     }
@@ -575,7 +598,9 @@ contract OPSuccinctFaultDisputeGameTest is Test {
     // Test: Cannot create a game with a blacklisted parent game
     // =========================================
     function testParentGameNotValid() public {
-        portal.blacklistDisputeGame(IDisputeGame(address(game)));
+        // In v5.0.0, blacklisting is done through AnchorStateRegistry (requires guardian).
+        // This test contract is the guardian via MockSystemConfig.
+        anchorStateRegistry.blacklistDisputeGame(IDisputeGame(address(game)));
 
         vm.startPrank(proposer);
         vm.deal(proposer, 1 ether);
@@ -587,28 +612,29 @@ contract OPSuccinctFaultDisputeGameTest is Test {
     }
 
     // =========================================
-    // Test: Cannot create a game with a parent game that is not respected
+    // Test: Cannot create a game with a retired parent game
+    // Note: In v5.0.0, "respected" status is based on wasRespectedGameTypeWhenCreated flag,
+    // not current game type. The retirement mechanism is used to invalidate old games.
     // =========================================
-    function testParentGameNotRespected() public {
-        // Create a game that is not respected at index 2.
+    function testParentGameRetired() public {
+        // Create a game at index 2.
         vm.startPrank(proposer);
         vm.deal(proposer, 1 ether);
         factory.create{value: 1 ether}(
-            gameType, Claim.wrap(keccak256("not-respected-parent-game")), abi.encodePacked(uint256(3000), uint32(1))
+            gameType, Claim.wrap(keccak256("will-be-retired-parent")), abi.encodePacked(uint256(3000), uint32(1))
         );
         vm.stopPrank();
 
-        // Set the respected game type to a different game type.
-        portal.setRespectedGameType(GameType.wrap(43));
+        // Update the retirement timestamp (guardian function) to retire all existing games.
+        // This test contract is the guardian via MockSystemConfig.
+        anchorStateRegistry.updateRetirementTimestamp();
 
-        // Try to create a game with a parent game that is not respected.
+        // Try to create a game with a retired parent game.
         vm.startPrank(proposer);
         vm.deal(proposer, 1 ether);
         vm.expectRevert(InvalidParentGame.selector);
         factory.create{value: 1 ether}(
-            gameType,
-            Claim.wrap(keccak256("child-with-not-respected-parent")),
-            abi.encodePacked(uint256(4000), uint32(2))
+            gameType, Claim.wrap(keccak256("child-with-retired-parent")), abi.encodePacked(uint256(4000), uint32(2))
         );
         vm.stopPrank();
     }
@@ -633,16 +659,19 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         game.claimCredit(proposer);
     }
 
+    function _finalizeAndClose(OPSuccinctFaultDisputeGame _game) internal {
+        (,,,,, Timestamp deadline) = _game.claimData();
+        vm.warp(deadline.raw() + 1);
+        _game.resolve();
+        vm.warp(_game.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1 seconds);
+        _game.closeGame();
+    }
+
     // =========================================
     // Test: Check if anchor game is updated
     // =========================================
     function testAnchorGameUpdated() public {
-        (,,,,, Timestamp deadline) = game.claimData();
-        vm.warp(deadline.raw() + 1);
-        game.resolve();
-
-        vm.warp(game.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1 seconds);
-        game.closeGame();
+        _finalizeAndClose(game);
 
         assertEq(address(anchorStateRegistry.anchorGame()), address(game));
     }
@@ -686,9 +715,17 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         // Deploy the implementation contract for new DisputeGameFactory.
         DisputeGameFactory newFactoryImpl = new DisputeGameFactory();
 
-        // Deploy a proxy pointing to the new factory implementation.
-        ERC1967Proxy newFactoryProxy = new ERC1967Proxy(
-            address(newFactoryImpl), abi.encodeWithSelector(DisputeGameFactory.initialize.selector, address(this))
+        // Deploy a new ProxyAdmin for this factory.
+        ProxyAdmin newProxyAdmin = new ProxyAdmin(address(this));
+
+        // Deploy an Optimism Proxy pointing to the new ProxyAdmin.
+        Proxy newFactoryProxy = new Proxy(address(newProxyAdmin));
+
+        // Initialize the new factory through ProxyAdmin.
+        newProxyAdmin.upgradeAndCall(
+            payable(address(newFactoryProxy)),
+            address(newFactoryImpl),
+            abi.encodeWithSelector(DisputeGameFactory.initialize.selector, address(this))
         );
 
         // Cast the proxy to the DisputeGameFactory interface.
@@ -724,7 +761,7 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         vm.prank(proposer);
         vm.deal(proposer, 1 ether);
         factory.create{value: 1 ether}(
-            gameType, Claim.wrap(keccak256("new-claim-2")), abi.encodePacked(l2BlockNumber, parentIndex)
+            gameType, Claim.wrap(keccak256("new-claim-2")), abi.encodePacked(uint256(3000), uint32(1))
         );
 
         // Warp time forward past the timeout
@@ -775,5 +812,158 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         factory.create{value: 1 ether}(
             gameType, Claim.wrap(keccak256("new-claim-4")), abi.encodePacked(uint256(5000), uint32(1))
         );
+    }
+
+    // =========================================
+    // Test: Parent game must be ahead of anchor
+    // =========================================
+    function testParentMustBeAheadOfAnchor() public {
+        // Anchor is parentGame (l2SeqNum=1000) after setUp. Create game3 ahead of anchor.
+        vm.startPrank(proposer);
+        vm.deal(proposer, 2 ether);
+        factory.create{value: 1 ether}(
+            gameType, Claim.wrap(keccak256("claim3")), abi.encodePacked(uint256(3000), uint32(1))
+        );
+        vm.stopPrank();
+
+        // Finalize game (index 1) to make it anchor (l2SeqNum=2000).
+        _finalizeAndClose(game);
+
+        // game3 (l2SeqNum=3000) > anchor (2000) — valid parent.
+        vm.startPrank(proposer);
+        factory.create{value: 1 ether}(
+            gameType, Claim.wrap(keccak256("claim4")), abi.encodePacked(uint256(4000), uint32(2))
+        );
+        vm.stopPrank();
+
+        // game (l2SeqNum=2000) <= anchor (2000) — invalid parent.
+        vm.startPrank(proposer);
+        vm.deal(proposer, 1 ether);
+        vm.expectRevert(InvalidParentGame.selector);
+        factory.create{value: 1 ether}(
+            gameType, Claim.wrap(keccak256("claim5")), abi.encodePacked(uint256(4000), uint32(1))
+        );
+        vm.stopPrank();
+    }
+
+    // =========================================
+    // Test: uint32.max with l2BlockNumber <= anchor reverts
+    // =========================================
+    function testCannotCreateGenesisPathBelowAnchor() public {
+        // Finalize game (index 1) so anchor advances to l2SeqNum=2000.
+        _finalizeAndClose(game);
+
+        // uint32.max with l2BlockNumber=2000 (== anchor) should revert.
+        vm.startPrank(proposer);
+        vm.deal(proposer, 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(UnexpectedRootClaim.selector, Claim.wrap(keccak256("at-anchor"))));
+        factory.create{value: 1 ether}(
+            gameType, Claim.wrap(keccak256("at-anchor")), abi.encodePacked(uint256(2000), type(uint32).max)
+        );
+        vm.stopPrank();
+
+        // uint32.max with l2BlockNumber=1999 (< anchor) should also revert.
+        vm.startPrank(proposer);
+        vm.deal(proposer, 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(UnexpectedRootClaim.selector, Claim.wrap(keccak256("below-anchor"))));
+        factory.create{value: 1 ether}(
+            gameType, Claim.wrap(keccak256("below-anchor")), abi.encodePacked(uint256(1999), type(uint32).max)
+        );
+        vm.stopPrank();
+    }
+
+    // =========================================
+    // Test: Chain from uint32.max game via parent index
+    // =========================================
+    function testChainFromAnchorPathGame() public {
+        // Finalize game (index 1) so anchor advances to l2SeqNum=2000.
+        _finalizeAndClose(game);
+
+        // Create game via uint32.max (starts from anchor).
+        vm.startPrank(proposer);
+        vm.deal(proposer, 2 ether);
+        factory.create{value: 1 ether}(
+            gameType, Claim.wrap(keccak256("fromAnchor")), abi.encodePacked(uint256(3000), type(uint32).max)
+        );
+
+        // Chain a child from the uint32.max game via parent index. Its l2SeqNum (3000) > anchor (2000).
+        uint32 fromAnchorIndex = uint32(factory.gameCount() - 1);
+        OPSuccinctFaultDisputeGame child = OPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: 1 ether}(
+                    gameType, Claim.wrap(keccak256("child")), abi.encodePacked(uint256(4000), fromAnchorIndex)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        // Child inherits fromAnchor's root as starting point.
+        assertEq(child.startingRootHash().raw(), keccak256("fromAnchor"));
+        assertEq(child.startingBlockNumber(), 3000);
+    }
+
+    // =========================================
+    // Test: uint32.max uses latest anchor after multiple advances
+    // =========================================
+    function testGenesisPathUsesLatestAnchorAfterMultipleAdvances() public {
+        // Advance anchor twice: game (l2SeqNum=2000) then game3 (l2SeqNum=3000).
+        _finalizeAndClose(game);
+        assertEq(address(anchorStateRegistry.anchorGame()), address(game));
+
+        vm.startPrank(proposer);
+        vm.deal(proposer, 2 ether);
+        OPSuccinctFaultDisputeGame game3 = OPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: 1 ether}(
+                    gameType, Claim.wrap(keccak256("claim3")), abi.encodePacked(uint256(3000), type(uint32).max)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        _finalizeAndClose(game3);
+        assertEq(address(anchorStateRegistry.anchorGame()), address(game3));
+
+        // uint32.max should now start from game3's root (latest anchor).
+        vm.startPrank(proposer);
+        vm.deal(proposer, 1 ether);
+        OPSuccinctFaultDisputeGame latest = OPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: 1 ether}(
+                    gameType, Claim.wrap(keccak256("latest")), abi.encodePacked(uint256(4000), type(uint32).max)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        assertEq(latest.startingRootHash().raw(), keccak256("claim3"));
+        assertEq(latest.startingBlockNumber(), 3000);
+    }
+
+    // =========================================
+    // Test: Retirement recovery resumes from anchor, not genesis
+    // =========================================
+    function testRetirementRecoveryFromAnchor() public {
+        // Finalize game (index 1) so it becomes anchor at l2SeqNum=2000.
+        _finalizeAndClose(game);
+
+        // Guardian retires all games.
+        anchorStateRegistry.updateRetirementTimestamp();
+
+        // uint32.max should still work and start from current anchor, not genesis.
+        vm.startPrank(proposer);
+        vm.deal(proposer, 1 ether);
+        OPSuccinctFaultDisputeGame recovered = OPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: 1 ether}(
+                    gameType, Claim.wrap(keccak256("recovered")), abi.encodePacked(uint256(3000), type(uint32).max)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        // Starts from anchor (l2SeqNum=2000), not genesis (l2SeqNum=0).
+        assertEq(recovered.startingBlockNumber(), 2000);
+        assertEq(recovered.startingRootHash().raw(), rootClaim.raw());
     }
 }

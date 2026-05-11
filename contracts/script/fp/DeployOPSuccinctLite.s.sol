@@ -21,8 +21,8 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierPlonk.sol";
-import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v5.0.0/SP1VerifierGroth16.sol";
+import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
+import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
 import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
@@ -118,10 +118,11 @@ contract DeployOPSuccinctLite is Script, Utils {
         }
         
         // Call setImplementation through Transactor's CALL
-        bytes memory setImplementationData = abi.encodeWithSelector(
-            DisputeGameFactory.setImplementation.selector,
-            gameType,
-            IDisputeGame(gameImplAddress)
+        // Use explicit signature for overloaded function (setImplementation has multiple overloads)
+        bytes memory setImplementationData = abi.encodeWithSignature(
+            "setImplementation(uint32,address)",
+            GameType.unwrap(gameType),
+            gameImplAddress
         );
         
         try transactor.CALL(factoryAddress, setImplementationData, 0) returns (bool success2, bytes memory) {
