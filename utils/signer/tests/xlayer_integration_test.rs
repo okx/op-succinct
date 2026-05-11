@@ -1,328 +1,190 @@
-// Integration tests for XLayer remote signer
-// These tests require a real XLayer API endpoint and are skipped in CI
-// To run manually: cargo test --package op-succinct-signer-utils --test xlayer_integration_test -- --ignored
+// Integration tests for the XLayer remote signer.
+// Each test exercises the full sign + poll round-trip against a real remote
+// service, so all are #[ignore]'d. The default endpoint is the asset-onchain
+// test cluster; any field can be overridden via env vars.
+//
+// Run manually:
+//   cargo test --package op-succinct-signer-utils \
+//     --test xlayer_integration_test -- --ignored --nocapture
+//
+// Optional env (override hardcoded defaults below):
+//   XLAYER_ENDPOINT, XLAYER_ADDRESS, XLAYER_USER_ID,
+//   XLAYER_ACCESS_KEY, XLAYER_SECRET_KEY
+//
+// Note: auth is skipped entirely when XLAYER_ACCESS_KEY or XLAYER_SECRET_KEY
+// is empty (matches Go's addAuth behavior).
 
 #![cfg(test)]
 
 use alloy_primitives::{address, Bytes, U256};
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use op_succinct_signer_utils::xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
 use std::time::Duration;
 
-/// Helper to create test config from environment variables
-/// Set these in .env file:
-/// - XLAYER_ENDPOINT
-/// - XLAYER_ADDRESS
-/// - XLAYER_USER_ID
-/// - XLAYER_ACCESS_KEY
-/// - XLAYER_SECRET_KEY
-fn get_test_config() -> Option<XLayerConfig> {
-    dotenv::dotenv().ok();
+const DEFAULT_ENDPOINT: &str = "http://asset-onchain.forked-contract-risk.svc.test2.local:7001";
+const TEST_ADDRESS: alloy_primitives::Address =
+    address!("d6dda5aa7749142b7fda3fe4662c9f346101b8a6");
+const DEFAULT_USER_ID: i32 = 0;
+const SYMBOL: i32 = 2882;
+const PROJECT_SYMBOL: i32 = 3011;
+const OPERATE_SYMBOL: i32 = 2;
+const OPERATE_AMOUNT: &str = "0";
+const SYS_FROM: i32 = 3;
+const REQUEST_SIGN_URI: &str = "/priapi/v1/assetonchain/ecology/ecologyOperate";
+const QUERY_SIGN_URI: &str = "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo";
+const TIMEOUT: Duration = Duration::from_secs(30);
 
-    let endpoint = std::env::var("XLAYER_ENDPOINT").ok()?;
-    let address = std::env::var("XLAYER_ADDRESS").ok()?;
-    let user_id = std::env::var("XLAYER_USER_ID").ok()?.parse().ok()?;
-    let access_key = std::env::var("XLAYER_ACCESS_KEY").ok()?;
-    let secret_key = std::env::var("XLAYER_SECRET_KEY").ok()?;
+const CHAIN_ID: u64 = 11155111; // Sepolia
+const MAX_FEE_PER_GAS: u128 = 2_000_000_000;
+const MAX_PRIORITY_FEE_PER_GAS: u128 = 1_000_000_000;
 
-    Some(XLayerConfig {
+fn build_config() -> XLayerConfig {
+    let endpoint =
+        std::env::var("XLAYER_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
+    let address = match std::env::var("XLAYER_ADDRESS") {
+        Ok(s) => s.parse().expect("XLAYER_ADDRESS not a valid Ethereum address"),
+        Err(_) => TEST_ADDRESS,
+    };
+    let user_id = std::env::var("XLAYER_USER_ID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_USER_ID);
+    let access_key = std::env::var("XLAYER_ACCESS_KEY").unwrap_or_default();
+    let secret_key = std::env::var("XLAYER_SECRET_KEY").unwrap_or_default();
+
+    XLayerConfig {
         endpoint,
-        address: address.parse().ok()?,
+        address,
         user_id,
-        symbol: 2882,
-        project_symbol: 3011,
-        operate_symbol: 2,
-        operate_amount: "0".to_string(),
-        sys_from: 3,
-        request_sign_uri: "/priapi/v1/assetonchain/ecology/ecologyOperate".to_string(),
-        query_sign_uri: "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string(),
+        symbol: SYMBOL,
+        project_symbol: PROJECT_SYMBOL,
+        operate_symbol: OPERATE_SYMBOL,
+        operate_amount: OPERATE_AMOUNT.to_string(),
+        sys_from: SYS_FROM,
+        request_sign_uri: REQUEST_SIGN_URI.to_string(),
+        query_sign_uri: QUERY_SIGN_URI.to_string(),
         access_key,
         secret_key,
-        timeout: Duration::from_secs(30),
-    })
+        timeout: TIMEOUT,
+    }
 }
 
+fn build_tx(
+    to: alloy_primitives::Address,
+    gas: u64,
+    nonce: u64,
+    data: Vec<u8>,
+) -> TransactionRequest {
+    let mut tx = TransactionRequest::default();
+    tx.to = Some(alloy_primitives::TxKind::Call(to));
+    tx.gas = Some(gas);
+    tx.nonce = Some(nonce);
+    tx.max_fee_per_gas = Some(MAX_FEE_PER_GAS);
+    tx.max_priority_fee_per_gas = Some(MAX_PRIORITY_FEE_PER_GAS);
+    tx.input = TransactionInput::new(Bytes::from(data));
+    tx.value = Some(U256::ZERO);
+    tx.chain_id = Some(CHAIN_ID);
+    tx
+}
+
+async fn run_sign_flow(label: &str, tx: TransactionRequest) {
+    let config = build_config();
+    println!("[{label}] Target endpoint: {}", config.endpoint);
+
+    let client = XLayerRemoteClient::new(config);
+
+    let signed = client
+        .sign_transaction(&tx, Bytes::new())
+        .await
+        .unwrap_or_else(|e| panic!("[{label}] sign request failed: {e}"));
+
+    println!("[{label}] Signed transaction: {} bytes", signed.len());
+    assert!(!signed.is_empty(), "[{label}] signed payload should not be empty");
+}
+
+// 1. DisputeGameFactory.create — Proposer (OperateType::Proposer = 20)
 #[tokio::test]
-#[ignore] // Skip in CI, run manually with: cargo test -- --ignored
-async fn test_proposer_create_full_flow() {
-    let config = get_test_config().expect(
-        "\n❌ XLayer configuration not found!\n\
-         Please set the following environment variables:\n\
-         - XLAYER_ENDPOINT\n\
-         - XLAYER_ADDRESS\n\
-         - XLAYER_USER_ID\n\
-         - XLAYER_ACCESS_KEY\n\
-         - XLAYER_SECRET_KEY\n\n\
-         See INTEGRATION_TEST_GUIDE.md for details.\n"
-    );
-
-    let client = XLayerRemoteClient::new(config.clone());
-
-    // DisputeGameFactory.create method signature
-    let method_sig = hex::decode("82ecf2f6").unwrap();
-    let mut data = method_sig.clone();
-
-    // gameType = 1 (padded to 32 bytes)
+#[ignore]
+async fn test_proposer_create() {
+    let mut data = hex::decode("82ecf2f6").unwrap();
+    // gameType = 1 (uint32 padded to 32 bytes)
     data.extend_from_slice(&[0u8; 28]);
     data.extend_from_slice(&[0, 0, 0, 1]);
-
-    // rootClaim (32 bytes)
+    // rootClaim (bytes32)
     data.extend_from_slice(&[0x12u8; 32]);
-
-    // extraData offset = 96
+    // extraData offset = 0x60
     data.extend_from_slice(&[0u8; 24]);
     data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]);
-
     // extraData length = 8
     data.extend_from_slice(&[0u8; 24]);
     data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 8]);
-
-    // extraData = 8 bytes (L2 block number)
+    // extraData = L2 block number (8 bytes)
     data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0x01, 0x00]);
 
-    let mut tx = TransactionRequest::default();
-    tx.to = Some(alloy_primitives::TxKind::Call(address!(
-        "0000000000000000000000000000000000000001"
-    )));
-    tx.gas = Some(1000000);
-    tx.nonce = Some(1);
-    tx.max_fee_per_gas = Some(2000000000);
-    tx.max_priority_fee_per_gas = Some(1000000000);
-    tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-    tx.value = Some(U256::ZERO);
-    tx.chain_id = Some(11155111); // Sepolia
-
-    println!("Sending transaction to XLayer remote signer...");
-    let result = client
-        .sign_transaction(&tx, Bytes::new())
-        .await;
-
-    match result {
-        Ok(signed_tx_bytes) => {
-            println!("✅ Transaction signed successfully!");
-            println!("Signed transaction length: {} bytes", signed_tx_bytes.len());
-            assert!(!signed_tx_bytes.is_empty());
-        }
-        Err(e) => {
-            println!("❌ Signing failed: {}", e);
-            panic!("Integration test failed: {}", e);
-        }
-    }
+    let tx = build_tx(TEST_ADDRESS, 1_000_000, 1, data);
+    run_sign_flow("proposer.create", tx).await;
 }
 
+// 2. FaultDisputeGame.resolveClaim — Challenger (OperateType::ChallengerResolveClaim = 21)
 #[tokio::test]
 #[ignore]
-async fn test_challenger_claim_credit_full_flow() {
-    let config = get_test_config().expect(
-        "\n❌ XLayer configuration not found!\n\
-         Please set the required environment variables.\n\
-         See INTEGRATION_TEST_GUIDE.md for details.\n"
-    );
+async fn test_challenger_resolve_claim() {
+    let mut data = hex::decode("03c2924d").unwrap();
+    // claimIndex (uint256) = 0
+    data.extend_from_slice(&[0u8; 32]);
+    // numToResolve (uint256) = 1
+    data.extend_from_slice(&[0u8; 31]);
+    data.extend_from_slice(&[1]);
 
-    let client = XLayerRemoteClient::new(config);
+    let tx = build_tx(TEST_ADDRESS, 1_000_000, 2, data);
+    run_sign_flow("challenger.resolveClaim", tx).await;
+}
 
-    // FaultDisputeGame.claimCredit method signature
-    let method_sig = hex::decode("60e27464").unwrap();
-    let mut data = method_sig.clone();
+// 3. FaultDisputeGame.resolve — Challenger (OperateType::ChallengerResolve = 22)
+#[tokio::test]
+#[ignore]
+async fn test_challenger_resolve() {
+    let data = hex::decode("2810e1d6").unwrap();
+    let tx = build_tx(TEST_ADDRESS, 500_000, 3, data);
+    run_sign_flow("challenger.resolve", tx).await;
+}
 
-    // recipient address (padded to 32 bytes)
+// 4. FaultDisputeGame.claimCredit — Challenger (OperateType::ChallengerClaimCredit = 23)
+#[tokio::test]
+#[ignore]
+async fn test_challenger_claim_credit() {
+    let mut data = hex::decode("60e27464").unwrap();
+    // recipient address (20 bytes), padded to 32
     data.extend_from_slice(&[0u8; 12]);
     data.extend_from_slice(&hex::decode("1234567890123456789012345678901234567890").unwrap());
 
-    let mut tx = TransactionRequest::default();
-    tx.to = Some(alloy_primitives::TxKind::Call(address!(
-        "0000000000000000000000000000000000000002"
-    )));
-    tx.gas = Some(500000);
-    tx.nonce = Some(2);
-    tx.max_fee_per_gas = Some(2000000000);
-    tx.max_priority_fee_per_gas = Some(1000000000);
-    tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-    tx.value = Some(U256::ZERO);
-    tx.chain_id = Some(11155111);
-
-    println!("Sending claimCredit transaction to XLayer remote signer...");
-    let result = client
-        .sign_transaction(&tx, Bytes::new())
-        .await;
-
-    match result {
-        Ok(signed_tx_bytes) => {
-            println!("✅ ClaimCredit transaction signed successfully!");
-            println!("Signed transaction length: {} bytes", signed_tx_bytes.len());
-            assert!(!signed_tx_bytes.is_empty());
-        }
-        Err(e) => {
-            println!("❌ Signing failed: {}", e);
-            panic!("Integration test failed: {}", e);
-        }
-    }
+    let tx = build_tx(TEST_ADDRESS, 500_000, 4, data);
+    run_sign_flow("challenger.claimCredit", tx).await;
 }
 
+// 5. DisputeGame.prove(bytes) — TEE (OperateType::Prove = 27)
 #[tokio::test]
 #[ignore]
-async fn test_challenger_prove_full_flow() {
-    let config = get_test_config().expect(
-        "\n❌ XLayer configuration not found!\n\
-         Please set the required environment variables.\n\
-         See INTEGRATION_TEST_GUIDE.md for details.\n"
-    );
-
-    let client = XLayerRemoteClient::new(config);
-
-    // FaultDisputeGame.prove method signature: 0x0e5d7305
-    let method_sig = hex::decode("0e5d7305").unwrap();
-    let mut data = method_sig.clone();
-
-    // Add dummy proofBytes (ABI-encoded bytes)
-    // offset to proofBytes data (32 bytes)
+async fn test_tee_prove() {
+    let mut data = hex::decode("375bfa5d").unwrap();
+    // proofBytes offset = 0x20
     data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x20]); // offset = 32
-
-    // length of proofBytes (let's say 128 bytes)
+    data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x20]);
+    // proofBytes length = 128
     data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x80]); // length = 128
+    data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x80]);
+    // proofBytes payload (128 dummy bytes)
+    data.extend_from_slice(&[0xCDu8; 128]);
 
-    // actual proof data (128 bytes of dummy data)
-    data.extend_from_slice(&[0xABu8; 128]);
-
-    let mut tx = TransactionRequest::default();
-    tx.to = Some(alloy_primitives::TxKind::Call(address!(
-        "0000000000000000000000000000000000000003"
-    )));
-    tx.gas = Some(2000000);
-    tx.nonce = Some(3);
-    tx.max_fee_per_gas = Some(2000000000);
-    tx.max_priority_fee_per_gas = Some(1000000000);
-    tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-    tx.value = Some(U256::ZERO);
-    tx.chain_id = Some(11155111);
-
-    println!("Sending prove transaction to XLayer remote signer...");
-    let result = client
-        .sign_transaction(&tx, Bytes::new())
-        .await;
-
-    match result {
-        Ok(signed_tx_bytes) => {
-            println!("✅ Prove transaction signed successfully!");
-            println!("Signed transaction length: {} bytes", signed_tx_bytes.len());
-            assert!(!signed_tx_bytes.is_empty());
-        }
-        Err(e) => {
-            println!("❌ Signing failed: {}", e);
-            panic!("Integration test failed: {}", e);
-        }
-    }
+    let tx = build_tx(TEST_ADDRESS, 2_000_000, 5, data);
+    run_sign_flow("tee.prove", tx).await;
 }
 
+// 6. DisputeGame.challenge() — TEE (OperateType::Challenge = 28)
 #[tokio::test]
 #[ignore]
-async fn test_challenger_resolve_full_flow() {
-    let config = get_test_config().expect(
-        "\n❌ XLayer configuration not found!\n\
-         Please set the required environment variables.\n\
-         See INTEGRATION_TEST_GUIDE.md for details.\n"
-    );
-
-    let client = XLayerRemoteClient::new(config);
-
-    // FaultDisputeGame.resolve method signature: 0x2810e1d6
-    let method_sig = hex::decode("2810e1d6").unwrap();
-    let data = method_sig; // No parameters for resolve()
-
-    let mut tx = TransactionRequest::default();
-    tx.to = Some(alloy_primitives::TxKind::Call(address!(
-        "0000000000000000000000000000000000000004"
-    )));
-    tx.gas = Some(500000);
-    tx.nonce = Some(4);
-    tx.max_fee_per_gas = Some(2000000000);
-    tx.max_priority_fee_per_gas = Some(1000000000);
-    tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-    tx.value = Some(U256::ZERO);
-    tx.chain_id = Some(11155111);
-
-    println!("Sending resolve transaction to XLayer remote signer...");
-    let result = client
-        .sign_transaction(&tx, Bytes::new())
-        .await;
-
-    match result {
-        Ok(signed_tx_bytes) => {
-            println!("✅ Resolve transaction signed successfully!");
-            println!("Signed transaction length: {} bytes", signed_tx_bytes.len());
-            assert!(!signed_tx_bytes.is_empty());
-        }
-        Err(e) => {
-            println!("❌ Signing failed: {}", e);
-            panic!("Integration test failed: {}", e);
-        }
-    }
+async fn test_tee_challenge() {
+    let data = hex::decode("d2ef7398").unwrap();
+    let tx = build_tx(TEST_ADDRESS, 500_000, 6, data);
+    run_sign_flow("tee.challenge", tx).await;
 }
-
-#[tokio::test]
-#[ignore]
-async fn test_challenger_challenge_full_flow() {
-    let config = get_test_config().expect(
-        "\n❌ XLayer configuration not found!\n\
-         Please set the required environment variables.\n\
-         See INTEGRATION_TEST_GUIDE.md for details.\n"
-    );
-
-    let client = XLayerRemoteClient::new(config);
-
-    // FaultDisputeGame.challenge method signature: 0xd2ef7398
-    let method_sig = hex::decode("d2ef7398").unwrap();
-    let data = method_sig; // No parameters for challenge()
-
-    let mut tx = TransactionRequest::default();
-    tx.to = Some(alloy_primitives::TxKind::Call(address!(
-        "0000000000000000000000000000000000000005"
-    )));
-    tx.gas = Some(500000);
-    tx.nonce = Some(5);
-    tx.max_fee_per_gas = Some(2000000000);
-    tx.max_priority_fee_per_gas = Some(1000000000);
-    tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-    tx.value = Some(U256::ZERO);
-    tx.chain_id = Some(11155111);
-
-    println!("Sending challenge transaction to XLayer remote signer...");
-    let result = client
-        .sign_transaction(&tx, Bytes::new())
-        .await;
-
-    match result {
-        Ok(signed_tx_bytes) => {
-            println!("✅ Challenge transaction signed successfully!");
-            println!("Signed transaction length: {} bytes", signed_tx_bytes.len());
-            assert!(!signed_tx_bytes.is_empty());
-        }
-        Err(e) => {
-            println!("❌ Signing failed: {}", e);
-            panic!("Integration test failed: {}", e);
-        }
-    }
-}
-
-#[test]
-fn test_integration_test_setup_instructions() {
-    println!("\n=== XLayer Integration Test Setup ===");
-    println!("To run integration tests, set these environment variables:");
-    println!("  XLAYER_ENDPOINT=http://your-xlayer-api-endpoint");
-    println!("  XLAYER_ADDRESS=0x...");
-    println!("  XLAYER_USER_ID=123");
-    println!("  XLAYER_ACCESS_KEY=your-access-key");
-    println!("  XLAYER_SECRET_KEY=your-secret-key");
-    println!("\nThen run:");
-    println!("  cargo test --package op-succinct-signer-utils --test xlayer_integration_test -- --ignored");
-    println!("\nAvailable tests:");
-    println!("  1. test_proposer_create_full_flow - DisputeGameFactory.create");
-    println!("  2. test_challenger_prove_full_flow - FaultDisputeGame.prove");
-    println!("  3. test_challenger_resolve_full_flow - FaultDisputeGame.resolve");
-    println!("  4. test_challenger_claim_credit_full_flow - FaultDisputeGame.claimCredit");
-    println!("  5. test_challenger_challenge_full_flow - FaultDisputeGame.challenge");
-    println!("=====================================\n");
-}
-
