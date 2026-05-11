@@ -40,8 +40,9 @@ pub enum XLayerSignerError {
 
 /// Contract method signatures (4-byte selectors)
 const METHOD_SIG_DGF_CREATE: &str = "0x82ecf2f6"; // DisputeGameFactory.create
-const METHOD_SIG_PROVE: &str = "0x0e5d7305"; // FaultDisputeGame.prove
-const METHOD_SIG_CHALLENGE: &str = "0xd2ef7398"; // FaultDisputeGame.challenge
+const METHOD_SIG_RESOLVE_CLAIM: &str = "0x03c2924d"; // FaultDisputeGame.resolveClaim(uint256,uint256)
+const METHOD_SIG_PROVE_TEE: &str = "0x375bfa5d"; // DisputeGame.prove(bytes) — TEE challenger
+const METHOD_SIG_CHALLENGE: &str = "0xd2ef7398"; // DisputeGame.challenge() — TEE challenger
 const METHOD_SIG_RESOLVE: &str = "0x2810e1d6"; // FaultDisputeGame.resolve
 const METHOD_SIG_CLAIM_CREDIT: &str = "0x60e27464"; // FaultDisputeGame.claimCredit
 
@@ -56,10 +57,12 @@ const HTTP_STATUS_SUCCESS: u16 = 200;
 #[repr(i32)]
 pub enum OperateType {
     Proposer = 20,
-    ChallengerProve = 24,
-    ChallengerChallenge = 25,
+    ChallengerResolveClaim = 21,
     ChallengerResolve = 22,
     ChallengerClaimCredit = 23,
+    // TEE challenger variants (mirror of Go OperateTypeProve / OperateTypeChallenge)
+    Prove = 27,
+    Challenge = 28,
 }
 
 /// XLayerSignRequest represents the signing request structure
@@ -137,6 +140,11 @@ struct XLayerOtherInfo {
     claim_index: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_to_resolve: Option<u64>,
+    // TEE-specific fields (Go: buildProposerTeeProveOtherInfo / buildChallengerTeeChallengOtherInfo)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operate_type: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_bytes: Option<String>,
 }
 
 /// XLayerConfig contains configuration for XLayer remote signer
@@ -356,8 +364,9 @@ impl XLayerRemoteClient {
         // determined by which service (proposer.rs or challenger.rs) invokes the signer.
         match method_sig.as_str() {
             METHOD_SIG_DGF_CREATE => Ok(OperateType::Proposer),
-            METHOD_SIG_PROVE => Ok(OperateType::ChallengerProve),
-            METHOD_SIG_CHALLENGE => Ok(OperateType::ChallengerChallenge),
+            METHOD_SIG_RESOLVE_CLAIM => Ok(OperateType::ChallengerResolveClaim),
+            METHOD_SIG_PROVE_TEE => Ok(OperateType::Prove),
+            METHOD_SIG_CHALLENGE => Ok(OperateType::Challenge),
             METHOD_SIG_RESOLVE => Ok(OperateType::ChallengerResolve),
             METHOD_SIG_CLAIM_CREDIT => Ok(OperateType::ChallengerClaimCredit),
             _ => Err(anyhow::anyhow!(
@@ -380,14 +389,28 @@ impl XLayerRemoteClient {
 
         let empty_bytes = Bytes::new();
         let data = tx.input.input().unwrap_or(&empty_bytes);
-        
+
         // Parse business parameters based on method signature
-        let (game_type, root_claim, extra_data, recipient, claim_index, num_to_resolve) = 
+        let (game_type, root_claim, extra_data, recipient, claim_index, num_to_resolve) =
             if data.len() >= 4 {
                 self.parse_business_params(data)?
             } else {
                 (None, None, None, None, None, None)
             };
+
+        // TEE-specific fields: operateType + proofBytes (mirror of Go behavior)
+        let (operate_type, proof_bytes) = if data.len() >= 4 {
+            let method_sig = format!("0x{}", hex::encode(&data[..4]));
+            match method_sig.as_str() {
+                METHOD_SIG_PROVE_TEE => {
+                    (Some(OperateType::Prove as i32), Self::extract_prove_bytes(data))
+                }
+                METHOD_SIG_CHALLENGE => (Some(OperateType::Challenge as i32), None),
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
 
         let other_info = XLayerOtherInfo {
             contract_address,
@@ -409,9 +432,28 @@ impl XLayerRemoteClient {
             recipient,
             claim_index,
             num_to_resolve,
+            operate_type,
+            proof_bytes,
         };
 
         serde_json::to_string(&other_info).context("Failed to serialize OtherInfo")
+    }
+
+    /// Strip the ABI offset+length headers from a `prove(bytes)` calldata and
+    /// return the inner bytes hex-encoded. Mirrors Go's
+    /// buildProposerTeeProveOtherInfo proofBytes extraction.
+    fn extract_prove_bytes(data: &[u8]) -> Option<String> {
+        // 4 selector + 32 offset + 32 length = 68 bytes minimum before payload.
+        if data.len() <= 4 + 64 {
+            return None;
+        }
+        // Length is the last 8 bytes of the 32-byte big-endian uint256 at [36..68];
+        // higher bytes must be zero (proof is never gigabytes).
+        let length = u64::from_be_bytes(data[60..68].try_into().ok()?) as usize;
+        if data.len() < 68 + length {
+            return None;
+        }
+        Some(format!("0x{}", hex::encode(&data[68..68 + length])))
     }
 
     /// Parses business parameters from transaction data based on method signature
@@ -504,11 +546,28 @@ impl XLayerRemoteClient {
                     Ok((None, None, None, None, None, None))
                 }
             }
-            METHOD_SIG_PROVE | METHOD_SIG_CHALLENGE | METHOD_SIG_RESOLVE => {
-                // These methods have parameters but they are not critical business params
-                // prove(bytes calldata proofBytes) - proof data is in calldata
-                // challenge() - no params
-                // resolve() - no params
+            METHOD_SIG_RESOLVE_CLAIM => {
+                // resolveClaim(uint256 _claimIndex, uint256 _numToResolve)
+                if params_data.len() >= 64 {
+                    let claim_index =
+                        u64::from_be_bytes(params_data[24..32].try_into().unwrap());
+                    let num_to_resolve =
+                        u64::from_be_bytes(params_data[56..64].try_into().unwrap());
+                    tracing::info!(
+                        "Parsed ResolveClaim params: claimIndex={}, numToResolve={}",
+                        claim_index,
+                        num_to_resolve
+                    );
+                    Ok((None, None, None, None, Some(claim_index), Some(num_to_resolve)))
+                } else {
+                    tracing::warn!("Insufficient data for resolveClaim method");
+                    Ok((None, None, None, None, None, None))
+                }
+            }
+            METHOD_SIG_PROVE_TEE | METHOD_SIG_CHALLENGE | METHOD_SIG_RESOLVE => {
+                // These methods carry no critical business params for OtherInfo:
+                // prove(bytes) - proof bytes handled separately as `proofBytes`
+                // challenge() / resolve() - no params
                 tracing::debug!("Method {} has no critical business params to parse", method_sig);
                 Ok((None, None, None, None, None, None))
             }
@@ -576,16 +635,12 @@ impl XLayerRemoteClient {
         // Serialize request with sorted keys (important for signature verification)
         let payload = self.sorted_json_marshal(request)?;
 
-        // Calculate signature
-        let signature = self.calculate_signature(&payload)?;
-
-        // Build headers (matching Optimism implementation)
+        // Build headers; auth is no-op when access_key or secret_key is empty.
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Content-Type", "application/json".parse()?);
-        headers.insert("accessKey", self.config.access_key.parse()?);
-        headers.insert("sign", signature.parse()?);
+        self.add_auth_headers(&mut headers, &[], &payload)?;
 
-        tracing::debug!("Posting sign request to: {}", url);
+        eprintln!("[xlayer] >>> POST {url}\n[xlayer]     body={payload}");
 
         let response = self
             .client
@@ -596,16 +651,20 @@ impl XLayerRemoteClient {
             .await
             .context("Failed to send sign request")?;
 
-        if response.status().as_u16() != HTTP_STATUS_SUCCESS {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            return Err(XLayerSignerError::HttpError { status, body }.into());
+        let status = response.status().as_u16();
+        let resp_body = response.text().await.unwrap_or_default();
+        eprintln!("[xlayer] <<< {status} {resp_body}");
+
+        if status != HTTP_STATUS_SUCCESS {
+            return Err(XLayerSignerError::HttpError {
+                status,
+                body: resp_body,
+            }
+            .into());
         }
 
-        let sign_response: XLayerSignResponse = response
-            .json()
-            .await
-            .context("Failed to parse sign response")?;
+        let sign_response: XLayerSignResponse = serde_json::from_str(&resp_body)
+            .with_context(|| format!("Failed to parse sign response. Raw body: {resp_body}"))?;
 
         if !sign_response.success {
             return Err(XLayerSignerError::SigningFailed {
@@ -629,36 +688,52 @@ impl XLayerRemoteClient {
             project_symbol: self.config.project_symbol,
         };
 
-        // Poll for result
-        let max_attempts = 60; // 60 seconds timeout
+        // Poll for result (1s interval × 300 attempts = 5 min total)
+        let max_attempts = 300;
         for attempt in 0..max_attempts {
             sleep(SIGN_RESULT_POLL_INTERVAL).await;
 
-            let payload = self.sorted_json_marshal(&query_request)?;
-            let signature = self.calculate_signature(&payload)?;
+            // GET request: signature is computed over the sorted URL query
+            // *values*, not a JSON body — matches Go's genAuth.
+            let user_id_str = query_request.user_id.to_string();
+            let project_symbol_str = query_request.project_symbol.to_string();
+            let query_params: [(&str, &str); 3] = [
+                ("userId", user_id_str.as_str()),
+                ("orderId", query_request.order_id.as_str()),
+                ("projectSymbol", project_symbol_str.as_str()),
+            ];
 
             let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("Content-Type", "application/json".parse()?);
-            headers.insert("accessKey", self.config.access_key.parse()?);
-            headers.insert("sign", signature.parse()?);
+            self.add_auth_headers(&mut headers, &query_params, "")?;
+
+            eprintln!(
+                "[xlayer] >>> GET {url} (attempt {}/{})\n[xlayer]     query={query_params:?}",
+                attempt + 1,
+                max_attempts,
+            );
 
             let response = self
                 .client
-                .post(&url)
+                .get(&url)
                 .headers(headers)
-                .body(payload)
+                .query(&query_params)
                 .send()
                 .await
                 .context("Failed to send query request")?;
 
-            if response.status().as_u16() != HTTP_STATUS_SUCCESS {
+            let status = response.status().as_u16();
+            let body = response
+                .text()
+                .await
+                .context("Failed to read query response body")?;
+            eprintln!("[xlayer] <<< {status} {body}");
+
+            if status != HTTP_STATUS_SUCCESS {
                 continue;
             }
 
-            let query_response: XLayerSignResponse = response
-                .json()
-                .await
-                .context("Failed to parse query response")?;
+            let query_response: XLayerSignResponse = serde_json::from_str(&body)
+                .with_context(|| format!("Failed to parse query response. Raw body: {body}"))?;
 
             // Check if signing is complete (matching Optimism implementation)
             // Only return when success=true AND data is non-empty
@@ -705,50 +780,82 @@ impl XLayerRemoteClient {
         }
     }
 
-    /// Calculates signature using SHA256 + AES-ECB (matching Optimism implementation)
-    fn calculate_signature(&self, payload: &str) -> Result<String> {
+    /// Adds the `accessKey` and `sign` headers to a request, mirroring Go's
+    /// `addAuth`. If either secret_key or access_key is empty, no headers are
+    /// added (Go skips auth entirely in that case).
+    fn add_auth_headers(
+        &self,
+        headers: &mut reqwest::header::HeaderMap,
+        query_params: &[(&str, &str)],
+        body: &str,
+    ) -> Result<()> {
+        if self.config.access_key.is_empty() || self.config.secret_key.is_empty() {
+            return Ok(());
+        }
+        headers.insert("accessKey", self.config.access_key.parse()?);
+        let signature = self.generate_signature(query_params, body)?;
+        headers.insert("sign", signature.parse()?);
+        Ok(())
+    }
+
+    /// Generates the request signature using the same scheme as Go's
+    /// `generateSignature`: sort the URL query *values* lexicographically,
+    /// concatenate them with the body, SHA-256 the result, hex-encode the
+    /// digest, then AES-ECB encrypt with the secret key and base64-encode.
+    fn generate_signature(&self, query_params: &[(&str, &str)], body: &str) -> Result<String> {
         use base64::Engine;
         use sha2::{Digest, Sha256};
 
-        // Step 1: SHA256 hash of the payload
-        let mut hasher = Sha256::new();
-        hasher.update(payload.as_bytes());
-        let hash = hasher.finalize();
+        let mut values: Vec<&str> = query_params.iter().map(|(_, v)| *v).collect();
+        values.sort();
+
+        let mut content = String::new();
+        for v in &values {
+            content.push_str(v);
+        }
+        content.push_str(body);
+
+        let hash = Sha256::digest(content.as_bytes());
         let hash_hex = hex::encode(hash);
-
-        // Step 2: AES-ECB encryption using secret key
         let encrypted = self.encrypt_aes_ecb(&hash_hex)?;
-
-        // Step 3: Base64 encode
         Ok(base64::prelude::BASE64_STANDARD.encode(encrypted))
     }
 
-    /// Encrypts data using AES-ECB mode with PKCS5 padding
+    /// Encrypts data using AES-ECB with PKCS5 padding. Accepts 16/24/32-byte
+    /// keys (AES-128/192/256), matching Go's `aes.NewCipher` behavior.
     fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
         use aes::cipher::generic_array::GenericArray;
         use aes::cipher::{BlockEncrypt, KeyInit};
-        use aes::Aes256;
+        use aes::{Aes128, Aes192, Aes256};
 
         let key_bytes = self.config.secret_key.as_bytes();
-        if key_bytes.len() != 32 {
-            return Err(anyhow::anyhow!(
-                "Secret key must be 32 bytes for AES-256, got {}",
-                key_bytes.len()
-            ));
-        }
+        let padded = self.pkcs5_padding(plaintext.as_bytes(), 16);
+        let mut encrypted = padded;
 
-        let key = GenericArray::from_slice(key_bytes);
-        let cipher = Aes256::new(key);
-
-        // Apply PKCS5 padding
-        let plaintext_bytes = plaintext.as_bytes();
-        let padded = self.pkcs5_padding(plaintext_bytes, 16);
-
-        // Encrypt in ECB mode (block by block)
-        let mut encrypted = padded.clone();
-        for chunk in encrypted.chunks_mut(16) {
-            let block = GenericArray::from_mut_slice(chunk);
-            cipher.encrypt_block(block);
+        match key_bytes.len() {
+            16 => {
+                let cipher = Aes128::new(GenericArray::from_slice(key_bytes));
+                for chunk in encrypted.chunks_mut(16) {
+                    cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+                }
+            }
+            24 => {
+                let cipher = Aes192::new(GenericArray::from_slice(key_bytes));
+                for chunk in encrypted.chunks_mut(16) {
+                    cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+                }
+            }
+            32 => {
+                let cipher = Aes256::new(GenericArray::from_slice(key_bytes));
+                for chunk in encrypted.chunks_mut(16) {
+                    cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+                }
+            }
+            n => {
+                return Err(anyhow::anyhow!(
+                    "Secret key must be 16, 24 or 32 bytes (AES-128/192/256), got {n}"
+                ));
+            }
         }
 
         Ok(encrypted)
@@ -1062,14 +1169,14 @@ mod tests {
         assert_eq!(operate_type as i32, OperateType::Proposer as i32);
     }
 
-    /// Test operate type detection for Challenger (prove)
+    /// Test operate type detection for Challenger (resolveClaim)
     #[test]
-    fn test_detect_challenger_prove() {
+    fn test_detect_challenger_resolve_claim() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
-        // FaultDisputeGame.prove method signature: 0x0e5d7305
-        let data = hex::decode("0e5d7305").unwrap();
+        // FaultDisputeGame.resolveClaim method signature: 0x03c2924d
+        let data = hex::decode("03c2924d").unwrap();
         let mut tx = TransactionRequest::default();
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
         tx.to = Some(alloy_primitives::TxKind::Call(address!(
@@ -1079,7 +1186,7 @@ mod tests {
         let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
         let operate_type = result.unwrap();
-        assert_eq!(operate_type as i32, OperateType::ChallengerProve as i32);
+        assert_eq!(operate_type as i32, OperateType::ChallengerResolveClaim as i32);
     }
 
     /// Test operate type detection for Challenger (challenge)
@@ -1099,7 +1206,7 @@ mod tests {
         let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
         let operate_type = result.unwrap();
-        assert_eq!(operate_type as i32, OperateType::ChallengerChallenge as i32);
+        assert_eq!(operate_type as i32, OperateType::Challenge as i32);
     }
 
     /// Test operate type detection for resolve (can be called by Proposer or Challenger)
@@ -1414,5 +1521,36 @@ mod tests {
         assert!(other_info.contains("gameType"));
         assert!(other_info.contains("rootClaim"));
         assert!(other_info.contains("extraData"));
+    }
+
+    /// Ported from
+    /// okx/xlayer-node `ethtxmanager/custodialassetshttpauth_xlayer_test.go::TestClientGenerateSignature`
+    /// Locks in cross-language signature compatibility: same secret, same
+    /// canonical input, same base64 output.
+    #[test]
+    fn test_generate_signature_compat_with_go() {
+        let mut config = XLayerConfig::default();
+        config.secret_key = "12doxpwjkengkjna".to_string(); // 16-byte AES-128 key
+        let client = XLayerRemoteClient::new(config);
+
+        // Same canonical input as the Go test's treeMap:
+        //   "0" -> "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"
+        //   "1" -> "127"
+        //   "2" -> "true"
+        // Our signer sorts by value, but for this fixture sort-by-value and
+        // Go's sort-by-key produce the same concatenation order.
+        let params: [(&str, &str); 3] = [
+            ("0", "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"),
+            ("1", "127"),
+            ("2", "true"),
+        ];
+        let body = "{\"testBOdy\":45251}";
+
+        let signature = client.generate_signature(&params, body).unwrap();
+
+        assert_eq!(
+            signature,
+            "si/fTWlDg6+V9OFOM3CictCuqtGfUjKZ3keGLwxM/walrXtQaN8K/PnGTvFvc4q6pb/80HtZIy+hjeugAx8VPLmIXmKpJ5H4mbGEVQe7bk4="
+        );
     }
 }
