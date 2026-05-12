@@ -94,7 +94,7 @@ async fn run_sign_flow(label: &str, tx: TransactionRequest) {
     let client = XLayerRemoteClient::new(config);
 
     let signed = client
-        .sign_transaction(&tx, Bytes::new())
+        .sign_transaction(&tx)
         .await
         .unwrap_or_else(|e| panic!("[{label}] sign request failed: {e}"));
 

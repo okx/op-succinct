@@ -228,7 +228,6 @@ impl XLayerRemoteClient {
     pub async fn sign_transaction(
         &self,
         transaction_request: &TransactionRequest,
-        _filled_tx_bytes: Bytes,
     ) -> Result<Bytes> {
         tracing::debug!(
             "Starting XLayer remote signing for transaction: from={:?}, to={:?}, nonce={:?}",
