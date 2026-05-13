@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.4
-
 # Chef stage: Prepare dependency recipe
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /app
@@ -12,6 +10,13 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     golang-go \
     && rm -rf /var/lib/apt/lists/*
+
+# Configure SSL certificate for corporate proxy (optional)
+COPY copilot.pem /etc/ssl/copilot.pem
+RUN if [ -s /etc/ssl/copilot.pem ]; then \
+        git config --global http.sslCAInfo /etc/ssl/copilot.pem; \
+    fi
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 
 # Install project's required Rust toolchain
 COPY rust-toolchain.toml ./
