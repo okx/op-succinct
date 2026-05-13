@@ -1,6 +1,14 @@
 default:
   @just --list
 
+# Build binary (fixes SP1 nested build writing to read-only registry dir)
+build bin="validity" *features='':
+    mkdir -p target/tmp && TMPDIR="$(pwd)/target/tmp" CARGO_TARGET_DIR="$(pwd)/target" cargo build --bin {{bin}} --release {{features}}
+
+# Build Docker image (auto-copies SSL cert if present)
+build-docker tag="op-succinct" dockerfile="Dockerfile":
+    cp /etc/ssl/copilot.pem copilot.pem 2>/dev/null || touch copilot.pem; docker build -t {{tag}} -f {{dockerfile}} .; rm -f copilot.pem
+
 # Runs the op-succinct program for a single block.
 run-single l2_block_num use-cache="false" prove="false":
   #!/usr/bin/env bash

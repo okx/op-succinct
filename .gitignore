@@ -58,3 +58,9 @@ utils/eigenda/host/resources
 # Forge build artifacts in tests/
 tests/cache/
 tests/out/
+
+# DACS SSL certificate
+copilot.pem
+
+# Claude Code local settings
+settings.local.json
