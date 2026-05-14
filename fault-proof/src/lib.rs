@@ -6,6 +6,11 @@ pub mod prometheus;
 pub mod proposer;
 pub mod prover;
 
+// for tz: new modules for tz chain adaptation
+#[cfg(feature = "tz")] pub mod tz_chain_client;
+#[cfg(feature = "tz")] pub mod tz_l2_provider;
+#[cfg(feature = "tz")] pub mod tz_proposer_config;
+
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{address, keccak256, Address, FixedBytes, B256, U256};
 use alloy_provider::{Provider, RootProvider};
@@ -49,6 +54,18 @@ pub trait L2ProviderTrait {
 
     /// Compute the output root at a given L2 block number.
     async fn compute_output_root_at_block(&self, l2_block_number: U256) -> Result<FixedBytes<32>>;
+
+    // for tz: default returns None; TzL2Provider overrides to return confirmed_height when ready
+    async fn get_next_proposal_block(
+        &self,
+        _canonical_head: U256,
+        _proposal_interval: u64,
+    ) -> Result<Option<U256>> {
+        Ok(None) // xlayer falls through to host-based finalized block logic
+    }
+
+    // for tz: evict history cache entries below anchor_height; xlayer no-op
+    fn evict_cache_below(&self, _anchor_height: u64) {}
 }
 
 #[async_trait]
