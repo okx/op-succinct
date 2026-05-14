@@ -19,6 +19,16 @@ path = "bin/proposer.rs"
 name = "challenger"
 path = "bin/challenger.rs"
 
+[[bin]]
+name = "tz-proposer"
+path = "bin/tz_proposer.rs"
+required-features = ["tz"]
+
+[[bin]]
+name = "tz-challenger"
+path = "bin/tz_challenger.rs"
+required-features = ["tz"]
+
 [dependencies]
 # local
 op-succinct-client-utils.workspace = true
@@ -69,6 +79,9 @@ strum = { workspace = true, features = ["derive"] }
 strum_macros.workspace = true
 tikv-jemallocator = "0.6.0"
 tempfile = "3"
+# for tz: HTTP client and error types (optional, only compiled with tz feature)
+reqwest = { workspace = true, optional = true, features = ["json"] }
+thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-signer-local.workspace = true
@@ -80,6 +93,7 @@ serde.workspace = true
 alloy-rpc-types-trace.workspace = true
 rstest = "0.26"
 which = "4.4"
+wiremock = "0.6"
 
 [features]
 default = ["ethereum"]
@@ -87,3 +101,4 @@ celestia = ["op-succinct-proof-utils/celestia"]
 eigenda = ["op-succinct-proof-utils/eigenda"]
 ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
+tz = ["reqwest", "thiserror"]
