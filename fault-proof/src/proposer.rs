@@ -52,6 +52,10 @@ use crate::{
     FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
 
+// for tz: import cache-miss error for graceful skip in proposer fetch_game
+#[cfg(feature = "tz")]
+use crate::tz_chain_client::TzCacheMissError;
+
 /// Max allowed time (secs) between a game's deadline and the anchor game's deadline.
 ///
 /// Games beyond this threshold are skipped during incremental syncs to cut startup latency and
@@ -604,6 +608,8 @@ where
 
         // Fetch and validate anchor L2 block number.
         let anchor_l2_block = self.anchor_state_registry.getAnchorRoot().call().await?._1;
+        // for tz: validate_anchor_l2_block requires eth_getBlockByNumber("finalized") which tz does not support
+        #[cfg(not(feature = "tz"))]
         Self::validate_anchor_l2_block(
             anchor_l2_block,
             &self.config,
@@ -737,6 +743,19 @@ where
 
         // With the cached game statuses and anchor synchronized, recompute the canonical head.
         self.compute_canonical_head().await;
+
+        // for tz: evict cache entries below anchor_height after each sync cycle
+        // xlayer: evict_cache_below is a no-op on the default L2Provider
+        #[cfg(feature = "tz")]
+        {
+            let anchor_height = self.state.read().await
+                .anchor_game.as_ref()
+                .map(|g| g.l2_block.to::<u64>())
+                .unwrap_or(0);
+            if anchor_height > 0 {
+                self.l2_provider.evict_cache_below(anchor_height);
+            }
+        }
 
         Ok(())
     }
@@ -1549,7 +1568,31 @@ where
         }
 
         let l2_block = contract.l2BlockNumber().call().await?;
-        let output_root = self.l2_provider.compute_output_root_at_block(l2_block).await?;
+
+        // for tz: cache miss — own games skip rootClaim validation; foreign games also enter
+        // state.games to preserve canonical head tracking in multi-proposer deployments
+        #[cfg(feature = "tz")]
+        let maybe_output_root: Option<FixedBytes<32>> = {
+            match self.l2_provider.compute_output_root_at_block(l2_block).await {
+                Ok(root) => Some(root),
+                Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
+                    let creator = contract.gameCreator().call().await?;
+                    if creator == self.signer.address() {
+                        tracing::debug!(game_index = %index, l2_block_number = %l2_block,
+                            "tz: cache miss — own game, skipping rootClaim validation");
+                    } else {
+                        tracing::warn!(game_index = %index, l2_block_number = %l2_block, %creator,
+                            "tz: cache miss — foreign game, adding to state without rootClaim validation");
+                    }
+                    None
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        #[cfg(not(feature = "tz"))]
+        let maybe_output_root: Option<FixedBytes<32>> =
+            Some(self.l2_provider.compute_output_root_at_block(l2_block).await?);
+
         let claim = contract.rootClaim().call().await?;
         let was_respected = contract.wasRespectedGameTypeWhenCreated().call().await?;
         let status = contract.status().call().await?;
@@ -1576,16 +1619,18 @@ where
             return Ok(GameFetchResult::InvalidGame { index });
         }
 
-        // Validate output root. If invalid, drop the game, setting the cursor to this index.
-        if output_root != claim {
-            tracing::warn!(
-                game_index = %index,
-                ?game_address,
-                ?claim,
-                expected_output_root = ?output_root,
-                "Invalid game: root claim does not match computed output root"
-            );
-            return Ok(GameFetchResult::InvalidGame { index });
+        // for tz: skip validation on cache miss; xlayer always validates (maybe_output_root is always Some)
+        if let Some(output_root) = maybe_output_root {
+            if output_root != claim {
+                tracing::warn!(
+                    game_index = %index,
+                    ?game_address,
+                    ?claim,
+                    expected_output_root = ?output_root,
+                    "Invalid game: root claim does not match computed output root"
+                );
+                return Ok(GameFetchResult::InvalidGame { index });
+            }
         }
 
         tracing::info!(
@@ -1645,8 +1690,19 @@ where
             .await?
             .proxy;
 
-        // If there already exists a game at the next L2 block number for proposal, increment the L2
-        // block number by 1
+        // for tz: one-shot check — confirmed_height maps to exactly one rootClaim;
+        // incrementing block number would not change rootClaim, so skip and wait for next checkpoint
+        #[cfg(feature = "tz")]
+        if maybe_existing_game != Address::ZERO {
+            tracing::info!(
+                l2_block_number = %next_l2_block_number_for_proposal,
+                "tz: game already exists for this checkpoint, skipping"
+            );
+            return Ok(());
+        }
+
+        // xlayer: retry with incremented block number on UUID collision (original behavior preserved)
+        #[cfg(not(feature = "tz"))]
         while maybe_existing_game != Address::ZERO {
             next_l2_block_number_for_proposal += U256::from(1);
             output_root = self
@@ -1684,6 +1740,8 @@ where
         if let Some(canonical_head_l2_block) = canonical_head_l2_block {
             ProposerGauge::LatestGameL2BlockNumber.set(canonical_head_l2_block.to::<u64>() as f64);
 
+            // for tz: tz node does not support eth_getBlockByNumber("finalized"); skip this metric
+            #[cfg(not(feature = "tz"))]
             if let Some(finalized_l2_block_number) = self
                 .host
                 .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
@@ -2088,12 +2146,30 @@ where
         let next_l2_block_number_for_proposal =
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
+        // for tz: always return here — never fall through to get_finalized_l2_block_number
+        // which requires eth_getBlockByNumber("finalized")
+        #[cfg(feature = "tz")]
+        {
+            return match self.l2_provider
+                .get_next_proposal_block(
+                    canonical_head_l2_block,
+                    self.config.proposal_interval_in_blocks,
+                )
+                .await?
+            {
+                Some(target) => Ok((true, target, parent_game_index)),
+                None => Ok((false, U256::ZERO, u32::MAX)),
+            };
+        }
+
+        #[cfg(not(feature = "tz"))]
         let finalized_l2_head_block_number = self
             .host
             .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
             .await?;
 
-        Ok((
+        #[cfg(not(feature = "tz"))]
+        return Ok((
             finalized_l2_head_block_number
                 .map(|finalized_block| {
                     U256::from(finalized_block) >= next_l2_block_number_for_proposal
@@ -2101,7 +2177,12 @@ where
                 .unwrap_or(false),
             next_l2_block_number_for_proposal,
             parent_game_index,
-        ))
+        ));
+
+        // tz returns earlier in the function; this satisfies the compiler for the tz branch
+        #[cfg(feature = "tz")]
+        #[allow(unreachable_code)]
+        Ok((false, U256::ZERO, u32::MAX))
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.
