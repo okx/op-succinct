@@ -25,6 +25,10 @@ use crate::{
 use op_succinct_host_utils::metrics::MetricsGauge;
 use op_succinct_signer_utils::SignerLock;
 
+// for tz: import cache-miss error for graceful skip in challenger fetch_game
+#[cfg(feature = "tz")]
+use crate::tz_chain_client::TzCacheMissError;
+
 pub struct OPSuccinctChallenger<P>
 where
     P: Provider + Clone,
@@ -383,6 +387,26 @@ where
         }
 
         let l2_block_number = contract.l2BlockNumber().call().await?;
+        // for tz: cache miss means checkpoint not yet observed; skip game (cannot decide whether to
+        // challenge without computing the rootClaim)
+        #[cfg(feature = "tz")]
+        let computed_output_root = match
+            self.l2_provider.compute_output_root_at_block(l2_block_number).await
+        {
+            Ok(root) => root,
+            Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
+                tracing::debug!(
+                    game_index = %index,
+                    l2_block_number = %l2_block_number,
+                    "tz: no cached checkpoint, skipping game"
+                );
+                let mut state = self.state.lock().await;
+                state.cursor = index;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        #[cfg(not(feature = "tz"))]
         let computed_output_root =
             self.l2_provider.compute_output_root_at_block(l2_block_number).await?;
         let output_root = contract.rootClaim().call().await?;
