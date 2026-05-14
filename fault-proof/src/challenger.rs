@@ -32,7 +32,8 @@ where
     pub config: ChallengerConfig,
     signer: SignerLock,
     l1_provider: L1Provider,
-    l2_provider: L2Provider,
+    // for tz: changed from L2Provider to trait object to support TzL2Provider injection
+    l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
     anchor_state_registry: AnchorStateRegistryInstance<P>,
     factory: DisputeGameFactoryInstance<P>,
     challenger_bond: OnceLock<U256>,
@@ -57,7 +58,35 @@ where
             config,
             signer,
             l1_provider: l1_provider.clone(),
-            l2_provider: ProviderBuilder::default().connect_http(l2_rpc),
+            // for tz: wrap in Arc<dyn L2ProviderTrait> to match new field type
+            l2_provider: Arc::new(ProviderBuilder::default().connect_http(l2_rpc))
+                as Arc<dyn L2ProviderTrait + Send + Sync>,
+            anchor_state_registry,
+            factory,
+            challenger_bond: OnceLock::new(),
+            state: Arc::new(Mutex::new(ChallengerState {
+                cursor: U256::ZERO,
+                games: HashMap::new(),
+            })),
+        }
+    }
+
+    /// Creates a new challenger with an injected L2 provider.
+    // for tz: allows custom L2 data source without constructing from config.l2_rpc
+    pub fn new_with_l2_provider(
+        config: ChallengerConfig,
+        l1_provider: L1Provider,
+        anchor_state_registry: AnchorStateRegistryInstance<P>,
+        factory: DisputeGameFactoryInstance<P>,
+        signer: SignerLock,
+        l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
+    ) -> Self {
+        OPSuccinctChallenger {
+            config,
+            signer,
+            l1_provider,
+            // for tz: injected l2_provider instead of constructing from config.l2_rpc
+            l2_provider,
             anchor_state_registry,
             factory,
             challenger_bond: OnceLock::new(),
