@@ -22,8 +22,6 @@ use crate::{
     prometheus::ChallengerGauge,
     FactoryTrait, L1Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
-#[cfg(not(feature = "tz"))]
-use crate::L2Provider;
 use op_succinct_host_utils::metrics::MetricsGauge;
 use op_succinct_signer_utils::SignerLock;
 

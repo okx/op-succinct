@@ -51,8 +51,6 @@ use crate::{
     },
     FactoryTrait, L1Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
-#[cfg(not(feature = "tz"))]
-use crate::L2Provider;
 
 
 /// Max allowed time (secs) between a game's deadline and the anchor game's deadline.
@@ -596,7 +594,6 @@ where
 
     /// Runs one-time startup validations before the proposer begins normal operations.
     /// Returns the validated anchor L2 block number, init bond, and contract params.
-    #[cfg(not(feature = "tz"))]
     async fn startup_validations(&self) -> Result<(U256, U256, ContractParams)> {
         // Validate anchor state registry matches factory's game implementation.
         Self::validate_anchor_state_registry(
@@ -608,6 +605,8 @@ where
 
         // Fetch and validate anchor L2 block number.
         let anchor_l2_block = self.anchor_state_registry.getAnchorRoot().call().await?._1;
+        // tz skips this: requires eth_getBlockByNumber("finalized") which tz does not support.
+        #[cfg(not(feature = "tz"))]
         Self::validate_anchor_l2_block(
             anchor_l2_block,
             &self.config,
@@ -733,7 +732,6 @@ where
     /// 1. `sync_games` pulls newly created games and refreshes cached metadata.
     /// 2. `sync_anchor_game` aligns the cached anchor pointer with the registry contract.
     /// 3. `compute_canonical_head` recomputes the head game used for proposal selection.
-    #[cfg(not(feature = "tz"))]
     pub async fn sync_state(&self) -> Result<()> {
         // Pull new games and synchronize cached game statuses.
         self.sync_games().await?;
@@ -743,6 +741,22 @@ where
 
         // With the cached game statuses and anchor synchronized, recompute the canonical head.
         self.compute_canonical_head().await;
+
+        // tz: evict history cache entries below anchor_height to bound memory usage.
+        #[cfg(feature = "tz")]
+        {
+            let anchor_height = self
+                .state
+                .read()
+                .await
+                .anchor_game
+                .as_ref()
+                .map(|g| g.l2_block.to::<u64>())
+                .unwrap_or(0);
+            if anchor_height > 0 {
+                self.l2_provider.evict_cache_below(anchor_height);
+            }
+        }
 
         Ok(())
     }
@@ -1513,7 +1527,6 @@ where
     /// - The game's anchor state registry does not match the configured registry.
     /// - The game type does not respect the expected type when created.
     /// - The output root claim is invalid.
-    #[cfg(not(feature = "tz"))]
     pub async fn fetch_game(&self, index: U256) -> Result<GameFetchResult> {
         {
             let state = self.state.read().await;
@@ -1557,6 +1570,35 @@ where
 
         let l2_block = contract.l2BlockNumber().call().await?;
 
+        // tz: cache miss — own games skip rootClaim validation; foreign games still enter
+        // state.games to preserve canonical head tracking in multi-proposer deployments.
+        #[cfg(feature = "tz")]
+        let maybe_output_root: Option<FixedBytes<32>> = {
+            use crate::tz_chain_client::TzCacheMissError;
+            match self.l2_provider.compute_output_root_at_block(l2_block).await {
+                Ok(root) => Some(root),
+                Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
+                    let creator = contract.gameCreator().call().await?;
+                    if creator == self.signer.address() {
+                        tracing::debug!(
+                            game_index = %index,
+                            l2_block_number = %l2_block,
+                            "tz: cache miss — own game, skipping rootClaim validation"
+                        );
+                    } else {
+                        tracing::warn!(
+                            game_index = %index,
+                            l2_block_number = %l2_block,
+                            %creator,
+                            "tz: cache miss — foreign game, adding to state without rootClaim validation"
+                        );
+                    }
+                    None
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        #[cfg(not(feature = "tz"))]
         let output_root = self.l2_provider.compute_output_root_at_block(l2_block).await?;
 
         let claim = contract.rootClaim().call().await?;
@@ -1585,6 +1627,21 @@ where
             return Ok(GameFetchResult::InvalidGame { index });
         }
 
+        // tz: skip rootClaim validation on cache miss; xlayer always validates.
+        #[cfg(feature = "tz")]
+        if let Some(output_root) = maybe_output_root {
+            if output_root != claim {
+                tracing::warn!(
+                    game_index = %index,
+                    ?game_address,
+                    ?claim,
+                    expected_output_root = ?output_root,
+                    "Invalid game: root claim does not match computed output root"
+                );
+                return Ok(GameFetchResult::InvalidGame { index });
+            }
+        }
+        #[cfg(not(feature = "tz"))]
         if output_root != claim {
             tracing::warn!(
                 game_index = %index,
