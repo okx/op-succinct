@@ -75,32 +75,6 @@ where
         }
     }
 
-    /// Creates a new challenger with an injected L2 provider.
-    // for tz: allows custom L2 data source without constructing from config.l2_rpc
-    pub fn new_with_l2_provider(
-        config: ChallengerConfig,
-        l1_provider: L1Provider,
-        anchor_state_registry: AnchorStateRegistryInstance<P>,
-        factory: DisputeGameFactoryInstance<P>,
-        signer: SignerLock,
-        l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
-    ) -> Self {
-        OPSuccinctChallenger {
-            config,
-            signer,
-            l1_provider,
-            // for tz: injected l2_provider instead of constructing from config.l2_rpc
-            l2_provider,
-            anchor_state_registry,
-            factory,
-            challenger_bond: OnceLock::new(),
-            state: Arc::new(Mutex::new(ChallengerState {
-                cursor: U256::ZERO,
-                games: HashMap::new(),
-            })),
-        }
-    }
-
     /// Runs the main challenger loop. On each tick it waits for the configured interval, refreshes
     /// cached state, and then handles challenging, resolution, and bond-claiming tasks.
     pub async fn run(&mut self) -> Result<()> {
@@ -769,3 +743,7 @@ pub struct ChallengerState {
     cursor: U256,
     games: HashMap<U256, Game>,
 }
+
+#[cfg(feature = "tz")]
+#[path = "tz/challenger.rs"]
+mod tz_impl;

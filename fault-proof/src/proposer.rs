@@ -384,109 +384,6 @@ where
         })
     }
 
-    /// Creates a new proposer with an injected L2 provider, rollup config hash, and range ELF.
-    // for tz: avoids optimism_rollupConfig RPC and allows custom L2 data source
-    pub async fn new_with_l2_provider(
-        config: ProposerConfig,
-        signer: SignerLock,
-        anchor_state_registry: AnchorStateRegistryInstance<P>,
-        factory: DisputeGameFactoryInstance<P>,
-        fetcher: Arc<OPSuccinctDataFetcher>,
-        host: Arc<H>,
-        l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
-        rollup_config_hash: B256,
-        range_elf: &'static [u8],
-    ) -> Result<Self> {
-        let is_cluster = is_cluster_mode();
-
-        anyhow::ensure!(
-            !(is_cluster && config.mock_mode),
-            "mock and cluster modes are mutually exclusive"
-        );
-
-        let (range_pk, range_vk, agg_pk, agg_vk, network_prover, network_mode) = if is_cluster {
-            let (range_pk, range_vk, agg_pk, agg_vk) = cluster_setup_keys().await?;
-            (range_pk, range_vk, agg_pk, agg_vk, None, None)
-        } else {
-            let network_signer = get_network_signer(config.use_kms_requester).await?;
-            let nm = determine_network_mode(
-                config.proof_provider.range_proof_strategy,
-                config.proof_provider.agg_proof_strategy,
-            )?;
-            let np = Arc::new(
-                ProverClient::builder().network_for(nm).signer(network_signer).build().await,
-            );
-            // for tz: use injected range_elf instead of get_range_elf_embedded()
-            let range_pk = np.setup(Elf::Static(range_elf)).await?;
-            let range_vk = range_pk.verifying_key().clone();
-            let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
-            let agg_vk = agg_pk.verifying_key().clone();
-            (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
-        };
-
-        let aggregation_vkey = B256::from(agg_vk.bytes32_raw());
-        let range_vkey_commitment = B256::from(range_vk.hash_bytes());
-        // for tz: use provided rollup_config_hash instead of hash_rollup_config(fetcher.rollup_config?)
-        let identity =
-            ProposerIdentity::new(aggregation_vkey, range_vkey_commitment, rollup_config_hash);
-        identity.log_startup_info();
-
-        let keys = ProofKeys {
-            range_pk: Arc::new(range_pk),
-            range_vk: Arc::new(range_vk),
-            agg_pk: Arc::new(agg_pk),
-            agg_vk: Arc::new(agg_vk),
-        };
-
-        let prover = if is_cluster {
-            ProofProvider::Cluster(ClusterProofProvider::new(
-                keys.clone(),
-                config.proof_provider.clone(),
-            ))
-        } else if config.mock_mode {
-            ProofProvider::Mock(MockProofProvider::new(
-                network_prover
-                    .ok_or_else(|| anyhow::anyhow!("network_prover required in mock mode"))?,
-                keys.clone(),
-                config.proof_provider.clone(),
-                AGGREGATION_ELF,
-            ))
-        } else {
-            ProofProvider::Network(NetworkProofProvider::new(
-                network_prover
-                    .ok_or_else(|| anyhow::anyhow!("network_prover required in network mode"))?,
-                keys.clone(),
-                config.proof_provider.clone(),
-                network_mode
-                    .ok_or_else(|| anyhow::anyhow!("network_mode required in network mode"))?,
-            ))
-        };
-
-        let l1_provider = ProviderBuilder::default().connect_http(config.l1_rpc.clone());
-        let initial_state = ProposerState::default();
-
-        Ok(Self {
-            config: config.clone(),
-            contract_params: OnceLock::new(),
-            signer,
-            l1_provider,
-            // for tz: injected l2_provider instead of constructing from config.l2_rpc
-            l2_provider,
-            anchor_state_registry: Arc::new(anchor_state_registry),
-            factory: Arc::new(factory),
-            init_bond: OnceLock::new(),
-            safe_db_fallback: config.safe_db_fallback,
-            prover,
-            fetcher,
-            host,
-            tasks: Arc::new(Mutex::new(HashMap::new())),
-            next_task_id: Arc::new(AtomicU64::new(1)),
-            state: Arc::new(RwLock::new(initial_state)),
-            backup_semaphore: Arc::new(Semaphore::new(1)),
-            identity,
-        })
-    }
-
     /// Returns a lightweight snapshot of the proposer's cached state.
     pub async fn state_snapshot(&self) -> ProposerStateSnapshot {
         let state = self.state.read().await;
@@ -1572,6 +1469,8 @@ where
 
         // tz: cache miss — own games skip rootClaim validation; foreign games still enter
         // state.games to preserve canonical head tracking in multi-proposer deployments.
+        // This impl is for tz only can fetch latest stateHash
+        // If tz update and can fetch historical stateHash, we can remove this special handling and unify with xlayer impl.
         #[cfg(feature = "tz")]
         let maybe_output_root: Option<FixedBytes<32>> = {
             use crate::tz::chain_client::TzCacheMissError;
@@ -1641,6 +1540,8 @@ where
                 return Ok(GameFetchResult::InvalidGame { index });
             }
         }
+
+        // Validate output root. If invalid, drop the game, setting the cursor to this index.
         #[cfg(not(feature = "tz"))]
         if output_root != claim {
             tracing::warn!(
@@ -1711,6 +1612,8 @@ where
             .await?
             .proxy;
 
+        // If there already exists a game at the next L2 block number for proposal, increment the L2
+        // block number by 1
         while maybe_existing_game != Address::ZERO {
             next_l2_block_number_for_proposal += U256::from(1);
             output_root = self
