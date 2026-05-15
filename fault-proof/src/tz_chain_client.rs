@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 #[error("TzChainClient: no cached checkpoint for height {0}")]
 pub struct TzCacheMissError(pub u64);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TzBlockInfo {
     pub height: u64,
     pub block_hash: B256,

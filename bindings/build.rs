@@ -21,6 +21,12 @@ fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed={}", contracts_package_path.join("remappings.txt"));
     println!("cargo:rerun-if-changed={}", contracts_package_path.join("foundry.toml"));
 
+    println!("cargo:rerun-if-env-changed=SKIP_FORGE_BINDINGS");
+    if std::env::var("SKIP_FORGE_BINDINGS").is_ok() {
+        println!("cargo:warning=SKIP_FORGE_BINDINGS set. Skipping bindings regeneration.");
+        return Ok(());
+    }
+
     // Check if forge is available
     if Command::new("forge").arg("--version").output().is_err() {
         println!("cargo:warning=Forge not found in PATH. Skipping bindings generation.");

@@ -20,8 +20,10 @@ use crate::{
     },
     is_parent_challenger_wins, is_parent_resolved,
     prometheus::ChallengerGauge,
-    FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
+    FactoryTrait, L1Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
+#[cfg(not(feature = "tz"))]
+use crate::L2Provider;
 use op_succinct_host_utils::metrics::MetricsGauge;
 use op_succinct_signer_utils::SignerLock;
 

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use op_alloy_rpc_types::Transaction;
 
 use crate::{
-    tz_chain_client::{TzCacheMissError, TzChainClient},
+    tz_chain_client::TzChainClient,
     L2ProviderTrait,
 };
 
@@ -68,7 +68,7 @@ impl L2ProviderTrait for TzL2Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tz_chain_client::TzBlockInfo;
+    use crate::tz_chain_client::{TzBlockInfo, TzCacheMissError};
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,

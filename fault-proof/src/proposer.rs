@@ -49,8 +49,10 @@ use crate::{
     prover::{
         ClusterProofProvider, MockProofProvider, NetworkProofProvider, ProofKeys, ProofProvider,
     },
-    FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
+    FactoryTrait, L1Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
+#[cfg(not(feature = "tz"))]
+use crate::L2Provider;
 
 
 /// Max allowed time (secs) between a game's deadline and the anchor game's deadline.
@@ -673,6 +675,7 @@ where
         Ok(())
     }
 
+    #[cfg(not(feature = "tz"))]
     async fn validate_anchor_l2_block(
         anchor_l2_block: U256,
         config: &ProposerConfig,
