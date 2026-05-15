@@ -27,7 +27,7 @@ use op_succinct_signer_utils::SignerLock;
 
 // for tz: import cache-miss error for graceful skip in challenger fetch_game
 #[cfg(feature = "tz")]
-use crate::tz_chain_client::TzCacheMissError;
+use crate::tz::chain_client::TzCacheMissError;
 
 pub struct OPSuccinctChallenger<P>
 where

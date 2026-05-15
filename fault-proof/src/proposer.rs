@@ -1574,7 +1574,7 @@ where
         // state.games to preserve canonical head tracking in multi-proposer deployments.
         #[cfg(feature = "tz")]
         let maybe_output_root: Option<FixedBytes<32>> = {
-            use crate::tz_chain_client::TzCacheMissError;
+            use crate::tz::chain_client::TzCacheMissError;
             match self.l2_provider.compute_output_root_at_block(l2_block).await {
                 Ok(root) => Some(root),
                 Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
@@ -2580,7 +2580,7 @@ impl ProposerState {
 // for tz: tz-specific proposer implementations, included as a child module so it has access
 // to private fields without changing their visibility.
 #[cfg(feature = "tz")]
-#[path = "tz_proposer_impl.rs"]
+#[path = "tz/proposer_impl.rs"]
 mod tz_impl;
 
 #[cfg(test)]

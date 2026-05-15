@@ -7,10 +7,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use op_alloy_rpc_types::Transaction;
 
-use crate::{
-    tz_chain_client::TzChainClient,
-    L2ProviderTrait,
-};
+use super::chain_client::TzChainClient;
+use crate::L2ProviderTrait;
 
 pub struct TzL2Provider {
     pub tz_client: Arc<TzChainClient>,
@@ -68,7 +66,7 @@ impl L2ProviderTrait for TzL2Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tz_chain_client::{TzBlockInfo, TzCacheMissError};
+    use super::super::chain_client::{TzBlockInfo, TzCacheMissError};
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
@@ -138,7 +136,6 @@ mod tests {
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
         let provider = TzL2Provider { tz_client: client };
-        // canonical_head=1000, interval=100 => need confirmed >= 1100; got 1050 → None
         let result = provider
             .get_next_proposal_block(U256::from(1000u64), 100)
             .await
@@ -160,7 +157,6 @@ mod tests {
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
         let provider = TzL2Provider { tz_client: client };
-        // canonical_head=1000, interval=100 => need confirmed >= 1100; got 1200 → Some(1200)
         let result = provider
             .get_next_proposal_block(U256::from(1000u64), 100)
             .await

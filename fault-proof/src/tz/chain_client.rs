@@ -153,7 +153,6 @@ mod tests {
             .mount(&good_server)
             .await;
 
-        // First endpoint returns 500; second endpoint is healthy.
         let client = TzChainClient::new(vec![
             "http://127.0.0.1:1".to_string(), // unreachable
             good_server.uri(),

@@ -6,10 +6,8 @@ pub mod prometheus;
 pub mod proposer;
 pub mod prover;
 
-// for tz: new modules for tz chain adaptation
-#[cfg(feature = "tz")] pub mod tz_chain_client;
-#[cfg(feature = "tz")] pub mod tz_l2_provider;
-#[cfg(feature = "tz")] pub mod tz_proposer_config;
+#[cfg(feature = "tz")]
+pub mod tz;
 
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{address, keccak256, Address, FixedBytes, B256, U256};

@@ -7,9 +7,9 @@ use fault_proof::{
     contract::{AnchorStateRegistry, DisputeGameFactory},
     prometheus::ProposerGauge,
     proposer::OPSuccinctProposer,
-    tz_chain_client::TzChainClient,
-    tz_l2_provider::TzL2Provider,
-    tz_proposer_config::TzConfig,
+    tz::chain_client::TzChainClient,
+    tz::l2_provider::TzL2Provider,
+    tz::proposer_config::TzConfig,
     L2ProviderTrait,
 };
 use op_succinct_host_utils::{
