@@ -52,9 +52,6 @@ use crate::{
     FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
 
-// for tz: import cache-miss error for graceful skip in proposer fetch_game
-#[cfg(feature = "tz")]
-use crate::tz_chain_client::TzCacheMissError;
 
 /// Max allowed time (secs) between a game's deadline and the anchor game's deadline.
 ///
@@ -597,6 +594,7 @@ where
 
     /// Runs one-time startup validations before the proposer begins normal operations.
     /// Returns the validated anchor L2 block number, init bond, and contract params.
+    #[cfg(not(feature = "tz"))]
     async fn startup_validations(&self) -> Result<(U256, U256, ContractParams)> {
         // Validate anchor state registry matches factory's game implementation.
         Self::validate_anchor_state_registry(
@@ -608,8 +606,6 @@ where
 
         // Fetch and validate anchor L2 block number.
         let anchor_l2_block = self.anchor_state_registry.getAnchorRoot().call().await?._1;
-        // for tz: validate_anchor_l2_block requires eth_getBlockByNumber("finalized") which tz does not support
-        #[cfg(not(feature = "tz"))]
         Self::validate_anchor_l2_block(
             anchor_l2_block,
             &self.config,
@@ -734,6 +730,7 @@ where
     /// 1. `sync_games` pulls newly created games and refreshes cached metadata.
     /// 2. `sync_anchor_game` aligns the cached anchor pointer with the registry contract.
     /// 3. `compute_canonical_head` recomputes the head game used for proposal selection.
+    #[cfg(not(feature = "tz"))]
     pub async fn sync_state(&self) -> Result<()> {
         // Pull new games and synchronize cached game statuses.
         self.sync_games().await?;
@@ -743,19 +740,6 @@ where
 
         // With the cached game statuses and anchor synchronized, recompute the canonical head.
         self.compute_canonical_head().await;
-
-        // for tz: evict cache entries below anchor_height after each sync cycle
-        // xlayer: evict_cache_below is a no-op on the default L2Provider
-        #[cfg(feature = "tz")]
-        {
-            let anchor_height = self.state.read().await
-                .anchor_game.as_ref()
-                .map(|g| g.l2_block.to::<u64>())
-                .unwrap_or(0);
-            if anchor_height > 0 {
-                self.l2_provider.evict_cache_below(anchor_height);
-            }
-        }
 
         Ok(())
     }
@@ -1526,6 +1510,7 @@ where
     /// - The game's anchor state registry does not match the configured registry.
     /// - The game type does not respect the expected type when created.
     /// - The output root claim is invalid.
+    #[cfg(not(feature = "tz"))]
     pub async fn fetch_game(&self, index: U256) -> Result<GameFetchResult> {
         {
             let state = self.state.read().await;
@@ -1569,31 +1554,7 @@ where
 
         let l2_block = contract.l2BlockNumber().call().await?;
 
-        // for tz: cache miss — own games skip rootClaim validation; foreign games also enter
-        // state.games to preserve canonical head tracking in multi-proposer deployments
-        // This impl is for tz only has the rpc method to query latest stateHash(in tz is appHash)
-        // If tz support querying stateHash by block number in the future, we can remove this special handling and unify with xlayer
-        #[cfg(feature = "tz")]
-        let maybe_output_root: Option<FixedBytes<32>> = {
-            match self.l2_provider.compute_output_root_at_block(l2_block).await {
-                Ok(root) => Some(root),
-                Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
-                    let creator = contract.gameCreator().call().await?;
-                    if creator == self.signer.address() {
-                        tracing::debug!(game_index = %index, l2_block_number = %l2_block,
-                            "tz: cache miss — own game, skipping rootClaim validation");
-                    } else {
-                        tracing::warn!(game_index = %index, l2_block_number = %l2_block, %creator,
-                            "tz: cache miss — foreign game, adding to state without rootClaim validation");
-                    }
-                    None
-                }
-                Err(e) => return Err(e),
-            }
-        };
-        #[cfg(not(feature = "tz"))]
-        let maybe_output_root: Option<FixedBytes<32>> =
-            Some(self.l2_provider.compute_output_root_at_block(l2_block).await?);
+        let output_root = self.l2_provider.compute_output_root_at_block(l2_block).await?;
 
         let claim = contract.rootClaim().call().await?;
         let was_respected = contract.wasRespectedGameTypeWhenCreated().call().await?;
@@ -1621,18 +1582,15 @@ where
             return Ok(GameFetchResult::InvalidGame { index });
         }
 
-        // for tz: skip validation on cache miss; xlayer always validates (maybe_output_root is always Some)
-        if let Some(output_root) = maybe_output_root {
-            if output_root != claim {
-                tracing::warn!(
-                    game_index = %index,
-                    ?game_address,
-                    ?claim,
-                    expected_output_root = ?output_root,
-                    "Invalid game: root claim does not match computed output root"
-                );
-                return Ok(GameFetchResult::InvalidGame { index });
-            }
+        if output_root != claim {
+            tracing::warn!(
+                game_index = %index,
+                ?game_address,
+                ?claim,
+                expected_output_root = ?output_root,
+                "Invalid game: root claim does not match computed output root"
+            );
+            return Ok(GameFetchResult::InvalidGame { index });
         }
 
         tracing::info!(
@@ -1673,6 +1631,7 @@ where
     }
 
     /// Handles the creation of a new game if conditions are met.
+    #[cfg(not(feature = "tz"))]
     #[tracing::instrument(name = "[[Proposing]]", skip(self))]
     pub async fn handle_game_creation(
         &self,
@@ -1692,19 +1651,6 @@ where
             .await?
             .proxy;
 
-        // for tz: one-shot check — confirmed_height maps to exactly one rootClaim;
-        // incrementing block number would not change rootClaim, so skip and wait for next checkpoint
-        #[cfg(feature = "tz")]
-        if maybe_existing_game != Address::ZERO {
-            tracing::info!(
-                l2_block_number = %next_l2_block_number_for_proposal,
-                "tz: game already exists for this checkpoint, skipping"
-            );
-            return Ok(());
-        }
-
-        // xlayer: retry with incremented block number on UUID collision (original behavior preserved)
-        #[cfg(not(feature = "tz"))]
         while maybe_existing_game != Address::ZERO {
             next_l2_block_number_for_proposal += U256::from(1);
             output_root = self
@@ -1733,6 +1679,7 @@ where
     }
 
     /// Fetch the proposer metrics.
+    #[cfg(not(feature = "tz"))]
     async fn fetch_proposer_metrics(&self) -> Result<()> {
         let (canonical_head_l2_block, anchor_game) = {
             let state = self.state.read().await;
@@ -1742,8 +1689,6 @@ where
         if let Some(canonical_head_l2_block) = canonical_head_l2_block {
             ProposerGauge::LatestGameL2BlockNumber.set(canonical_head_l2_block.to::<u64>() as f64);
 
-            // for tz: tz node does not support eth_getBlockByNumber("finalized"); skip this metric
-            #[cfg(not(feature = "tz"))]
             if let Some(finalized_l2_block_number) = self
                 .host
                 .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
@@ -1995,6 +1940,7 @@ where
     /// proposal, and the parent game index.
     /// If a game should not be created, dummy values are returned for the next L2 block number for
     /// proposal and parent game index.
+    #[cfg(not(feature = "tz"))]
     async fn should_create_game(&self) -> Result<(bool, U256, u32)> {
         // In fast finality mode, resume proving for existing games before creating new ones
         // TODO(fakedev9999): Consider unifying proving concurrency control for both fast finality
@@ -2148,30 +2094,12 @@ where
         let next_l2_block_number_for_proposal =
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
-        // for tz: always return here — never fall through to get_finalized_l2_block_number
-        // which requires eth_getBlockByNumber("finalized")
-        #[cfg(feature = "tz")]
-        {
-            return match self.l2_provider
-                .get_next_proposal_block(
-                    canonical_head_l2_block,
-                    self.config.proposal_interval_in_blocks,
-                )
-                .await?
-            {
-                Some(target) => Ok((true, target, parent_game_index)),
-                None => Ok((false, U256::ZERO, u32::MAX)),
-            };
-        }
-
-        #[cfg(not(feature = "tz"))]
         let finalized_l2_head_block_number = self
             .host
             .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
             .await?;
 
-        #[cfg(not(feature = "tz"))]
-        return Ok((
+        Ok((
             finalized_l2_head_block_number
                 .map(|finalized_block| {
                     U256::from(finalized_block) >= next_l2_block_number_for_proposal
@@ -2179,12 +2107,7 @@ where
                 .unwrap_or(false),
             next_l2_block_number_for_proposal,
             parent_game_index,
-        ));
-
-        // tz returns earlier in the function; this satisfies the compiler for the tz branch
-        #[cfg(feature = "tz")]
-        #[allow(unreachable_code)]
-        Ok((false, U256::ZERO, u32::MAX))
+        ))
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.
@@ -2593,6 +2516,12 @@ impl ProposerState {
         Some(state)
     }
 }
+
+// for tz: tz-specific proposer implementations, included as a child module so it has access
+// to private fields without changing their visibility.
+#[cfg(feature = "tz")]
+#[path = "tz_proposer_impl.rs"]
+mod tz_impl;
 
 #[cfg(test)]
 mod tests {
