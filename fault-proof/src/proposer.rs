@@ -2580,7 +2580,7 @@ impl ProposerState {
 // for tz: tz-specific proposer implementations, included as a child module so it has access
 // to private fields without changing their visibility.
 #[cfg(feature = "tz")]
-#[path = "tz/proposer_impl.rs"]
+#[path = "tz/proposer.rs"]
 mod tz_impl;
 
 #[cfg(test)]
