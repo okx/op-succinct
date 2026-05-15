@@ -1571,6 +1571,8 @@ where
 
         // for tz: cache miss — own games skip rootClaim validation; foreign games also enter
         // state.games to preserve canonical head tracking in multi-proposer deployments
+        // This impl is for tz only has the rpc method to query latest stateHash(in tz is appHash)
+        // If tz support querying stateHash by block number in the future, we can remove this special handling and unify with xlayer
         #[cfg(feature = "tz")]
         let maybe_output_root: Option<FixedBytes<32>> = {
             match self.l2_provider.compute_output_root_at_block(l2_block).await {
