@@ -10,7 +10,7 @@ op-succinct is a Rust workspace that proves OP Stack L2 state transitions with S
 
 | Domain | Path | Description |
 |--------|------|-------------|
-| Technical | `technical/` | Architecture, modules, APIs, conventions, core flows, pitfalls |
+| Technical | `technical/` | Architecture, modules, APIs, conventions, core flows, pitfalls, decisions (ADR) |
 | Business | `business/` | Business rules, product flows, domain policies (placeholder) |
 | Quality | `quality/` | Test strategies, quality gates, coverage requirements (placeholder) |
 

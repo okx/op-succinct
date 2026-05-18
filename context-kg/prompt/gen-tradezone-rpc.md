@@ -1,3 +1,8 @@
+---
+name: "gen-tradezone-rpc"
+description: "生成 prompt：从 TradeZone 代码仓库自动提取 REST API 接口并生成 tradezone-rpc.md 知识库文档"
+---
+
 # gen-tradezone-rpc — 从 TradeZone 代码仓库生成 RPC 接口知识库文档
 
 ## 用途

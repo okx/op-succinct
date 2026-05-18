@@ -64,3 +64,4 @@ copilot.pem
 
 # Claude Code local settings
 settings.local.json
+.claude/settings.json

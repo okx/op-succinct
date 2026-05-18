@@ -22,6 +22,7 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 | `modules/*.md` | Per-crate design notes (one file per workspace member) |
 | `core-flows/*.md` | End-to-end flow documentation |
 | `pitfalls/*.md` | Known traps and historical lessons |
+| `decisions/ADR-*.md` | Architecture Decision Records — design rationale and alternatives |
 
 ## How to Read This Knowledge Base
 
