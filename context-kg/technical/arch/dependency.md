@@ -75,7 +75,7 @@ description: "Crate dependency map, storage, and external services for op-succin
 
 [Rule] `utils/client/*`: must NEVER import `utils/host`, `utils/signer`, `utils/proof`, or any `*-host-utils`. — zkVM-guest isolation; only `kona-proof`, `sp1-lib`, `alloy-primitives`, and shared client crates.
 
-[Rule] `utils/host/Cargo.toml`: must NEVER add `kona-rpc`. — Triggers `reth-optimism-primitives` → alloy version conflict with hokulea v1.1.4. Locally-defined RPC types live in `utils/host/src/rpc_types.rs`.
+[Rule] `utils/host/Cargo.toml`: must NEVER add `kona-rpc`. — Triggers `reth-optimism-primitives` → alloy version conflict with hokulea. Locally-defined RPC types live in `utils/host/src/rpc_types.rs`.
 
 [Rule] `Cargo.toml` patch section: must NEVER remove the `okx/sp1#feat/gateway-proxy-v6.1.0` patches. — Production cluster auth depends on these forks.
 

@@ -18,7 +18,7 @@ description: "Concurrency pitfalls — task management, nonce serialization, cha
 
 ## Backup Save Panic
 
-[Pitfall] `fault-proof/src/backup.rs:136-137`: `serde_json::to_value().unwrap()` + `.as_object().unwrap()` panics the proposer if `ProposerState` serialization fails. Trigger: corrupt in-memory state (very rare). Correct approach: fallback to a warn log + skip save; do not crash the proposer over backup corruption.
+[Resolved] `fault-proof/src/backup.rs`: the main `save()` path now uses `.context()` error propagation instead of `.unwrap()`. The remaining `.unwrap()` calls are in a test-only schema assertion, not the production save path.
 
 ## Fast Finality vs Defense Concurrency
 
