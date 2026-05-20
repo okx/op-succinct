@@ -19,6 +19,7 @@ description: "Crate dependency map, storage, and external services for op-succin
 | SP1 prover network | gRPC (`sp1-sdk`) | Network mode prover requests |
 | SP1 cluster | gRPC + Redis + S3 | Cluster mode prover requests via gateway proxy |
 | Asset-onchain remote signer | HTTP (POST + GET poll) | `XLayerRemoteClient` sign request |
+| TradeZone (tz) checkpoint REST endpoint | HTTP GET (multi-endpoint failover) | `TzChainClient::get_confirmed_block_info` polls `GET /chain/confirmed_block_info` for the latest checkpoint (`tz` feature only) |
 
 ## Inter-Module Dependencies
 
@@ -68,6 +69,7 @@ description: "Crate dependency map, storage, and external services for op-succin
 | Google Cloud KMS | `alloy-signer-gcp`, `gcloud-sdk` | HSM-backed transaction signing |
 | Web3Signer | HTTP / `alloy` | External remote signer protocol |
 | Asset-onchain remote signer (XLayer) | HTTP (custom) — `XLayerRemoteClient` | OKX-specific HSM-backed signing with AES-ECB + HMAC auth |
+| TradeZone (tz) chain REST API | `reqwest` (optional dep, activated by `tz` feature) — `TzChainClient` | tz checkpoint discovery; called every proposer iteration + every 60 s by the challenger background task |
 
 ## Prohibited Patterns
 

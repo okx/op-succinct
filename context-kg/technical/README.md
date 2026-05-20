@@ -38,3 +38,8 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 `utils/celestia/{client,host}`, `utils/eigenda/{client,host}`, `utils/ethereum/{client,host}`,
 `programs/range/{celestia,eigenda,ethereum,utils}`, `programs/aggregation`,
 `scripts/{prove,utils}`, `validity`, `fault-proof`, `bindings`.
+
+## Cargo Feature Notes
+
+- DA features `ethereum` (default) / `celestia` / `eigenda` are mutually exclusive at compile time (see `conventions/feature-types.md` and `decisions/ADR-002-compile-time-da-selection.md`).
+- L2-chain feature `tz` is **orthogonal** to DA features and activates the tz submodule + binaries inside `fault-proof` (see `modules/fault-proof.md` "tz Submodule" section, `decisions/ADR-009-tz-phase-1-vkey-suppression.md`, and `pitfalls/tz-binaries.md` / `pitfalls/tz-cache.md`).

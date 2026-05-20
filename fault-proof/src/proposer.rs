@@ -255,7 +255,9 @@ where
     contract_params: OnceLock<ContractParams>,
     pub signer: SignerLock,
     pub l1_provider: L1Provider,
-    pub l2_provider: L2Provider,
+    // for tz: trait-object enables tz path to inject `TzL2Provider` while xlayer keeps the
+    // concrete `L2Provider` (wrapped at construction).
+    pub l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
     pub anchor_state_registry: Arc<AnchorStateRegistryInstance<P>>,
     pub factory: Arc<DisputeGameFactoryInstance<P>>,
     init_bond: OnceLock<U256>,
@@ -355,7 +357,11 @@ where
         };
 
         let l1_provider = ProviderBuilder::default().connect_http(config.l1_rpc.clone());
-        let l2_provider = ProviderBuilder::default().connect_http(config.l2_rpc.clone());
+        let l2_provider_concrete: L2Provider =
+            ProviderBuilder::default().connect_http(config.l2_rpc.clone());
+        // for tz: wrap the concrete xlayer L2Provider in a trait object so the field type is
+        // uniform across xlayer and tz construction paths.
+        let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(l2_provider_concrete);
 
         let initial_state = ProposerState::default();
 
@@ -498,6 +504,10 @@ where
 
         // Fetch and validate anchor L2 block number.
         let anchor_l2_block = self.anchor_state_registry.getAnchorRoot().call().await?._1;
+        // for tz: skip finalized-L2-block validation. tz nodes do not expose
+        // `eth_getBlockByNumber("finalized")`, and the host's get_finalized_l2_block_number
+        // call would fail. Phase 1 relies on the registry's anchor + the REST checkpoint flow.
+        #[cfg(not(feature = "tz"))]
         Self::validate_anchor_l2_block(
             anchor_l2_block,
             &self.config,
@@ -565,6 +575,9 @@ where
         Ok(())
     }
 
+    // for tz: under feature=tz this method's only call site is cfg-skipped because tz nodes
+    // don't expose `eth_getBlockByNumber("finalized")`. Suppress dead_code there.
+    #[cfg_attr(feature = "tz", allow(dead_code))]
     async fn validate_anchor_l2_block(
         anchor_l2_block: U256,
         config: &ProposerConfig,
@@ -631,6 +644,15 @@ where
 
         // With the cached game statuses and anchor synchronized, recompute the canonical head.
         self.compute_canonical_head().await;
+
+        #[cfg(feature = "tz")]
+        {
+            let state = self.state.read().await;
+            if let Some(anchor_game) = &state.anchor_game {
+                let anchor_height = anchor_game.l2_block.to::<u64>();
+                self.l2_provider.evict_cache_below(anchor_height);
+            }
+        }
 
         Ok(())
     }
@@ -1012,25 +1034,36 @@ where
     /// Returns true if on-chain vkeys match ours (safe to create games).
     /// Checks all 3 identity fields: aggregation_vkey, range_vkey_commitment, rollup_config_hash.
     async fn on_chain_vkeys_match(&self) -> Result<bool> {
-        let game_impl = self.factory.game_impl(self.config.game_type).await?;
-        let on_chain_agg = B256::from(game_impl.aggregationVkey().call().await?.0);
-        let on_chain_range = B256::from(game_impl.rangeVkeyCommitment().call().await?.0);
-        let on_chain_rollup_hash = B256::from(game_impl.rollupConfigHash().call().await?.0);
-
-        let matches = on_chain_agg == self.identity.aggregation_vkey &&
-            on_chain_range == self.identity.range_vkey_commitment &&
-            on_chain_rollup_hash == self.identity.rollup_config_hash;
-
-        if !matches {
-            tracing::info!("Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)");
-            tracing::info!("On-chain agg: {:?}", on_chain_agg);
-            tracing::info!("On-chain range: {:?}", on_chain_range);
-            tracing::info!("On-chain rollup hash: {:?}", on_chain_rollup_hash);
-            tracing::info!("Proposer agg: {:?}", self.identity.aggregation_vkey);
-            tracing::info!("Proposer range: {:?}", self.identity.range_vkey_commitment);
-            tracing::info!("Proposer rollup hash: {:?}", self.identity.rollup_config_hash);
+        // for tz Phase 1: TeeDisputeGame.rangeVkeyCommitment() / aggregationVkey() are reserved
+        // for the Phase 2 real SP1 program and MUST NOT be compared against the local proposer
+        // identity. Always proceed past the gate. Phase 2 will remove this short-circuit when the
+        // real ELF is wired up and the on-chain vkey contract is finalized.
+        #[cfg(feature = "tz")]
+        {
+            Ok(true)
         }
-        Ok(matches)
+        #[cfg(not(feature = "tz"))]
+        {
+            let game_impl = self.factory.game_impl(self.config.game_type).await?;
+            let on_chain_agg = B256::from(game_impl.aggregationVkey().call().await?.0);
+            let on_chain_range = B256::from(game_impl.rangeVkeyCommitment().call().await?.0);
+            let on_chain_rollup_hash = B256::from(game_impl.rollupConfigHash().call().await?.0);
+
+            let matches = on_chain_agg == self.identity.aggregation_vkey &&
+                on_chain_range == self.identity.range_vkey_commitment &&
+                on_chain_rollup_hash == self.identity.rollup_config_hash;
+
+            if !matches {
+                tracing::info!("Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)");
+                tracing::info!("On-chain agg: {:?}", on_chain_agg);
+                tracing::info!("On-chain range: {:?}", on_chain_range);
+                tracing::info!("On-chain rollup hash: {:?}", on_chain_rollup_hash);
+                tracing::info!("Proposer agg: {:?}", self.identity.aggregation_vkey);
+                tracing::info!("Proposer range: {:?}", self.identity.range_vkey_commitment);
+                tracing::info!("Proposer rollup hash: {:?}", self.identity.rollup_config_hash);
+            }
+            Ok(matches)
+        }
     }
 
     /// Proves a dispute game at the given address.
@@ -1040,6 +1073,7 @@ where
     /// - `TxHash`: The transaction hash of the proof submission
     /// - `u64`: Total instruction cycles used in the proof generation
     /// - `u64`: Total SP1 gas consumed in the proof generation
+    #[cfg(not(feature = "tz"))]
     #[tracing::instrument(name = "[[Proving]]", skip(self), fields(game_address = ?game_address))]
     pub async fn prove_game(
         &self,
@@ -1443,7 +1477,40 @@ where
         }
 
         let l2_block = contract.l2BlockNumber().call().await?;
+
+        // tz: cache miss — own games skip rootClaim validation; foreign games still enter
+        // state.games to preserve canonical head tracking in multi-proposer deployments.
+        // This impl is for tz only can fetch latest stateHash
+        // If tz update and can fetch historical stateHash, we can remove this special handling and unify with xlayer impl.
+        #[cfg(feature = "tz")]
+        let maybe_output_root: Option<FixedBytes<32>> = {
+            use crate::tz::chain_client::TzCacheMissError;
+            match self.l2_provider.compute_output_root_at_block(l2_block).await {
+                Ok(root) => Some(root),
+                Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
+                    let creator = contract.gameCreator().call().await?;
+                    if creator == self.signer.address() {
+                        tracing::debug!(
+                            game_index = %index,
+                            l2_block_number = %l2_block,
+                            "tz: cache miss — own game, skipping rootClaim validation"
+                        );
+                    } else {
+                        tracing::warn!(
+                            game_index = %index,
+                            l2_block_number = %l2_block,
+                            %creator,
+                            "tz: cache miss — foreign game, adding to state without rootClaim validation"
+                        );
+                    }
+                    None
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        #[cfg(not(feature = "tz"))]
         let output_root = self.l2_provider.compute_output_root_at_block(l2_block).await?;
+
         let claim = contract.rootClaim().call().await?;
         let was_respected = contract.wasRespectedGameTypeWhenCreated().call().await?;
         let status = contract.status().call().await?;
@@ -1470,7 +1537,23 @@ where
             return Ok(GameFetchResult::InvalidGame { index });
         }
 
+        // tz: skip rootClaim validation on cache miss; xlayer always validates.
+        #[cfg(feature = "tz")]
+        if let Some(output_root) = maybe_output_root {
+            if output_root != claim {
+                tracing::warn!(
+                    game_index = %index,
+                    ?game_address,
+                    ?claim,
+                    expected_output_root = ?output_root,
+                    "Invalid game: root claim does not match computed output root"
+                );
+                return Ok(GameFetchResult::InvalidGame { index });
+            }
+        }
+
         // Validate output root. If invalid, drop the game, setting the cursor to this index.
+        #[cfg(not(feature = "tz"))]
         if output_root != claim {
             tracing::warn!(
                 game_index = %index,
@@ -1520,18 +1603,22 @@ where
     }
 
     /// Handles the creation of a new game if conditions are met.
+    #[cfg(not(feature = "tz"))]
     #[tracing::instrument(name = "[[Proposing]]", skip(self))]
     pub async fn handle_game_creation(
         &self,
-        mut next_l2_block_number_for_proposal: U256,
+        #[cfg_attr(feature = "tz", allow(unused_mut))] mut next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
+        #[cfg_attr(feature = "tz", allow(unused_mut))]
         let mut output_root = self
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
+        #[cfg_attr(feature = "tz", allow(unused_mut))]
         let mut extra_data =
             (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+        #[cfg_attr(feature = "tz", allow(unused_assignments, unused_mut))]
         let mut maybe_existing_game = self
             .factory
             .games(self.config.game_type, output_root, extra_data.clone().into())
@@ -1539,8 +1626,23 @@ where
             .await?
             .proxy;
 
+        // for tz: tz only allows checkpoint heights — incrementing the L2 block number on UUID
+        // conflict would propose at a non-checkpoint height. Wait for the next loop tick instead.
+        #[cfg(feature = "tz")]
+        {
+            if maybe_existing_game != Address::ZERO {
+                tracing::info!(
+                    l2_block_number = %next_l2_block_number_for_proposal,
+                    existing = ?maybe_existing_game,
+                    "tz: game already exists at this checkpoint, skipping (will retry next loop)"
+                );
+                return Ok(());
+            }
+        }
+
         // If there already exists a game at the next L2 block number for proposal, increment the L2
-        // block number by 1
+        // block number by 1.
+        #[cfg(not(feature = "tz"))]
         while maybe_existing_game != Address::ZERO {
             next_l2_block_number_for_proposal += U256::from(1);
             output_root = self
@@ -1578,6 +1680,9 @@ where
         if let Some(canonical_head_l2_block) = canonical_head_l2_block {
             ProposerGauge::LatestGameL2BlockNumber.set(canonical_head_l2_block.to::<u64>() as f64);
 
+            // for tz: tz nodes do NOT expose `eth_getBlockByNumber("finalized")`. Skip the
+            // FinalizedL2BlockNumber gauge update on the tz path.
+            #[cfg(not(feature = "tz"))]
             if let Some(finalized_l2_block_number) = self
                 .host
                 .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
@@ -1829,6 +1934,7 @@ where
     /// proposal, and the parent game index.
     /// If a game should not be created, dummy values are returned for the next L2 block number for
     /// proposal and parent game index.
+    #[cfg(not(feature = "tz"))]
     async fn should_create_game(&self) -> Result<(bool, U256, u32)> {
         // In fast finality mode, resume proving for existing games before creating new ones
         // TODO(fakedev9999): Consider unifying proving concurrency control for both fast finality
@@ -1979,23 +2085,43 @@ where
             (canonical_head_l2_block, parent_game_index)
         };
 
-        let next_l2_block_number_for_proposal =
-            canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
+        // for tz: tz proposes only at checkpoint heights returned by /chain/confirmed_block_info,
+        // so the xlayer "canonical_head + interval finalized?" decision is replaced with a
+        // trait-level hook that consults the REST endpoint via `TzL2Provider`.
+        #[cfg(not(feature = "tz"))]
+        {
+            let next_l2_block_number_for_proposal =
+                canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
-        let finalized_l2_head_block_number = self
-            .host
-            .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
-            .await?;
+            let finalized_l2_head_block_number = self
+                .host
+                .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+                .await?;
 
-        Ok((
-            finalized_l2_head_block_number
-                .map(|finalized_block| {
-                    U256::from(finalized_block) >= next_l2_block_number_for_proposal
-                })
-                .unwrap_or(false),
-            next_l2_block_number_for_proposal,
-            parent_game_index,
-        ))
+            Ok((
+                finalized_l2_head_block_number
+                    .map(|finalized_block| {
+                        U256::from(finalized_block) >= next_l2_block_number_for_proposal
+                    })
+                    .unwrap_or(false),
+                next_l2_block_number_for_proposal,
+                parent_game_index,
+            ))
+        }
+        #[cfg(feature = "tz")]
+        {
+            match self
+                .l2_provider
+                .get_next_proposal_block(
+                    canonical_head_l2_block,
+                    self.config.proposal_interval_in_blocks,
+                )
+                .await?
+            {
+                Some(target) => Ok((true, target, parent_game_index)),
+                None => Ok((false, U256::ZERO, u32::MAX)),
+            }
+        }
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.
@@ -2512,3 +2638,9 @@ mod tests {
         }
     }
 }
+
+// for tz: pull in the tz-specific method-override impl as a child module so it inherits
+// crate-internal visibility on private items in this file.
+#[cfg(feature = "tz")]
+#[path = "tz/proposer.rs"]
+mod tz_impl;

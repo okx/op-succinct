@@ -25,6 +25,24 @@ The single non-trivial outbound HTTP client is `XLayerRemoteClient` (see `utils/
 | Idempotency | `refOrderId` is a UUID generated per sign request and cached in the client to track callbacks |
 | Pagination | n/a |
 
+### tz Chain REST Client (feature `tz`)
+
+`fault-proof/src/tz/chain_client.rs::TzChainClient` is an outbound HTTP client for the TradeZone L2 chain (only built under `--features tz`):
+
+| Field | Convention |
+|-------|-----------|
+| Wrapper | `TzApiEnvelope { code: i32, msg: Option<String>, data: Option<TzBlockInfo> }` |
+| Success | HTTP 200 with `code == 0` and non-null `data` |
+| Error | Non-200 HTTP, `code != 0`, or `data: null` (each surfaces as a distinct `anyhow::Error`; `data: null` does NOT write to cache) |
+| Headers | None (anonymous public endpoint) |
+| Method | `GET /chain/confirmed_block_info` |
+| Failover | Multi-endpoint list from `L2_RPC` (comma-separated); first non-error response wins |
+| Timeout | 10 s per endpoint |
+| Versioning | None |
+| Idempotency | n/a — read-only checkpoint query |
+| Pagination | n/a — endpoint returns latest checkpoint only |
+| Forward compatibility | `serde` default behavior; no `#[serde(deny_unknown_fields)]` (server may add fields) |
+
 ## Outbound RPC
 
 JSON-RPC over HTTP to L1, L2, and beacon nodes; uses `alloy-provider`. No bespoke RPC conventions beyond the standard alloy interface.
