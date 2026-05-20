@@ -134,7 +134,7 @@ mod tests {
             .and(path("/chain/confirmed_block_info"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0, "message": "ok",
-                "data": { "height": 1050u64, "blockHash": HASH_A, "stateHash": HASH_B }
+                "data": { "height": 1050u64, "blockHash": HASH_A, "appHash": HASH_B }
             })))
             .mount(&mock_server)
             .await;
@@ -155,7 +155,7 @@ mod tests {
             .and(path("/chain/confirmed_block_info"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0, "message": "ok",
-                "data": { "height": 1200u64, "blockHash": HASH_A, "stateHash": HASH_B }
+                "data": { "height": 1200u64, "blockHash": HASH_A, "appHash": HASH_B }
             })))
             .mount(&mock_server)
             .await;
@@ -187,7 +187,7 @@ mod tests {
             .and(path("/chain/confirmed_block_info"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0, "message": "ok",
-                "data": { "height": 500u64, "blockHash": HASH_A, "stateHash": HASH_B }
+                "data": { "height": 500u64, "blockHash": HASH_A, "appHash": HASH_B }
             })))
             .mount(&mock_server)
             .await;
