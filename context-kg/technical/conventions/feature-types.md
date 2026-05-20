@@ -16,6 +16,14 @@ description: "DA feature flags, ELF embedding, build patterns and compile-time d
 
 [Rule] `utils/proof/src/lib.rs`: must never enable two DA features simultaneously — `cfg_if` only emits one `initialize_host` impl.
 
+## L2 Chain Feature Flags
+
+The `tz` feature in `fault-proof/Cargo.toml` is **orthogonal** to the DA features: `--features tz` activates the `fault-proof/src/tz/` submodule and the `tz-proposer` / `tz-challenger` binaries (gated by `required-features = ["tz"]`); the underlying DA selection is still made by the workspace-default DA feature flag. tz only affects the proposer/challenger off-chain logic — `extraData` encoding, rootClaim computation, cache eviction, and binary entry points — not the proof pipeline.
+
+[Rule] tz feature must remain orthogonal to DA features; never gate `utils/proof::initialize_host` cfg branches on `tz`.
+
+[Convention] Optional dependencies `reqwest`, `thiserror` are activated by the `tz` feature via `dep:` form (`tz = ["dep:reqwest", "dep:thiserror"]`). Their inclusion is gated so the default xlayer build incurs no compile-time or binary-size penalty from tz support.
+
 ## ELF Embedding
 
 `utils/elfs/src/lib.rs` exposes pre-built ELFs as static byte slices via `include_bytes!`:

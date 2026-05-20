@@ -21,7 +21,7 @@ description: "Layer definitions, allowed/prohibited call directions, service res
 | Module | Responsibility | NOT Responsible For |
 |--------|---------------|---------------------|
 | `op-succinct-validity` | Postgres-backed proposer daemon: enqueue range/agg proofs, submit to L2OO/DGF, manage chain lock | Generating proofs (uses `proof-utils`); signing (uses `signer-utils`); challenging games |
-| `op-succinct-fp` | Fault-dispute proposer & challenger binaries; manage game DAG, prove/challenge/resolve, claim bonds | Proposing to L2OO (different contract); managing remote-signer (uses `signer-utils`) |
+| `op-succinct-fp` | Fault-dispute proposer & challenger binaries; manage game DAG, prove/challenge/resolve, claim bonds. Also hosts `tz/` submodule (Cargo feature `tz`) and `tz-proposer` / `tz-challenger` binaries that target the TradeZone L2 chain via REST `/chain/confirmed_block_info` and `keccak256(blockHash ‖ stateHash)` rootClaim formula | Proposing to L2OO (different contract); managing remote-signer (uses `signer-utils`); generating SP1 proofs on the tz path in Phase 1 (suppressed via `is_owned == false` cascade — see ADR-009) |
 | `op-succinct-proof-utils` | Factory: select host impl by DA feature, submit to SP1 cluster/network prover | Querying contract state; signing |
 | `op-succinct-host-utils` | RPC fetching, block range planning, proof caching, metrics, telemetry | DA-specific fetching (delegated to `*-host-utils`); proof generation (delegated to `proof-utils`) |
 | `op-succinct-client-utils` | Shared zkVM-guest code: boot info, oracle traits, precompiles, witness codecs | DA-specific execution (delegated to `*-client-utils`) |

@@ -53,3 +53,38 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 [Warning] `fault-proof/src/challenger.rs:357-359, 375`: `sync_state()` recomputes `output_root` for every cached game every interval — O(n) L2 RPC calls. Scale issue on large game DAGs; consider lazy evaluation.
 
 [Warning] `fault-proof/src/challenger.rs:78-85, 457-499`: `malicious_challenge_percentage > 0.0` is testing-only but has no env/feature gate to prevent accidental production enable.
+
+## tz Submodule (Cargo feature `tz`)
+
+`fault-proof/src/tz/` is a leaf submodule activated by `--features tz`. Adds support for the TradeZone (tz) L2 chain — a non-OP-Stack-compatible L2 where checkpoints are exposed via REST `GET /chain/confirmed_block_info` rather than `eth_getBlockByNumber("finalized")`, and rootClaims follow `keccak256(blockHash ‖ stateHash)` rather than the xlayer 4-field output-root formula.
+
+| File | Responsibility |
+|------|----------------|
+| `tz/mod.rs` | Module root; re-exports `chain_client`, `config`, `l2_provider` |
+| `tz/chain_client.rs` | `TzChainClient`, `TzBlockInfo`, `TzCacheMissError`; multi-endpoint failover; sync `std::sync::Mutex<HashMap<u64, TzBlockInfo>>` cache; `evict_below(anchor)` |
+| `tz/l2_provider.rs` | `TzL2Provider` impl of `L2ProviderTrait`; `compute_tz_root_claim` formula; `get_next_proposal_block` interval gate |
+| `tz/config.rs` | `TzConfig::{from_env, challenger_from_env}`; `parse_game_type`; `DEFAULT_TZ_GAME_TYPE = 1961` |
+| `tz/proposer.rs` | Method-override `impl OPSuccinctProposer<P,H>::new_with_l2_provider` injecting trait-object L2 provider; reads `rollup_config_hash` from L1 via `factory.game_impl(...).rollupConfigHash().call()`; included in `proposer.rs` via `#[path = "tz/proposer.rs"] mod tz_impl;` |
+| `tz/challenger.rs` | Method-override `impl OPSuccinctChallenger<P>::new_with_l2_provider`; included via the same `#[path]` pattern |
+
+Two new binaries gated by `required-features = ["tz"]`:
+
+| Binary | File | Lifecycle |
+|--------|------|-----------|
+| `tz-proposer` | `bin/tz_proposer.rs` | sync `main()` → `TzConfig::from_env()` → `unsafe { env::set_var("L2_RPC", ...) }` → tokio runtime → `TzChainClient` + `TzL2Provider` → `OPSuccinctProposer::new_with_l2_provider` → `run()` |
+| `tz-challenger` | `bin/tz_challenger.rs` | Same as proposer plus a 60 s `tokio::spawn` background poll that pre-warms the checkpoint cache |
+
+Field type changes in shared code (gated implicitly by impl): `OPSuccinctProposer.l2_provider` and `OPSuccinctChallenger.l2_provider` are now `Arc<dyn L2ProviderTrait + Send + Sync>` — the xlayer `L2Provider` is wrapped with `Arc::new(...)` in `new()`. Vtable indirection is dwarfed by network IO.
+
+xlayer-vs-tz divergence sites in `proposer.rs` / `challenger.rs` are all `#[cfg]`-gated:
+
+- `proposer.rs::startup_validations` — `validate_anchor_l2_block` skipped under `feature="tz"` (tz has no `eth_getBlockByNumber("finalized")`)
+- `proposer.rs::on_chain_vkeys_match` — short-circuits to `Ok(true)` under `feature="tz"` (Phase 1 vkey-poisoning suppression; see ADR-009)
+- `proposer.rs::should_create_game` — final target-selection step diverges (delegates to `L2ProviderTrait::get_next_proposal_block`); pre-checks remain shared
+- `proposer.rs::handle_game_creation` — UUID one-shot (return `Ok(())` on existing game) under `feature="tz"`; xlayer keeps the while-loop increment retry
+- `proposer.rs::fetch_game` — cache-miss tolerance (`TzCacheMissError` ⇒ keep game in `state.games`, skip rootClaim check)
+- `proposer.rs::sync_state` — calls `evict_cache_below(anchor_game.l2_block)` at end-of-iteration under `feature="tz"`
+- `proposer.rs::fetch_proposer_metrics` — skips `FinalizedL2BlockNumber` gauge under `feature="tz"`
+- `challenger.rs::fetch_game` — cache-miss safe-skip (`TzCacheMissError` ⇒ cursor advances, no challenge tx, `state.games.insert` is bypassed)
+
+Pitfalls: see `pitfalls/tz-binaries.md` (env-var coupling, unsafe set_var ordering) and `pitfalls/tz-cache.md` (eviction boundary, cache-key invariant, sync mutex discipline). Phase 1 design rationale and Phase 2 cutover sequence: `decisions/ADR-009-tz-phase-1-vkey-suppression.md`.

@@ -6,6 +6,10 @@ pub mod prometheus;
 pub mod proposer;
 pub mod prover;
 
+// for tz: gated TradeZone (tz) custom L2 chain support module.
+#[cfg(feature = "tz")]
+pub mod tz;
+
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{address, keccak256, Address, FixedBytes, B256, U256};
 use alloy_provider::{Provider, RootProvider};
@@ -49,6 +53,29 @@ pub trait L2ProviderTrait {
 
     /// Compute the output root at a given L2 block number.
     async fn compute_output_root_at_block(&self, l2_block_number: U256) -> Result<FixedBytes<32>>;
+
+    // for tz: tz-only hooks; xlayer L2Provider keeps the default impls below.
+
+    /// Returns the next checkpoint height eligible for proposal, or `Ok(None)` to skip the round.
+    ///
+    /// Default impl returns `Ok(None)` so the xlayer flow is unchanged (xlayer ignores this hook
+    /// and uses `host.get_finalized_l2_block_number` instead).
+    async fn get_next_proposal_block(
+        &self,
+        _canonical_head: U256,
+        _proposal_interval_in_blocks: u64,
+    ) -> Result<Option<U256>> {
+        Ok(None)
+    }
+
+    // for tz: evict history cache entries below anchor_height; xlayer no-op
+    fn evict_cache_below(&self, _anchor_height: u64) {}
+
+    // for tz: fetch latest checkpoint and populate history cache before each sync cycle;
+    // xlayer no-op (cache does not exist)
+    async fn refresh_checkpoint_cache(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]

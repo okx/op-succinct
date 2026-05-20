@@ -22,6 +22,9 @@ use crate::{
     prometheus::ChallengerGauge,
     FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
+// for tz: TzCacheMissError used inside fetch_game cache-miss arm under feature=tz.
+#[cfg(feature = "tz")]
+use crate::tz::chain_client::TzCacheMissError;
 use op_succinct_host_utils::metrics::MetricsGauge;
 use op_succinct_signer_utils::SignerLock;
 
@@ -32,7 +35,8 @@ where
     pub config: ChallengerConfig,
     signer: SignerLock,
     l1_provider: L1Provider,
-    l2_provider: L2Provider,
+    // for tz: trait-object enables tz path to inject `TzL2Provider`.
+    l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
     anchor_state_registry: AnchorStateRegistryInstance<P>,
     factory: DisputeGameFactoryInstance<P>,
     challenger_bond: OnceLock<U256>,
@@ -52,12 +56,33 @@ where
         signer: SignerLock,
     ) -> Self {
         let l2_rpc = config.l2_rpc.clone();
+        let l2_provider_concrete: L2Provider = ProviderBuilder::default().connect_http(l2_rpc);
+        // for tz: wrap concrete L2Provider in trait object so xlayer / tz construction paths
+        // share a uniform field type.
+        let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(l2_provider_concrete);
+        Self::new_with_l2_provider_inner(
+            config,
+            l1_provider,
+            anchor_state_registry,
+            factory,
+            signer,
+            l2_provider,
+        )
+    }
 
+    fn new_with_l2_provider_inner(
+        config: ChallengerConfig,
+        l1_provider: L1Provider,
+        anchor_state_registry: AnchorStateRegistryInstance<P>,
+        factory: DisputeGameFactoryInstance<P>,
+        signer: SignerLock,
+        l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
+    ) -> Self {
         OPSuccinctChallenger {
             config,
             signer,
-            l1_provider: l1_provider.clone(),
-            l2_provider: ProviderBuilder::default().connect_http(l2_rpc),
+            l1_provider,
+            l2_provider,
             anchor_state_registry,
             factory,
             challenger_bond: OnceLock::new(),
@@ -90,6 +115,11 @@ where
         // and then attempts to challenge, resolve, and claim bonds for any eligible games.
         loop {
             interval.tick().await;
+
+            // for tz: refresh checkpoint cache before sync so fetch_game cache lookups hit
+            if let Err(e) = self.l2_provider.refresh_checkpoint_cache().await {
+                tracing::warn!("Failed to refresh checkpoint cache: {:?}", e);
+            }
 
             // Synchronize cached dispute state before scheduling work.
             if let Err(e) = self.sync_state().await {
@@ -354,6 +384,26 @@ where
         }
 
         let l2_block_number = contract.l2BlockNumber().call().await?;
+        // for tz: cache miss means checkpoint not yet observed; skip game (cannot decide whether to
+        // challenge without computing the rootClaim)
+        #[cfg(feature = "tz")]
+        let computed_output_root = match
+            self.l2_provider.compute_output_root_at_block(l2_block_number).await
+        {
+            Ok(root) => root,
+            Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
+                tracing::warn!(
+                    game_index = %index,
+                    l2_block_number = %l2_block_number,
+                    "tz: cache miss, skipping game"
+                );
+                let mut state = self.state.lock().await;
+                state.cursor = index;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        #[cfg(not(feature = "tz"))]
         let computed_output_root =
             self.l2_provider.compute_output_root_at_block(l2_block_number).await?;
         let output_root = contract.rootClaim().call().await?;
@@ -716,3 +766,9 @@ pub struct ChallengerState {
     cursor: U256,
     games: HashMap<U256, Game>,
 }
+
+// for tz: pull in the tz-specific method-override impl as a child module so it inherits
+// crate-internal visibility on private items in this file.
+#[cfg(feature = "tz")]
+#[path = "tz/challenger.rs"]
+mod tz_impl;
