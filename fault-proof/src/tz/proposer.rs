@@ -12,7 +12,10 @@ use op_succinct_proof_utils::{
     cluster_poll_proof, cluster_submit_by_artifact_ids, cluster_upload_elf, tz_cluster_agg_proof,
 };
 use sp1_cluster_utils::ProofRequestResults;
-use sp1_sdk::{blocking::CpuProver, SP1Proof, SP1ProofMode, SP1Stdin};
+use sp1_sdk::{
+    blocking::{CpuProver, Prover as BlockingProver},
+    SP1Proof, SP1ProofMode, SP1Stdin,
+};
 
 impl<P, H> OPSuccinctProposer<P, H>
 where
