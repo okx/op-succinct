@@ -37,7 +37,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         vm.startBroadcast();
 
         // Load configuration from JSON file (priority)
-        FDGConfig memory config = readFDGJson("testnet/opsuccinctfdgconfig.json");
+        FDGConfig memory config = readFDGJson("config/testnet/opsuccinctfdgconfig.json");
 
         // Read required contract addresses from environment variables (not in JSON)
         address factoryAddress = address(0x80388586ab4580936BCb409Cc2dC6BC0221e1B6F); // vm.envAddress("FACTORY_ADDRESS");
