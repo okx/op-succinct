@@ -17,3 +17,8 @@ alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 serde_cbor.workspace = true
 bincode.workspace = true
+
+# secp256k1 ECDSA recovery for in-zkVM TEE range-proof verification.
+# Uses the SP1-patched k256 (workspace dep) so all curve ops route through
+# the SP1 secp256k1 precompile.
+k256 = { workspace = true, features = ["ecdsa"] }

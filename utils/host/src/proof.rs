@@ -1,10 +1,19 @@
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
 use anyhow::Result;
-use op_succinct_client_utils::{boot::BootInfoStruct, types::AggregationInputs};
+use op_succinct_client_utils::{
+    boot::BootInfoStruct,
+    types::{AggregationInputs, RangeProof},
+};
 use sp1_sdk::{HashableKey, SP1Proof, SP1Stdin};
 
 /// Get the stdin for the aggregation proof.
+///
+/// Builds an SP1-only aggregation: every range is tagged `RangeProof::Sp1`,
+/// preserving the legacy behavior where each `BootInfoStruct` has a
+/// matching SP1 compressed proof loaded into the recursion buffer. For
+/// hybrid SP1 + TEE aggregations, use [`get_agg_proof_stdin_mixed`] (TODO,
+/// added when the TEE proposer wiring lands).
 pub fn get_agg_proof_stdin(
     proofs: Vec<SP1Proof>,
     boot_infos: Vec<BootInfoStruct>,
@@ -21,9 +30,14 @@ pub fn get_agg_proof_stdin(
         stdin.write_proof(*compressed_proof, multi_block_vkey.vk.clone());
     }
 
+    // SP1-only legacy path: every range gets `RangeProof::Sp1`. The
+    // aggregation program then dispatches to `verify_sp1_proof` for each.
+    let range_proofs = vec![RangeProof::Sp1; boot_infos.len()];
+
     // Write the aggregation inputs to the stdin.
     stdin.write(&AggregationInputs {
         boot_infos,
+        range_proofs,
         latest_l1_checkpoint_head: latest_checkpoint_head,
         multi_block_vkey: multi_block_vkey.hash_u32(),
         prover_address,

@@ -47,6 +47,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "bincode",
+ "k256 0.13.4",
  "op-succinct-client-utils",
  "serde_cbor",
  "sha2 0.10.9",
