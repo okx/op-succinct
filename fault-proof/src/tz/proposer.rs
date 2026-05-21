@@ -158,6 +158,7 @@ where
             // tz: derive VKs from the actual tz ELFs loaded from disk (not xlayer's embedded ELFs)
             // so that multi_block_vkey and write_proof use the correct tz range VK.
             let range_elf_arc: std::sync::Arc<[u8]> = range_elf.into();
+            let agg_elf_arc: std::sync::Arc<[u8]> = tz_agg_elf.clone().into();
             let (range_pk, range_vk, agg_pk, agg_vk) = tokio::task::spawn_blocking(move || {
                 let cpu_prover = CpuProver::new();
                 let range_pk = cpu_prover
@@ -165,8 +166,8 @@ where
                     .context("tz range ELF setup failed")?;
                 let range_vk = range_pk.verifying_key().clone();
                 let agg_pk = cpu_prover
-                    .setup(Elf::Static(AGGREGATION_ELF))
-                    .context("agg ELF setup failed")?;
+                    .setup(Elf::Dynamic(agg_elf_arc))
+                    .context("tz agg ELF setup failed")?;
                 let agg_vk = agg_pk.verifying_key().clone();
                 anyhow::Ok((range_pk, range_vk, agg_pk, agg_vk))
             })
@@ -190,7 +191,7 @@ where
             };
             let range_pk = np.setup(effective_range_elf).await?;
             let range_vk = range_pk.verifying_key().clone();
-            let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
+            let agg_pk = np.setup(tz_agg_elf.clone().into()).await?;
             let agg_vk = agg_pk.verifying_key().clone();
             (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
         };
