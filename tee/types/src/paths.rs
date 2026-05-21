@@ -13,11 +13,9 @@
 ///   for the EIP712 domain. See [`HEADER_VERIFYING_CONTRACT`].
 ///
 /// The enclave does **not** carry a default chainId/verifier — every task
-/// must specify them. Mirrors `tradezone/bin/enclave/enclave_task_manager.rs`
-/// where `compute_batch_digest` takes `verifier_addr` and `chain_id` as
-/// per-call arguments. Rationale: one EIF can serve multiple verifier
-/// contracts / multiple L1 chains, redeploying the verifier does not change
-/// PCR0.
+/// must specify them. Rationale: one EIF can serve multiple verifier
+/// contracts / multiple L1 chains; redeploying the verifier does not
+/// change PCR0.
 ///
 /// Response body: `rkyv(CreateTaskResponse)`.
 /// Status: `201 Created` for new task / `200 OK` if the `x-task-id` already

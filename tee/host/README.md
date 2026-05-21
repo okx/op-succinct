@@ -30,7 +30,7 @@ proposer (HTTP, rkyv body)  ─►  tee-host  ─►  enclave (HTTP, rkyv body)
   `/attestation`, `/health` over HTTP/1.1 + keep-alive on either vsock (prod)
   or TCP (dev/CI).
 
-Error codes follow tradezone numeric conventions
+Error codes use the proposer-facing numeric convention
 (`0 / 10001 / 10004 / 20001`).
 
 ## Layout
@@ -131,7 +131,7 @@ Build flavors:
 ## Error codes
 
 The four numeric codes in unified `ApiResponse { code, message, data }`
-envelope (mirrors tradezone `crates/primitives/src/lib.rs`):
+envelope:
 
 | code | name | meaning |
 |---|---|---|

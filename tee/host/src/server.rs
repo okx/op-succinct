@@ -319,8 +319,8 @@ async fn apply_enclave_state(tasks: &TaskManager, task_id: &str, es: &TaskStateV
 
 /// Background loop that periodically GETs `/tasks/{id}` from the enclave for
 /// every non-terminal task, mirrors the result into the local registry, and
-/// logs the current phase. Mirrors tradezone's `run_task_monitor` so terminal
-/// transitions surface in host logs without waiting for a proposer poll.
+/// logs the current phase. Surfaces terminal transitions in host logs
+/// without waiting for a proposer poll.
 pub async fn run_task_monitor(
     tasks: Arc<TaskManager>,
     enclave: Arc<EnclaveClient>,

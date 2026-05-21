@@ -1,4 +1,4 @@
-//! Host error type and tradezone-aligned numeric error codes.
+//! Host error type and proposer-facing numeric error codes.
 
 use thiserror::Error;
 use xlayer_tee_types::ErrorKind;
@@ -34,8 +34,19 @@ impl Error {
     }
 }
 
-/// Per SPEC §6: terminal `ErrorKind`s map to 10001, retryable to 20001.
-/// `TaskUnknown` is special-cased to 10004 (resource not found) for clarity.
+/// Collapse the enclave's 14-variant `ErrorKind` into the 3 numeric codes
+/// the proposer expects:
+///
+/// | bucket             | code  | ErrorKind                                        |
+/// |--------------------|-------|--------------------------------------------------|
+/// | `INVALID_ARGUMENT` | 10001 | bad client input (witness / claim / range / hdr) |
+/// | `RESOURCE_NOT_FOUND` | 10004 | `TaskUnknown` only                             |
+/// | `INTERNAL_ERROR`   | 20001 | server-side transient (kona panic, timeout, OOM) |
+///
+/// `DeserializeRkyv` belongs to `INVALID_ARGUMENT`: a body that fails rkyv
+/// decode is bad client input — retrying the same bytes never helps.
+/// `TooManyTasks` is `INTERNAL_ERROR` because the proposer should back off
+/// and retry the same `task_id` later (server-side capacity issue).
 fn map_enclave_kind(kind: ErrorKind) -> i32 {
     match kind {
         ErrorKind::TaskUnknown => CODE_RESOURCE_NOT_FOUND,

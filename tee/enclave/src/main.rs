@@ -51,7 +51,6 @@ const VMADDR_CID_ANY: u32 = 0xFFFFFFFF;
 // axum's `serve` API expects something that implements `axum::serve::Listener`;
 // the stock `tokio_vsock::VsockListener` doesn't. We wrap it in a small mpsc
 // adapter so axum can drive it with the same `accept().await` pattern.
-// Pattern borrowed from `tradezone/bin/enclave/main.rs`.
 // ---------------------------------------------------------------------------
 
 #[cfg(all(target_os = "linux", feature = "vsock"))]

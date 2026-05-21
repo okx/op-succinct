@@ -54,8 +54,7 @@ fn now_ms() -> u64 {
 /// Captured per-task from the `x-eip712-chain-id` and
 /// `x-eip712-verifying-contract` headers on `POST /tasks/range` so that
 /// **the same EIF can serve any number of verifier contracts and L1 chains**
-/// without re-build / re-attest. Pattern follows
-/// `tradezone/bin/enclave/enclave_task_manager.rs::compute_batch_digest`.
+/// without re-build / re-attest.
 pub struct TaskEntry {
     pub task_id: String,
     pub start_time_ms: u64,

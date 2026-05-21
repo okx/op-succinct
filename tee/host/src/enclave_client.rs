@@ -1,8 +1,7 @@
 //! HTTP client to the enclave over vsock (prod) or TCP (dev).
 //!
-//! Single keep-alive connection wrapped in a Mutex; reconnects once on send error.
-//! Mirrors the transport pattern from `tradezone/crates/chain/src/tee/host_task_manager.rs`
-//! (`connect_enclave_http` / `reconnect_enclave_cli`).
+//! Single keep-alive connection wrapped in a Mutex; reconnects once on
+//! send error.
 
 use std::sync::Arc;
 use std::time::Duration;

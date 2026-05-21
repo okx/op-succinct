@@ -5,8 +5,7 @@
 //!   side will recognize the dev marker and skip CA-chain verification.
 //! - **`vsock` feature**: calls `aws_nitro_enclaves_nsm_api` directly
 //!   (`nsm_init → Request::Attestation → nsm_exit`) and returns the raw
-//!   `COSE_Sign1` document bytes. Matches the pattern used by
-//!   `tradezone/bin/enclave/lib.rs` (see design doc §4.2.7.4).
+//!   `COSE_Sign1` document bytes.
 
 #[cfg(not(all(target_os = "linux", feature = "vsock")))]
 mod dev {

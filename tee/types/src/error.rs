@@ -32,18 +32,21 @@ use serde::{Deserialize, Serialize};
     RkyvDeserialize,
 )]
 pub enum ErrorKind {
-    // -------------------- Retryable (HTTP 500) --------------------
+    // -------------------- Retryable / server-side (HTTP 5xx) --------------------
+    // Host maps these to the proposer-facing `INTERNAL_ERROR` (20001).
     /// kona-driver execution failed (panic, oracle error, etc.).
     KonaExec,
-    /// rkyv deserialization of the request body failed (truncation,
-    /// version mismatch, schema drift).
-    DeserializeRkyv,
     /// Other unexpected enclave-internal error.
     InternalEnclave,
     /// Enclave-side deadline exceeded.
     Timeout,
 
-    // -------------------- Terminal (HTTP 400) ---------------------
+    // -------------------- Terminal / client-input (HTTP 4xx) ---------------------
+    // Host maps these to the proposer-facing `INVALID_ARGUMENT` (10001).
+    /// rkyv deserialization of the request body failed (truncation,
+    /// version mismatch, schema drift). Re-sending the same body won't
+    /// succeed, so this is **terminal** — proposer must rebuild the request.
+    DeserializeRkyv,
     /// Enclave-computed `output_root` does not match the claim embedded
     /// in the witness `BootInfo.claimed_l2_output_root`.
     ClaimMismatch,
@@ -82,17 +85,21 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// HTTP status code that the enclave server returns for this error.
+    ///
+    /// Categories are picked so the host can collapse them into the three
+    /// numeric codes (10001/10004/20001) the proposer expects:
+    ///   - 4xx → `INVALID_ARGUMENT` (10001) — bad client input, do not retry
+    ///   - 404 → `RESOURCE_NOT_FOUND` (10004) — resource missing
+    ///   - 5xx → `INTERNAL_ERROR` (20001) — server-side, retryable
     pub const fn status_code(self) -> u16 {
         match self {
-            Self::KonaExec
-            | Self::DeserializeRkyv
-            | Self::InternalEnclave
-            | Self::Timeout => 500,
+            Self::KonaExec | Self::InternalEnclave | Self::Timeout => 500,
             Self::ClaimMismatch
             | Self::InvalidWitness
             | Self::InvalidRangeSig
             | Self::ChainBreak
             | Self::Inconsistent
+            | Self::DeserializeRkyv
             | Self::InvalidTaskId
             | Self::InvalidEip712Header => 400,
             Self::TooManyTasks => 429,
@@ -101,12 +108,15 @@ impl ErrorKind {
         }
     }
 
-    /// `true` if the proposer should re-submit this task on encountering
-    /// this error. `false` if the task should be considered terminally failed.
+    /// `true` if re-submitting the same `task_id` may succeed (transient
+    /// server-side failure). `false` if the request itself is bad and
+    /// re-submitting won't help (client must fix input or create a new task).
+    ///
+    /// Note: `TaskUnknown` is retryable in the sense that the proposer should
+    /// POST a **fresh** task_id, not re-poll the same id. Treat with care.
     pub const fn is_retryable(self) -> bool {
         match self {
             Self::KonaExec
-            | Self::DeserializeRkyv
             | Self::InternalEnclave
             | Self::Timeout
             | Self::TooManyTasks
@@ -116,6 +126,7 @@ impl ErrorKind {
             | Self::InvalidRangeSig
             | Self::ChainBreak
             | Self::Inconsistent
+            | Self::DeserializeRkyv
             | Self::Cancelled
             | Self::InvalidTaskId
             | Self::InvalidEip712Header => false,
@@ -152,6 +163,9 @@ mod tests {
     fn status_codes_partition_correctly() {
         assert_eq!(ErrorKind::KonaExec.status_code(), 500);
         assert_eq!(ErrorKind::ClaimMismatch.status_code(), 400);
+        // DeserializeRkyv = bad client body — terminal, 400 (not 500).
+        assert_eq!(ErrorKind::DeserializeRkyv.status_code(), 400);
+        assert!(!ErrorKind::DeserializeRkyv.is_retryable());
         assert!(ErrorKind::Timeout.is_retryable());
         assert!(!ErrorKind::InvalidWitness.is_retryable());
     }
