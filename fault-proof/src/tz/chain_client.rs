@@ -108,7 +108,8 @@ impl TzChainClient {
     ///
     /// POST `/zkp/witness` with `{ "startBlkHeight": start, "endBlkHeight": end }`.
     /// Returns the `artifactId` string on success.
-    /// Fails over to the next endpoint on HTTP 5xx or connection errors.
+    /// Fails over to the next endpoint on non-2xx HTTP (including 409 Conflict when server is at
+    /// capacity) or connection errors.
     pub async fn create_witness_task(&self, start: u64, end: u64) -> Result<String> {
         #[derive(serde::Deserialize)]
         struct ApiResponse {
@@ -137,8 +138,14 @@ impl TzChainClient {
                     continue;
                 }
             };
-            if resp.status().is_server_error() {
-                last_err = anyhow!("HTTP {}", resp.status());
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                last_err = if body_text.is_empty() {
+                    anyhow!("HTTP {}", status)
+                } else {
+                    anyhow!("HTTP {} — {}", status, body_text.trim())
+                };
                 continue;
             }
             let api: ApiResponse = match resp.json().await {
@@ -164,7 +171,7 @@ impl TzChainClient {
     /// GET `/zkp/witness/{artifact_id}`.
     /// Application-level statuses (Pending/Running/Finished/Failed) are returned as
     /// `Ok(WitnessStatus::...)` and do NOT trigger failover — they represent definitive answers
-    /// from the server. Failover only occurs on transport errors (connection failure, HTTP 5xx).
+    /// from the server. Failover only occurs on transport errors (connection failure, non-2xx HTTP).
     pub async fn poll_witness_task(&self, artifact_id: &str) -> Result<WitnessStatus> {
         #[derive(serde::Deserialize)]
         struct ApiResponse {
@@ -188,8 +195,14 @@ impl TzChainClient {
                     continue;
                 }
             };
-            if resp.status().is_server_error() {
-                last_err = anyhow!("HTTP {}", resp.status());
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                last_err = if body_text.is_empty() {
+                    anyhow!("HTTP {}", status)
+                } else {
+                    anyhow!("HTTP {} — {}", status, body_text.trim())
+                };
                 continue;
             }
             let api: ApiResponse = match resp.json().await {
@@ -376,6 +389,32 @@ mod tests {
             .await;
 
         let client = TzChainClient::new(vec![mock_server.uri()]);
+        let id = client.create_witness_task(100, 200).await.unwrap();
+        assert_eq!(id, artifact_uuid);
+    }
+
+    #[tokio::test]
+    async fn create_witness_task_failover_on_409_empty_body() {
+        let conflict_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/zkp/witness"))
+            .respond_with(ResponseTemplate::new(409)) // empty body — max tasks reached
+            .mount(&conflict_server)
+            .await;
+
+        let good_server = MockServer::start().await;
+        let artifact_uuid = "550e8400-e29b-41d4-a716-446655440001";
+        Mock::given(method("POST"))
+            .and(path("/zkp/witness"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "message": "ok",
+                "data": { "artifactId": artifact_uuid }
+            })))
+            .mount(&good_server)
+            .await;
+
+        let client = TzChainClient::new(vec![conflict_server.uri(), good_server.uri()]);
         let id = client.create_witness_task(100, 200).await.unwrap();
         assert_eq!(id, artifact_uuid);
     }
