@@ -1,0 +1,71 @@
+[package]
+name = "xlayer-tee-enclave"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "xlayer-tee-prover ELF — axum HTTP server that runs kona range proof and signs an EIP712 Range journal. Production builds add `--features vsock` to switch to NSM + vsock; default build uses a hardcoded dev key + placeholder attestation for local dev / CI."
+
+[lib]
+name = "xlayer_tee_enclave"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xlayer-tee-enclave"
+path = "src/main.rs"
+
+[features]
+default = []
+# Production feature: only meaningful on linux. Switches keys from hardcoded dev key
+# to a fresh `k256::SecretKey::random(&mut OsRng)` (kernel RNG inside the Nitro VM
+# is seeded by NSM), switches attestation from hardcoded placeholder to a real
+# Nitro NSM `Attestation` document, switches PCR0 from `[0u8; 32]` to NSM
+# `DescribePCR { index: 0 }`, and switches transport from TCP loopback to vsock.
+vsock = ["dep:tokio-vsock", "dep:aws-nitro-enclaves-nsm-api", "dep:serde_bytes", "dep:rand"]
+
+[dependencies]
+xlayer-tee-types.workspace = true
+
+# kona / op-succinct — BootInfo extraction and range derivation/execution.
+op-succinct-client-utils.workspace = true
+op-succinct-ethereum-client-utils.workspace = true
+kona-proof.workspace = true
+kona-preimage.workspace = true
+async-trait.workspace = true
+
+alloy-primitives = { workspace = true, features = ["serde", "k256"] }
+alloy-sol-types.workspace = true
+
+k256.workspace = true
+sha3.workspace = true
+hex.workspace = true
+base64.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+rkyv.workspace = true
+
+thiserror.workspace = true
+anyhow.workspace = true
+
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# Async task manager.
+parking_lot.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+
+# Linux-only optional deps gated by the `vsock` feature; see [features].
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { workspace = true, optional = true }
+aws-nitro-enclaves-nsm-api = { workspace = true, optional = true }
+serde_bytes = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+hyper.workspace = true
+kona-genesis.workspace = true

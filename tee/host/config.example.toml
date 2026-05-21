@@ -1,0 +1,26 @@
+# xlayer-tee-host config (override with env: TEE_HOST__SECTION__FIELD=value)
+
+[server]
+bind_addr = "0.0.0.0:18080"
+task_retention_secs = 3600
+# Same witness body within this window returns the existing taskId (idempotent retry).
+dedup_ttl_secs = 300
+# Periodic per-task status log frequency.
+monitor_interval_secs = 30
+
+[enclave]
+# vsock target (used only when host is built with `--features vsock` on Linux)
+vsock_cid = 4
+vsock_port = 5000
+# TCP fallback (used otherwise — dev / macOS / CI)
+tcp_addr = "127.0.0.1:7878"
+request_timeout_secs = 180
+
+[attestation]
+cache_ttl_secs = 60
+
+# EIP-712 verifier domain forwarded to the enclave per task. Change here
+# (not in the EIF) when switching L1 chain / verifier contract.
+[verifier]
+chain_id = 1
+verifying_contract = "0x0000000000000000000000000000000000000000"

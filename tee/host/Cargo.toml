@@ -1,0 +1,63 @@
+[package]
+name = "xlayer-tee-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "TEE Host (scheduler) bridging proposer and xlayer-tee-prover enclave."
+
+[[bin]]
+name = "xlayer-tee-host"
+path = "src/main.rs"
+
+[lib]
+name = "xlayer_tee_host"
+path = "src/lib.rs"
+
+[dependencies]
+# Shared interface types
+xlayer-tee-types.workspace = true
+
+# HTTP server
+axum.workspace = true
+tower.workspace = true
+
+# HTTP client (low-level http1::handshake over vsock/TCP)
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+
+# vsock transport (Linux + prod only)
+tokio-vsock = { workspace = true, optional = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+rkyv.workspace = true
+
+# ABI encoding for proofBytes
+alloy-primitives = { workspace = true, features = ["serde", "rlp"] }
+alloy-sol-types.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+
+# Utilities
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+config.workspace = true
+dotenvy.workspace = true
+chrono = { workspace = true, features = ["serde", "clock"] }
+base64.workspace = true
+hex.workspace = true
+
+[features]
+default = []
+# Enable vsock transport for production (Linux + Nitro Enclave).
+vsock = ["dep:tokio-vsock"]
+
+[dev-dependencies]
+tempfile.workspace = true

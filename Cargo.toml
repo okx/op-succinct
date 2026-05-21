@@ -17,6 +17,11 @@ members = [
     "validity",
     "fault-proof",
     "bindings",
+    "tee/types",
+    "tee/enclave",
+    "tee/host",
+    "tee/prover-mock",
+    "tee/mock-proposer",
 ]
 resolver = "2"
 
@@ -53,7 +58,7 @@ reqwest = { version = "0.12", features = ["json"] }
 csv = "1.3.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.117", default-features = false }
-rkyv = { version = "0.8", features = ["hashbrown-0_15", "std"] }
+rkyv = { version = "0.8", features = ["hashbrown-0_15", "std", "alloc", "bytecheck"] }
 hex = "0.4.3"
 bincode = "1.3.3"
 base64 = "0.22.1"
@@ -141,6 +146,32 @@ op-succinct-signer-utils = { path = "utils/signer" }
 op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
 op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
+
+# tee
+xlayer-tee-types = { path = "tee/types" }
+
+# tee — HTTP server stack (host + enclave use axum 0.8)
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tower = "0.5"
+bytes = "1"
+
+# tee — Nitro Enclave runtime (only built when xlayer-tee-{enclave,host} has --features vsock)
+tokio-vsock = "0.5"
+aws-nitro-enclaves-nsm-api = "0.4"
+serde_bytes = "0.11"
+rand = "0.8"
+
+# tee — host config loading + sync primitives
+config = { version = "0.14", default-features = false, features = ["toml"] }
+dotenvy = "0.15"
+parking_lot = "0.12"
+
+# tee — signing + hashing (k256 + sha3 are also patched in [patch.crates-io] below)
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+sha3 = { version = "0.10", default-features = false }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
