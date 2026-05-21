@@ -7,7 +7,7 @@
 use super::*;
 // for tz: Phase 2 — cluster artifact-ID proof submission and polling
 use crate::tz::chain_client::WitnessStatus;
-use op_succinct_client_utils::types::AggregationInputs;
+use op_succinct_client_utils::types::{u32_to_u8, AggregationInputs};
 use op_succinct_proof_utils::{
     cluster_poll_proof, cluster_submit_by_artifact_ids, cluster_upload_elf, tz_cluster_agg_proof,
 };
@@ -196,9 +196,12 @@ where
             (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
         };
 
-        // Compute local VK commitment values from the derived keys (mirrors xlayer proposer).
-        let local_range_commitment = B256::from(range_vk.hash_bytes());
-        let local_agg_vkey = B256::from(agg_vk.bytes32_raw());
+        // Compute local VK commitment values using the same method as the tz project.
+        let local_range_commitment = B256::from(u32_to_u8(range_vk.hash_u32()));
+        let local_agg_vkey = B256::from_slice(
+            &hex::decode(agg_vk.bytes32().trim_start_matches("0x"))
+                .context("failed to decode agg VK hex")?,
+        );
         tracing::info!(
             local_range_commitment = ?local_range_commitment,
             local_agg_vkey = ?local_agg_vkey,
