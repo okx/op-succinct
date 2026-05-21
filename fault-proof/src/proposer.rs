@@ -1057,36 +1057,25 @@ where
     /// Returns true if on-chain vkeys match ours (safe to create games).
     /// Checks all 3 identity fields: aggregation_vkey, range_vkey_commitment, rollup_config_hash.
     async fn on_chain_vkeys_match(&self) -> Result<bool> {
-        // for tz Phase 1: TeeDisputeGame.rangeVkeyCommitment() / aggregationVkey() are reserved
-        // for the Phase 2 real SP1 program and MUST NOT be compared against the local proposer
-        // identity. Always proceed past the gate. Phase 2 will remove this short-circuit when the
-        // real ELF is wired up and the on-chain vkey contract is finalized.
-        #[cfg(feature = "tz")]
-        {
-            Ok(true)
-        }
-        #[cfg(not(feature = "tz"))]
-        {
-            let game_impl = self.factory.game_impl(self.config.game_type).await?;
-            let on_chain_agg = B256::from(game_impl.aggregationVkey().call().await?.0);
-            let on_chain_range = B256::from(game_impl.rangeVkeyCommitment().call().await?.0);
-            let on_chain_rollup_hash = B256::from(game_impl.rollupConfigHash().call().await?.0);
+        let game_impl = self.factory.game_impl(self.config.game_type).await?;
+        let on_chain_agg = B256::from(game_impl.aggregationVkey().call().await?.0);
+        let on_chain_range = B256::from(game_impl.rangeVkeyCommitment().call().await?.0);
+        let on_chain_rollup_hash = B256::from(game_impl.rollupConfigHash().call().await?.0);
 
-            let matches = on_chain_agg == self.identity.aggregation_vkey &&
-                on_chain_range == self.identity.range_vkey_commitment &&
-                on_chain_rollup_hash == self.identity.rollup_config_hash;
+        let matches = on_chain_agg == self.identity.aggregation_vkey &&
+            on_chain_range == self.identity.range_vkey_commitment &&
+            on_chain_rollup_hash == self.identity.rollup_config_hash;
 
-            if !matches {
-                tracing::info!("Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)");
-                tracing::info!("On-chain agg: {:?}", on_chain_agg);
-                tracing::info!("On-chain range: {:?}", on_chain_range);
-                tracing::info!("On-chain rollup hash: {:?}", on_chain_rollup_hash);
-                tracing::info!("Proposer agg: {:?}", self.identity.aggregation_vkey);
-                tracing::info!("Proposer range: {:?}", self.identity.range_vkey_commitment);
-                tracing::info!("Proposer rollup hash: {:?}", self.identity.rollup_config_hash);
-            }
-            Ok(matches)
+        if !matches {
+            tracing::info!("Proposer vkeys mismatch with on-chain vkeys - skipping game creation (hardfork detected)");
+            tracing::info!("On-chain agg: {:?}", on_chain_agg);
+            tracing::info!("On-chain range: {:?}", on_chain_range);
+            tracing::info!("On-chain rollup hash: {:?}", on_chain_rollup_hash);
+            tracing::info!("Proposer agg: {:?}", self.identity.aggregation_vkey);
+            tracing::info!("Proposer range: {:?}", self.identity.range_vkey_commitment);
+            tracing::info!("Proposer rollup hash: {:?}", self.identity.rollup_config_hash);
         }
+        Ok(matches)
     }
 
     /// Proves a dispute game at the given address.

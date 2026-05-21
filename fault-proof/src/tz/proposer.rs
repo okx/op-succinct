@@ -150,6 +150,7 @@ where
         let cluster_config =
             if is_cluster { Some(Arc::new(ClusterProofConfig::from_env().await?)) } else { None };
 
+        tracing::info!("tz: deriving VKs from loaded ELF binaries (this may take a moment)");
         let (range_pk, range_vk, agg_pk, agg_vk, network_prover, network_mode) = if is_cluster {
             // tz: derive VKs from the actual tz ELFs loaded from disk (not xlayer's embedded ELFs)
             // so that multi_block_vkey and write_proof use the correct tz range VK.
@@ -191,8 +192,43 @@ where
             (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
         };
 
+        // Compute local VK commitment values from the derived keys (mirrors xlayer proposer).
+        let local_range_commitment = B256::from(range_vk.hash_bytes());
+        let local_agg_vkey = B256::from(agg_vk.bytes32_raw());
+        tracing::info!(
+            local_range_commitment = ?local_range_commitment,
+            local_agg_vkey = ?local_agg_vkey,
+            "tz: VKs derived from local ELF binaries"
+        );
+
+        // Compare local VKs against on-chain VKs (skip in mock mode — ELF is a placeholder).
+        if !config.mock_mode {
+            let range_match = local_range_commitment == on_chain_range_vkey;
+            let agg_match = local_agg_vkey == on_chain_agg_vkey;
+            if range_match && agg_match {
+                tracing::info!("tz: local VKs match on-chain VKs");
+            } else {
+                if !range_match {
+                    tracing::warn!(
+                        local = ?local_range_commitment,
+                        on_chain = ?on_chain_range_vkey,
+                        "tz: range VK mismatch — local ELF does not match on-chain rangeVkeyCommitment"
+                    );
+                }
+                if !agg_match {
+                    tracing::warn!(
+                        local = ?local_agg_vkey,
+                        on_chain = ?on_chain_agg_vkey,
+                        "tz: agg VK mismatch — local ELF does not match on-chain aggregationVkey"
+                    );
+                }
+            }
+        }
+
+        // Use locally-derived VKs as identity (mirrors xlayer) so on_chain_vkeys_match() performs
+        // a real comparison between local and on-chain values on every game-creation cycle.
         let identity =
-            ProposerIdentity::new(on_chain_agg_vkey, on_chain_range_vkey, rollup_config_hash);
+            ProposerIdentity::new(local_agg_vkey, local_range_commitment, rollup_config_hash);
         identity.log_startup_info();
 
         let keys = ProofKeys {
