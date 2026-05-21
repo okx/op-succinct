@@ -14,11 +14,7 @@ pub enum XLayerSignerError {
     HttpError { status: u16, body: String },
 
     #[error("Signing request failed: status={status}, msg={msg}, detail={detail}")]
-    SigningFailed {
-        status: i32,
-        msg: String,
-        detail: String,
-    },
+    SigningFailed { status: i32, msg: String, detail: String },
 
     #[error("Transaction verification failed: {0}")]
     VerificationError(String),
@@ -140,7 +136,8 @@ struct XLayerOtherInfo {
     claim_index: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_to_resolve: Option<u64>,
-    // TEE-specific fields (Go: buildProposerTeeProveOtherInfo / buildChallengerTeeChallengOtherInfo)
+    // TEE-specific fields (Go: buildProposerTeeProveOtherInfo /
+    // buildChallengerTeeChallengOtherInfo)
     #[serde(skip_serializing_if = "Option::is_none")]
     operate_type: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,10 +236,7 @@ impl XLayerRemoteClient {
         // Detect operate type from method signature
         let operate_type = self.detect_operate_type(transaction_request)?;
 
-        tracing::info!(
-            "Detected operate type: {:?} for transaction",
-            operate_type
-        );
+        tracing::info!("Detected operate type: {:?} for transaction", operate_type);
 
         // Build OtherInfo JSON
         let other_info = self.build_other_info(transaction_request)?;
@@ -297,7 +291,8 @@ impl XLayerRemoteClient {
                 sleep(RETRY_DELAY).await;
             }
 
-            match self.post_sign_request_and_wait_result(&sign_request, &transaction_request).await {
+            match self.post_sign_request_and_wait_result(&sign_request, &transaction_request).await
+            {
                 Ok(signed_tx_bytes) => {
                     if attempt > 0 {
                         tracing::info!("Remote signing succeeded after retry: attempt={}", attempt);
@@ -308,10 +303,10 @@ impl XLayerRemoteClient {
                     let err_str = e.to_string();
                     // Check if error is "pending transaction" related
                     // XLayer API may return error messages in Chinese or English
-                    let is_pending_tx_error = err_str.contains("未完成交易")
-                        || err_str.contains("pending transaction")
-                        || err_str.contains("相同地址有未完成交易")
-                        || err_str.contains("has pending transactions");
+                    let is_pending_tx_error = err_str.contains("未完成交易") ||
+                        err_str.contains("pending transaction") ||
+                        err_str.contains("相同地址有未完成交易") ||
+                        err_str.contains("has pending transactions");
 
                     if !is_pending_tx_error {
                         tracing::error!("Remote signing failed with non-retryable error: {}", e);
@@ -344,10 +339,7 @@ impl XLayerRemoteClient {
     }
 
     /// Detects operate type from transaction method signature
-    fn detect_operate_type(
-        &self,
-        tx: &TransactionRequest,
-    ) -> Result<OperateType> {
+    fn detect_operate_type(&self, tx: &TransactionRequest) -> Result<OperateType> {
         // Extract method signature
         let empty_bytes = Bytes::new();
         let data = tx.input.input().unwrap_or(&empty_bytes);
@@ -359,7 +351,7 @@ impl XLayerRemoteClient {
 
         // Map method signature to operate type
         // Note: resolve() and claimCredit() can be called by both Proposer and Challenger,
-        // but we use Challenger* types as they are more common. The actual caller is 
+        // but we use Challenger* types as they are more common. The actual caller is
         // determined by which service (proposer.rs or challenger.rs) invokes the signer.
         match method_sig.as_str() {
             METHOD_SIG_DGF_CREATE => Ok(OperateType::Proposer),
@@ -416,9 +408,10 @@ impl XLayerRemoteClient {
             gas_limit: tx.gas.unwrap_or(0),
             gas_price: tx.gas_price.map(|gp| gp.to_string()),
             nonce: tx.nonce.unwrap_or(0),
-            blob_versioned_hashes: tx.blob_versioned_hashes.as_ref().map(|hashes| {
-                hashes.iter().map(|h| format!("{:?}", h)).collect()
-            }),
+            blob_versioned_hashes: tx
+                .blob_versioned_hashes
+                .as_ref()
+                .map(|hashes| hashes.iter().map(|h| format!("{:?}", h)).collect()),
             max_fee_per_blob_gas: tx.max_fee_per_blob_gas.map(|f| f.to_string()),
             max_fee_per_gas: tx.max_fee_per_gas.map(|f| f.to_string()),
             max_priority_fee_per_gas: tx.max_priority_fee_per_gas.map(|f| f.to_string()),
@@ -459,7 +452,14 @@ impl XLayerRemoteClient {
     fn parse_business_params(
         &self,
         data: &Bytes,
-    ) -> Result<(Option<u32>, Option<String>, Option<String>, Option<String>, Option<u64>, Option<u64>)> {
+    ) -> Result<(
+        Option<u32>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<u64>,
+        Option<u64>,
+    )> {
         if data.len() < 4 {
             return Ok((None, None, None, None, None, None));
         }
@@ -469,7 +469,8 @@ impl XLayerRemoteClient {
 
         match method_sig.as_str() {
             METHOD_SIG_DGF_CREATE => {
-                // DisputeGameFactory.create(uint32 _gameType, bytes32 _rootClaim, bytes calldata _extraData)
+                // DisputeGameFactory.create(uint32 _gameType, bytes32 _rootClaim, bytes calldata
+                // _extraData)
                 if params_data.len() < 96 {
                     tracing::warn!("Insufficient data for create method");
                     return Ok((None, None, None, None, None, None));
@@ -515,7 +516,10 @@ impl XLayerRemoteClient {
 
                         let data_start = extra_data_offset + 32;
                         if data_start + length <= params_data.len() {
-                            format!("0x{}", hex::encode(&params_data[data_start..data_start + length]))
+                            format!(
+                                "0x{}",
+                                hex::encode(&params_data[data_start..data_start + length])
+                            )
                         } else {
                             format!("0x{}", hex::encode(&params_data[data_start..]))
                         }
@@ -548,8 +552,7 @@ impl XLayerRemoteClient {
             METHOD_SIG_RESOLVE_CLAIM => {
                 // resolveClaim(uint256 _claimIndex, uint256 _numToResolve)
                 if params_data.len() >= 64 {
-                    let claim_index =
-                        u64::from_be_bytes(params_data[24..32].try_into().unwrap());
+                    let claim_index = u64::from_be_bytes(params_data[24..32].try_into().unwrap());
                     let num_to_resolve =
                         u64::from_be_bytes(params_data[56..64].try_into().unwrap());
                     tracing::info!(
@@ -618,8 +621,8 @@ impl XLayerRemoteClient {
 
         // Remove "0x" prefix if present
         let hex_data = result.data.trim_start_matches("0x");
-        let signed_tx_bytes = hex::decode(hex_data)
-            .context("Failed to decode signed transaction hex")?;
+        let signed_tx_bytes =
+            hex::decode(hex_data).context("Failed to decode signed transaction hex")?;
 
         // 4. Verify signed transaction
         self.verify_signed_transaction(&transaction_request, &signed_tx_bytes)?;
@@ -655,11 +658,7 @@ impl XLayerRemoteClient {
         eprintln!("[xlayer] <<< {status} {resp_body}");
 
         if status != HTTP_STATUS_SUCCESS {
-            return Err(XLayerSignerError::HttpError {
-                status,
-                body: resp_body,
-            }
-            .into());
+            return Err(XLayerSignerError::HttpError { status, body: resp_body }.into());
         }
 
         let sign_response: XLayerSignResponse = serde_json::from_str(&resp_body)
@@ -721,10 +720,7 @@ impl XLayerRemoteClient {
                 .context("Failed to send query request")?;
 
             let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .context("Failed to read query response body")?;
+            let body = response.text().await.context("Failed to read query response body")?;
             eprintln!("[xlayer] <<< {status} {body}");
 
             if status != HTTP_STATUS_SUCCESS {
@@ -823,9 +819,10 @@ impl XLayerRemoteClient {
     /// Encrypts data using AES-ECB with PKCS5 padding. Accepts 16/24/32-byte
     /// keys (AES-128/192/256), matching Go's `aes.NewCipher` behavior.
     fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
-        use aes::cipher::generic_array::GenericArray;
-        use aes::cipher::{BlockEncrypt, KeyInit};
-        use aes::{Aes128, Aes192, Aes256};
+        use aes::{
+            cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit},
+            Aes128, Aes192, Aes256,
+        };
 
         let key_bytes = self.config.secret_key.as_bytes();
         let padded = self.pkcs5_padding(plaintext.as_bytes(), 16);
@@ -1049,9 +1046,7 @@ impl XLayerRemoteClient {
                 let empty_data = Bytes::new();
                 let original_data = original_tx.input.input().unwrap_or(&empty_data);
                 if signed.input() != original_data.as_ref() {
-                    return Err(anyhow::anyhow!(
-                        "Transaction data mismatch for legacy tx"
-                    ));
+                    return Err(anyhow::anyhow!("Transaction data mismatch for legacy tx"));
                 }
 
                 if let Some(gas_price) = original_tx.gas_price {
@@ -1104,9 +1099,7 @@ impl XLayerRemoteClient {
                     match to {
                         alloy_primitives::TxKind::Call(addr) => {
                             if Some(*addr) != signed.to() {
-                                return Err(anyhow::anyhow!(
-                                    "To address mismatch in blob tx"
-                                ));
+                                return Err(anyhow::anyhow!("To address mismatch in blob tx"));
                             }
                         }
                         _ => {}
@@ -1116,9 +1109,7 @@ impl XLayerRemoteClient {
                 // Verify value
                 if let Some(value) = original_tx.value {
                     if signed.value() != value {
-                        return Err(anyhow::anyhow!(
-                            "Value mismatch in blob tx"
-                        ));
+                        return Err(anyhow::anyhow!("Value mismatch in blob tx"));
                     }
                 }
 
@@ -1245,10 +1236,7 @@ mod tests {
         let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
         let operate_type = result.unwrap();
-        assert_eq!(
-            operate_type as i32,
-            OperateType::ChallengerClaimCredit as i32
-        );
+        assert_eq!(operate_type as i32, OperateType::ChallengerClaimCredit as i32);
     }
 
     /// Test unknown method signature rejection
@@ -1267,10 +1255,7 @@ mod tests {
 
         let result = client.detect_operate_type(&tx);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown method signature"));
+        assert!(result.unwrap_err().to_string().contains("Unknown method signature"));
     }
 
     /// Test transaction data too short
@@ -1289,10 +1274,7 @@ mod tests {
 
         let result = client.detect_operate_type(&tx);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Transaction data too short"));
+        assert!(result.unwrap_err().to_string().contains("Transaction data too short"));
     }
 
     /// Test OtherInfo building
@@ -1330,10 +1312,7 @@ mod tests {
     #[test]
     fn test_convert_value_to_operate_amount() {
         // 0 wei
-        assert_eq!(
-            XLayerRemoteClient::convert_value_to_operate_amount(U256::ZERO),
-            "0"
-        );
+        assert_eq!(XLayerRemoteClient::convert_value_to_operate_amount(U256::ZERO), "0");
 
         // 1 ETH = 10^18 wei
         assert_eq!(
@@ -1473,19 +1452,14 @@ mod tests {
 
         // address (20 bytes, padded to 32 bytes)
         data.extend_from_slice(&[0u8; 12]);
-        data.extend_from_slice(
-            &hex::decode("1234567890123456789012345678901234567890").unwrap(),
-        );
+        data.extend_from_slice(&hex::decode("1234567890123456789012345678901234567890").unwrap());
 
         let result = client.parse_business_params(&Bytes::from(data));
         assert!(result.is_ok());
 
         let (_, _, _, recipient, _, _) = result.unwrap();
         assert!(recipient.is_some());
-        assert_eq!(
-            recipient.unwrap(),
-            "0x1234567890123456789012345678901234567890"
-        );
+        assert_eq!(recipient.unwrap(), "0x1234567890123456789012345678901234567890");
     }
 
     /// Test OtherInfo includes business parameters
@@ -1523,9 +1497,10 @@ mod tests {
     }
 
     /// Ported from
-    /// okx/xlayer-node `ethtxmanager/custodialassetshttpauth_xlayer_test.go::TestClientGenerateSignature`
-    /// Locks in cross-language signature compatibility: same secret, same
-    /// canonical input, same base64 output.
+    /// okx/xlayer-node
+    /// `ethtxmanager/custodialassetshttpauth_xlayer_test.go::TestClientGenerateSignature` Locks
+    /// in cross-language signature compatibility: same secret, same canonical input, same
+    /// base64 output.
     #[test]
     fn test_generate_signature_compat_with_go() {
         let mut config = XLayerConfig::default();
@@ -1538,11 +1513,8 @@ mod tests {
         //   "2" -> "true"
         // Our signer sorts by value, but for this fixture sort-by-value and
         // Go's sort-by-key produce the same concatenation order.
-        let params: [(&str, &str); 3] = [
-            ("0", "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"),
-            ("1", "127"),
-            ("2", "true"),
-        ];
+        let params: [(&str, &str); 3] =
+            [("0", "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"), ("1", "127"), ("2", "true")];
         let body = "{\"testBOdy\":45251}";
 
         let signature = client.generate_signature(&params, body).unwrap();

@@ -26,7 +26,9 @@ use op_succinct_host_utils::{
     network::{determine_network_mode, get_network_signer},
     witness_generation::WitnessGenerator,
 };
-use op_succinct_proof_utils::{cluster_setup_keys, get_range_elf_embedded, is_cluster_mode};
+use op_succinct_proof_utils::{
+    cluster_setup_keys, get_range_elf_embedded, is_cluster_mode, ClusterProofConfig,
+};
 use op_succinct_signer_utils::SignerLock;
 use sp1_sdk::{
     Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1ProofWithPublicValues, SP1Stdin,
@@ -272,6 +274,18 @@ where
     /// Proposer identity with version and vkey information for monitoring and compatibility
     /// checks.
     pub identity: ProposerIdentity,
+    // for tz: Phase 2 — SP1 Cluster config for artifact-ID-based proof submission (tz only)
+    #[cfg(feature = "tz")]
+    pub cluster_config: Option<Arc<ClusterProofConfig>>,
+    // for tz: Phase 2 — shared Witness Builder + L2 HTTP client
+    #[cfg(feature = "tz")]
+    pub tz_chain_client: Option<Arc<crate::tz::chain_client::TzChainClient>>,
+    // for tz: Phase 2 — pre-uploaded tz range ELF artifact ID (TZ_ELF_ARTIFACT_ID)
+    #[cfg(feature = "tz")]
+    pub tz_elf_artifact_id: String,
+    // for tz: Phase 2 — tz aggregation program ELF (different from op-succinct AGGREGATION_ELF)
+    #[cfg(feature = "tz")]
+    pub tz_agg_elf: Vec<u8>,
 }
 
 impl<P, H> OPSuccinctProposer<P, H>
@@ -383,6 +397,15 @@ where
             state: Arc::new(RwLock::new(initial_state)),
             backup_semaphore: Arc::new(Semaphore::new(1)),
             identity,
+            // for tz: Phase 2 — xlayer path does not use these fields
+            #[cfg(feature = "tz")]
+            cluster_config: None,
+            #[cfg(feature = "tz")]
+            tz_chain_client: None,
+            #[cfg(feature = "tz")]
+            tz_elf_artifact_id: String::new(),
+            #[cfg(feature = "tz")]
+            tz_agg_elf: vec![],
         })
     }
 
@@ -1481,7 +1504,8 @@ where
         // tz: cache miss — own games skip rootClaim validation; foreign games still enter
         // state.games to preserve canonical head tracking in multi-proposer deployments.
         // This impl is for tz only can fetch latest stateHash
-        // If tz update and can fetch historical stateHash, we can remove this special handling and unify with xlayer impl.
+        // If tz update and can fetch historical stateHash, we can remove this special handling and
+        // unify with xlayer impl.
         #[cfg(feature = "tz")]
         let maybe_output_root: Option<FixedBytes<32>> = {
             use crate::tz::chain_client::TzCacheMissError;

@@ -163,6 +163,26 @@ pub async fn cluster_agg_proof(
     .await
 }
 
+/// Generate a tz aggregation proof via SP1 cluster using the tz aggregation program ELF.
+///
+/// Identical to `cluster_agg_proof` except it accepts a custom `agg_elf` so the tz
+/// proposer can use the tz aggregation program instead of op-succinct's AGGREGATION_ELF.
+pub async fn tz_cluster_agg_proof(
+    timeout_secs: u64,
+    agg_mode: SP1ProofMode,
+    agg_elf: &[u8],
+    stdin: SP1Stdin,
+) -> Result<SP1ProofWithPublicValues> {
+    cluster_proof_blocking(
+        timeout_secs,
+        to_proto_proof_mode(agg_mode),
+        agg_elf,
+        stdin,
+        "tz-aggregation",
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // Async (non-blocking) cluster proving API
 // ---------------------------------------------------------------------------
@@ -338,4 +358,109 @@ pub fn reconstruct_proof_request(
         start_time: Instant::now(),
         deadline: SystemTime::now() + remaining_timeout,
     }
+}
+
+impl ClusterArtifactStore {
+    /// for tz: Phase 2 — create a proof output artifact slot (generates a UUID-based artifact ID).
+    pub fn create_artifact(&self) -> anyhow::Result<Artifact> {
+        use sp1_prover_types::ArtifactClient;
+        match self {
+            Self::Redis(c) => c.create_artifact(),
+            Self::S3(c) => c.create_artifact(),
+        }
+    }
+
+    /// for tz: Phase 2 — upload ELF bytes as a Program artifact and return the artifact ID string.
+    pub async fn upload_elf(&self, elf: Vec<u8>) -> anyhow::Result<String> {
+        use sp1_cluster_artifact::{ArtifactClient, ArtifactType};
+        let artifact_id =
+            self.create_artifact().map_err(|e| anyhow::anyhow!("create_artifact failed: {e}"))?;
+        match self {
+            Self::Redis(c) => c.upload_with_type(&artifact_id, ArtifactType::Program, elf).await,
+            Self::S3(c) => c.upload_with_type(&artifact_id, ArtifactType::Program, elf).await,
+        }
+        .map_err(|e| anyhow::anyhow!("upload_elf failed: {e}"))?;
+        Ok(artifact_id.to_id())
+    }
+}
+
+/// for tz: Phase 2 — upload the tz range ELF to the cluster artifact store.
+/// Returns the artifact ID string to pass as `tz_elf_artifact_id` to the proposer.
+pub async fn cluster_upload_elf(
+    config: &ClusterProofConfig,
+    elf: Vec<u8>,
+) -> anyhow::Result<String> {
+    tracing::info!("tz: uploading range ELF to cluster artifact store");
+    config.artifact_store.upload_elf(elf).await
+}
+
+impl ClusterProofConfig {
+    /// for tz: Phase 2 — submit proof request using pre-existing artifact IDs.
+    /// Bypasses the byte-upload step. Accepts absolute Unix deadline (seconds) with
+    /// second-level precision, avoiding the div_ceil-to-hours loss of build_request_config.
+    pub async fn create_request_from_artifact_ids(
+        &self,
+        program_artifact_id: String,
+        stdin_artifact_id: String,
+        deadline: u64,
+        proof_mode: SP1ProofMode,
+    ) -> anyhow::Result<ProofRequest> {
+        // Pre-allocate proof output artifact slot (cluster writes completed proof here).
+        let proof_output_id = self.artifact_store.create_artifact()?;
+
+        // Generate proof ID using millisecond timestamp, prefixed to distinguish tz requests.
+        let proof_id = format!(
+            "tz_{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis()
+        );
+
+        // Submit to cluster gRPC — pass deadline directly without hours-level truncation.
+        self.service_client
+            .create_proof_request(sp1_cluster_common::proto::ProofRequestCreateRequest {
+                proof_id: proof_id.clone(),
+                program_artifact_id,
+                stdin_artifact_id,
+                options_artifact_id: Some((to_proto_proof_mode(proof_mode) as i32).to_string()),
+                proof_artifact_id: Some(proof_output_id.clone().to_id()),
+                requester: vec![],
+                deadline,
+                cycle_limit: u64::MAX,
+                gas_limit: u64::MAX,
+                scheduled_by: None,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("cluster artifact submit failed: {e}"))?;
+
+        tracing::info!("tz: successfully submitted cluster proof request {}", proof_id);
+
+        Ok(ProofRequest {
+            proof_id,
+            proof_output_id,
+            deadline: std::time::UNIX_EPOCH + std::time::Duration::from_secs(deadline),
+            start_time: std::time::Instant::now(),
+        })
+    }
+}
+
+/// for tz: Phase 2 — submit proof using pre-existing artifact IDs (tz path).
+/// program_artifact_id: pre-uploaded tz range ELF (TZ_ELF_ARTIFACT_ID)
+/// stdin_artifact_id: witness artifact from Witness Builder (POST /zkp/witness response)
+/// deadline: absolute Unix seconds — min(now + TIMEOUT, game_deadline), computed by caller
+/// proof_mode: Groth16 or Plonk (must match the on-chain verifier; uses proposer agg_proof_mode)
+pub async fn cluster_submit_by_artifact_ids(
+    config: &ClusterProofConfig,
+    deadline: u64,
+    program_artifact_id: String,
+    stdin_artifact_id: String,
+    proof_mode: SP1ProofMode,
+) -> anyhow::Result<ProofRequest> {
+    tracing::info!("tz: submitting proof request by artifact IDs to cluster");
+    config
+        .create_request_from_artifact_ids(
+            program_artifact_id,
+            stdin_artifact_id,
+            deadline,
+            proof_mode,
+        )
+        .await
 }

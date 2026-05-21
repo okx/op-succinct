@@ -387,22 +387,21 @@ where
         // for tz: cache miss means checkpoint not yet observed; skip game (cannot decide whether to
         // challenge without computing the rootClaim)
         #[cfg(feature = "tz")]
-        let computed_output_root = match
-            self.l2_provider.compute_output_root_at_block(l2_block_number).await
-        {
-            Ok(root) => root,
-            Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
-                tracing::warn!(
-                    game_index = %index,
-                    l2_block_number = %l2_block_number,
-                    "tz: cache miss, skipping game"
-                );
-                let mut state = self.state.lock().await;
-                state.cursor = index;
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
+        let computed_output_root =
+            match self.l2_provider.compute_output_root_at_block(l2_block_number).await {
+                Ok(root) => root,
+                Err(e) if e.downcast_ref::<TzCacheMissError>().is_some() => {
+                    tracing::warn!(
+                        game_index = %index,
+                        l2_block_number = %l2_block_number,
+                        "tz: cache miss, skipping game"
+                    );
+                    let mut state = self.state.lock().await;
+                    state.cursor = index;
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
         #[cfg(not(feature = "tz"))]
         let computed_output_root =
             self.l2_provider.compute_output_root_at_block(l2_block_number).await?;
@@ -515,9 +514,10 @@ where
                         .games
                         .values()
                         .filter(|game| {
-                            // Only challenge games that are unchallenged and not already flagged for challenging
-                            !game.should_attempt_to_challenge
-                                && game.proposal_status == ProposalStatus::Unchallenged
+                            // Only challenge games that are unchallenged and not already flagged
+                            // for challenging
+                            !game.should_attempt_to_challenge &&
+                                game.proposal_status == ProposalStatus::Unchallenged
                         })
                         .min_by_key(|game| game.index)
                         .cloned()

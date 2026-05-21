@@ -5,6 +5,14 @@
 // all types and private fields from proposer.rs without changing their visibility.
 
 use super::*;
+// for tz: Phase 2 — cluster artifact-ID proof submission and polling
+use crate::tz::chain_client::WitnessStatus;
+use op_succinct_client_utils::types::AggregationInputs;
+use op_succinct_proof_utils::{
+    cluster_poll_proof, cluster_submit_by_artifact_ids, cluster_upload_elf, tz_cluster_agg_proof,
+};
+use sp1_cluster_utils::ProofRequestResults;
+use sp1_sdk::{blocking::CpuProver, SP1Proof, SP1ProofMode, SP1Stdin};
 
 impl<P, H> OPSuccinctProposer<P, H>
 where
@@ -110,7 +118,13 @@ where
         fetcher: Arc<OPSuccinctDataFetcher>,
         host: Arc<H>,
         l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
-        range_elf: &'static [u8],
+        range_elf: Vec<u8>,
+        // for tz: Phase 2 — Witness Builder + L2 client (shared with l2_provider construction)
+        tz_chain_client: Arc<crate::tz::chain_client::TzChainClient>,
+        // for tz: Phase 2 — tz range ELF artifact ID (uploaded from range_elf at startup)
+        tz_elf_artifact_id: String,
+        // for tz: Phase 2 — tz aggregation ELF (distinct from op-succinct AGGREGATION_ELF)
+        tz_agg_elf: Vec<u8>,
     ) -> Result<Self> {
         // tz: read all identity fields from the deployed game implementation so is_owned()
         // matches on-chain games regardless of which local ELF is loaded.
@@ -132,8 +146,27 @@ where
             "mock and cluster modes are mutually exclusive"
         );
 
+        // for tz: Phase 2 — build ClusterProofConfig once when in cluster mode
+        let cluster_config =
+            if is_cluster { Some(Arc::new(ClusterProofConfig::from_env().await?)) } else { None };
+
         let (range_pk, range_vk, agg_pk, agg_vk, network_prover, network_mode) = if is_cluster {
-            let (range_pk, range_vk, agg_pk, agg_vk) = cluster_setup_keys().await?;
+            // tz: derive VKs from the actual tz ELFs loaded from disk (not xlayer's embedded ELFs)
+            // so that multi_block_vkey and write_proof use the correct tz range VK.
+            let range_elf_arc: std::sync::Arc<[u8]> = range_elf.into();
+            let (range_pk, range_vk, agg_pk, agg_vk) = tokio::task::spawn_blocking(move || {
+                let cpu_prover = CpuProver::new();
+                let range_pk = cpu_prover
+                    .setup(Elf::Dynamic(range_elf_arc))
+                    .context("tz range ELF setup failed")?;
+                let range_vk = range_pk.verifying_key().clone();
+                let agg_pk = cpu_prover
+                    .setup(Elf::Static(AGGREGATION_ELF))
+                    .context("agg ELF setup failed")?;
+                let agg_vk = agg_pk.verifying_key().clone();
+                anyhow::Ok((range_pk, range_vk, agg_pk, agg_vk))
+            })
+            .await??;
             (range_pk, range_vk, agg_pk, agg_vk, None, None)
         } else {
             let network_signer = get_network_signer(config.use_kms_requester).await?;
@@ -144,14 +177,14 @@ where
             let np = Arc::new(
                 ProverClient::builder().network_for(nm).signer(network_signer).build().await,
             );
-            // tz: range_elf is a placeholder (0 bytes) until Phase 2; in mock mode substitute
-            // AGGREGATION_ELF so key derivation succeeds.
-            let effective_range_elf = if config.mock_mode && range_elf.is_empty() {
-                AGGREGATION_ELF
+            // tz: in mock mode with an empty range ELF, substitute AGGREGATION_ELF so key
+            // derivation succeeds without a real compiled ELF.
+            let effective_range_elf: Elf = if config.mock_mode && range_elf.is_empty() {
+                Elf::Static(AGGREGATION_ELF)
             } else {
-                range_elf
+                range_elf.into()
             };
-            let range_pk = np.setup(Elf::Static(effective_range_elf)).await?;
+            let range_pk = np.setup(effective_range_elf).await?;
             let range_vk = range_pk.verifying_key().clone();
             let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
             let agg_vk = agg_pk.verifying_key().clone();
@@ -214,6 +247,11 @@ where
             state: Arc::new(RwLock::new(initial_state)),
             backup_semaphore: Arc::new(Semaphore::new(1)),
             identity,
+            // for tz: Phase 2
+            cluster_config,
+            tz_chain_client: Some(tz_chain_client),
+            tz_elf_artifact_id,
+            tz_agg_elf,
         })
     }
 
@@ -221,42 +259,237 @@ where
     ///
     /// Mock mode: SP1MockVerifier only checks `proofBytes.length == 0`, so we pass empty bytes.
     ///
-    /// Real mode: not yet implemented (Phase 2).
+    /// Real mode (mirrors xlayer flow):
+    ///   1. Split [start_block, end_block] into sub-ranges.
+    ///   2. For each sub-range in parallel: Witness Builder → SP1 cluster range proof (Compressed).
+    ///   3. Aggregate range proofs via standard agg proof pipeline.
+    ///   4. Submit agg proof bytes to L1.
     #[tracing::instrument(name = "[[Proving]]", skip(self), fields(game_address = ?game_address))]
     pub async fn prove_game(
         &self,
         game_address: Address,
-        _start_block: u64,
-        _end_block: u64,
+        start_block: u64,
+        end_block: u64,
     ) -> Result<(TxHash, u64, u64)> {
-        if !self.config.mock_mode {
-            anyhow::bail!("TZ real proving is not yet implemented; set MOCK_MODE=true");
+        // --- Phase 1 mock path (preserved) ---
+        if self.config.mock_mode {
+            let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+            let tx = game.prove(alloy_primitives::Bytes::new()).into_transaction_request();
+            tracing::info!(game_address = ?game_address, "tz: submitting mock proof (empty bytes)");
+            let receipt = self
+                .signer
+                .send_transaction_request_with_timeout(
+                    self.config.l1_rpc.clone(),
+                    tx,
+                    self.config.tx_confirmation_timeout,
+                )
+                .await?;
+            if !receipt.status() {
+                anyhow::bail!("{} {:?}", TX_REVERTED_PREFIX, receipt);
+            }
+            tracing::info!(
+                game_address = ?game_address,
+                tx_hash = ?receipt.transaction_hash,
+                "tz: mock proof submitted"
+            );
+            return Ok((receipt.transaction_hash, 0, 0));
         }
 
+        // --- Phase 2 real proof path ---
+        let cluster_config = self
+            .cluster_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("tz: SP1_PROVER=cluster required for real proving"))?;
+        let tz_client = self
+            .tz_chain_client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("tz: chain client not initialized"))?;
+
+        // Fetch game metadata: deadline (for liveness) and L1 head (for agg proof, like xlayer)
         let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
-        let transaction_request =
-            game.prove(alloy_primitives::Bytes::new()).into_transaction_request();
+        let claim_data = game.claimData().call().await.context("tz: failed to fetch claimData")?;
+        let game_deadline = claim_data.deadline;
+        check_deadline(game_deadline, "pre-witness-submit")?;
 
-        tracing::info!(game_address = ?game_address, "tz: submitting mock proof (empty bytes)");
+        // Split range into sub-ranges (mirrors xlayer range_split_count logic)
+        let ranges = self
+            .config
+            .range_split_count
+            .split(start_block, end_block)
+            .context("tz: failed to split range")?;
+        let num_ranges = ranges.len();
+        tracing::info!(game_address = ?game_address, num_ranges, "tz: proving over {num_ranges} sub-ranges");
 
+        // Capture timeout_secs so closures can compute effective_deadline at submission time
+        // (after witness polling completes) rather than once before witnesses start.
+        let timeout_secs = self.config.proof_provider.timeout;
+
+        let elf_artifact_id = self.tz_elf_artifact_id.clone();
+
+        // Step 1+2: parallel per-sub-range: Witness Builder → range proof (Compressed)
+        let tasks = ranges.into_iter().enumerate().map(|(idx, (sub_start, sub_end))| {
+            let tz_client = tz_client.clone();
+            let cluster_config = cluster_config.clone();
+            let elf_artifact_id = elf_artifact_id.clone();
+            async move {
+                // 1a. Create witness task
+                let artifact_id =
+                    tz_client.create_witness_task(sub_start, sub_end).await.with_context(|| {
+                        format!("tz: witness task failed for [{sub_start},{sub_end}]")
+                    })?;
+                tracing::info!(%artifact_id, sub_start, sub_end, "tz: witness task created");
+
+                // 1b. Poll until Finished
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    match tz_client.poll_witness_task(&artifact_id).await? {
+                        WitnessStatus::Finished { .. } => break,
+                        WitnessStatus::Failed { reason, .. } => {
+                            anyhow::bail!(
+                                "tz: witness failed for [{sub_start},{sub_end}]: {reason}"
+                            )
+                        }
+                        WitnessStatus::Running { process_percentage, .. } => {
+                            tracing::debug!(
+                                %artifact_id,
+                                process_percentage,
+                                "tz: witness running"
+                            );
+                        }
+                        WitnessStatus::Pending => {
+                            tracing::debug!(%artifact_id, "tz: witness pending");
+                        }
+                    }
+                    check_deadline(game_deadline, "witness-poll")?;
+                }
+                tracing::info!(%artifact_id, sub_start, sub_end, "tz: witness ready");
+
+                // 2a. Submit range proof (Compressed — required as input to agg proof)
+                // Recompute effective_deadline at submission time so witness duration does
+                // not eat into the budget: effective = min(now + timeout, game_deadline).
+                let submit_deadline = {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_secs();
+                    now.saturating_add(timeout_secs).min(game_deadline)
+                };
+                let proof_request = cluster_submit_by_artifact_ids(
+                    &cluster_config,
+                    submit_deadline,
+                    elf_artifact_id,
+                    artifact_id,
+                    SP1ProofMode::Compressed,
+                )
+                .await
+                .context("tz: SP1 cluster range proof submit failed")?;
+                tracing::info!(
+                    proof_id = %proof_request.proof_id,
+                    sub_start,
+                    sub_end,
+                    "tz: range proof submitted to cluster"
+                );
+
+                // 2b. Poll until range proof is ready
+                let range_proof: SP1ProofWithPublicValues = loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        crate::prover::PROOF_STATUS_POLL_INTERVAL,
+                    ))
+                    .await;
+                    match cluster_poll_proof(&cluster_config, proof_request.clone()).await? {
+                        Some(ProofRequestResults { proof, .. }) => {
+                            break SP1ProofWithPublicValues::from(proof);
+                        }
+                        None => {
+                            check_deadline(game_deadline, "range-proof-poll")?;
+                        }
+                    }
+                };
+
+                Ok::<_, anyhow::Error>((idx, range_proof))
+            }
+        });
+
+        let max_concurrent = self.config.max_concurrent_range_proofs.get().min(num_ranges);
+        let mut results: Vec<(usize, SP1ProofWithPublicValues)> =
+            stream::iter(tasks).buffer_unordered(max_concurrent).try_collect().await?;
+        // Restore original range order for agg proof stdin construction
+        results.sort_unstable_by_key(|(idx, _)| *idx);
+
+        // Step 3: extract proof objects and boot infos (mirrors xlayer)
+        let mut proofs = Vec::with_capacity(results.len());
+        let mut boot_infos = Vec::with_capacity(results.len());
+        for (_, range_proof) in results {
+            let proof = range_proof.proof.clone();
+            let mut pv = range_proof.public_values.clone();
+            let boot_info: BootInfoStruct = pv.read();
+            proofs.push(proof);
+            boot_infos.push(boot_info);
+        }
+
+        // Step 3b: build tz agg proof stdin — no L1 headers (R8.7: tz has no L1 derivation)
+        tracing::info!(game_address = ?game_address, "tz: preparing agg proof stdin");
+        let range_vk = self.prover.keys().range_vk.clone();
+        let mut agg_stdin = SP1Stdin::new();
+        for proof in proofs {
+            let SP1Proof::Compressed(compressed) = proof else {
+                anyhow::bail!("tz: non-Compressed range proof fed to aggregation");
+            };
+            agg_stdin.write_proof(*compressed, range_vk.vk.clone());
+        }
+        agg_stdin.write(&AggregationInputs {
+            boot_infos,
+            // tz: no L1 derivation — L1 checkpoint head is always zero (R8.7)
+            latest_l1_checkpoint_head: B256::ZERO,
+            multi_block_vkey: range_vk.hash_u32(),
+            prover_address: self.signer.address(),
+        });
+        // NOTE: no write_vec(headers_bytes) — tz omits the L1 header chain (R8.7)
+
+        // Step 4: tz aggregation proof using tz-specific ELF (not op-succinct AGGREGATION_ELF)
+        check_deadline(game_deadline, "pre-agg-proof")?;
+        // Cap agg timeout at remaining time to game_deadline so the cluster job cannot
+        // be issued with a deadline that exceeds the on-chain game deadline.
+        let agg_timeout = {
+            let now_for_agg =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+            game_deadline.saturating_sub(now_for_agg).min(self.config.proof_provider.timeout)
+        };
+        let agg_proof = tz_cluster_agg_proof(
+            agg_timeout,
+            self.config.proof_provider.agg_proof_mode,
+            &self.tz_agg_elf,
+            agg_stdin,
+        )
+        .await?;
+
+        // Step 5: submit agg proof to L1
+        let tx = game.prove(agg_proof.bytes().into()).into_transaction_request();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
                 self.config.l1_rpc.clone(),
-                transaction_request,
+                tx,
                 self.config.tx_confirmation_timeout,
             )
             .await?;
-
         if !receipt.status() {
             anyhow::bail!("{} {:?}", TX_REVERTED_PREFIX, receipt);
         }
-
         tracing::info!(
             game_address = ?game_address,
             tx_hash = ?receipt.transaction_hash,
-            "tz: mock proof submitted"
+            "tz: agg proof submitted to L1"
         );
         Ok((receipt.transaction_hash, 0, 0))
     }
+}
+
+/// Check that the current time is strictly before `game_deadline` (absolute Unix seconds).
+/// Module-level so it can be called from async task closures without capturing `self`.
+fn check_deadline(game_deadline: u64, checkpoint: &str) -> Result<()> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    if now >= game_deadline {
+        anyhow::bail!("tz: past game deadline at {checkpoint}: now={now} deadline={game_deadline}");
+    }
+    Ok(())
 }

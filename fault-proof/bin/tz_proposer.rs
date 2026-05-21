@@ -1,16 +1,14 @@
 use std::sync::Arc;
 
 use alloy_provider::ProviderBuilder;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use fault_proof::{
     config::ProposerConfig,
     contract::{AnchorStateRegistry, DisputeGameFactory},
     prometheus::ProposerGauge,
     proposer::OPSuccinctProposer,
-    tz::chain_client::TzChainClient,
-    tz::config::TzConfig,
-    tz::l2_provider::TzL2Provider,
+    tz::{chain_client::TzChainClient, config::TzConfig, l2_provider::TzL2Provider},
     L2ProviderTrait,
 };
 use op_succinct_host_utils::{
@@ -18,15 +16,14 @@ use op_succinct_host_utils::{
     metrics::{init_metrics, MetricsGauge},
     setup_logger,
 };
-use op_succinct_proof_utils::initialize_host;
+use op_succinct_proof_utils::{
+    cluster_upload_elf, initialize_host, is_cluster_mode, ClusterProofConfig,
+};
 use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
 static ALLOCATOR: Jemalloc = Jemalloc;
-
-// for tz: placeholder ELF; replace with real tz range program ELF in Phase 2
-static TZ_RANGE_ELF: &[u8] = include_bytes!("../elfs/tz-range.elf");
 
 #[derive(Parser)]
 #[command(name = "tz-proposer")]
@@ -48,32 +45,58 @@ fn main() {
         std::process::exit(1);
     });
 
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(run(tz_config))
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+    // for tz: override L2_RPC before the multi-threaded runtime starts so the set_var is
+    // single-threaded safe. ProposerConfig::from_env() requires a single parseable URL;
+    // the tz proposer never uses proposer_config.l2_rpc (L2 access goes through TzL2Provider).
+    if let Some(first) = tz_config.rpc_urls.first() {
+        // Safety: no other threads exist at this point; tokio has not started yet.
+        unsafe { std::env::set_var("L2_RPC", first) };
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap_or_else(|e| {
+        eprintln!("error: failed to build tokio runtime: {e}");
+        std::process::exit(1);
+    });
+    rt.block_on(run(tz_config)).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 }
 
 async fn run(tz_config: TzConfig) -> Result<()> {
     setup_logger();
-
-    // for tz: ProposerConfig::from_env() parses L2_RPC as a single Url; override it with the
-    // first endpoint so comma-separated tz RPC lists don't cause a parse error. The tz proposer
-    // never uses proposer_config.l2_rpc (L2 access goes through TzL2Provider instead).
-    if let Some(first) = tz_config.rpc_urls.first() {
-        std::env::set_var("L2_RPC", first);
-    }
     let proposer_config = ProposerConfig::from_env()?;
     proposer_config.log();
 
+    // Load tz ELF binaries from configured filesystem paths.
+    let range_elf = std::fs::read(&tz_config.range_elf_path).with_context(|| {
+        format!("failed to read range ELF: {}", tz_config.range_elf_path.display())
+    })?;
+    let agg_elf = std::fs::read(&tz_config.agg_elf_path)
+        .with_context(|| format!("failed to read agg ELF: {}", tz_config.agg_elf_path.display()))?;
+    anyhow::ensure!(!range_elf.is_empty(), "TZ_RANGE_ELF_PATH points to an empty file");
+    anyhow::ensure!(!agg_elf.is_empty(), "TZ_AGG_ELF_PATH points to an empty file");
+    tracing::info!(
+        range_elf_bytes = range_elf.len(),
+        agg_elf_bytes = agg_elf.len(),
+        "tz: loaded ELF binaries from disk"
+    );
+
+    // In cluster mode: upload range ELF once at startup to obtain the artifact ID used by
+    // the Witness Builder. In network/mock mode the artifact ID is unused.
+    let tz_elf_artifact_id = if is_cluster_mode() {
+        let cluster_config = ClusterProofConfig::from_env().await?;
+        let artifact_id = cluster_upload_elf(&cluster_config, range_elf.clone()).await?;
+        tracing::info!(artifact_id, "tz: range ELF uploaded to cluster");
+        artifact_id
+    } else {
+        String::new()
+    };
+
+    // for tz: Phase 2 — tz_client shared between TzL2Provider and the proposer (Witness Builder)
     let tz_client = Arc::new(TzChainClient::new(tz_config.rpc_urls));
     let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> =
-        Arc::new(TzL2Provider { tz_client });
+        Arc::new(TzL2Provider { tz_client: tz_client.clone() });
 
     let proposer_signer = SignerLock::from_env().await?;
     let l1_provider = ProviderBuilder::new().connect_http(proposer_config.l1_rpc.clone());
@@ -97,7 +120,10 @@ async fn run(tz_config: TzConfig) -> Result<()> {
             Arc::new(fetcher),
             host,
             l2_provider,
-            TZ_RANGE_ELF,
+            range_elf,
+            tz_client.clone(),
+            tz_elf_artifact_id,
+            agg_elf,
         )
         .await?,
     );
