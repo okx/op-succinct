@@ -508,7 +508,7 @@ where
         )
         .await?;
         let agg_elapsed = agg_start.elapsed();
-        info!(
+        tracing::info!(
             game_address = %game_address,
             elapsed_secs = agg_elapsed.as_secs_f64(),
             "agg proof completed"
@@ -516,7 +516,7 @@ where
 
         // Step 5: submit agg proof to L1
         let prove_calldata = game.prove(agg_proof.bytes().into());
-        info!(
+        tracing::info!(
             game_address = %game_address,
             input = %hex::encode(prove_calldata.calldata()),
             "submitting agg proof to L1"
