@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         if let Some(p) = args.proof.as_ref() {
             let hex_str = p.strip_prefix("0x").unwrap_or(p);
             let bytes = hex::decode(hex_str).context("decode --proof hex")?;
-            let w = RangeJournalWire::abi_decode(&bytes, true)
+            let w = RangeJournalWire::abi_decode(&bytes)
                 .context("abi-decode RangeJournalWire")?;
             println!("→ decoded journal:");
             println!("    pcr0           = {:?}", w.pcr0);
@@ -145,7 +145,19 @@ async fn main() -> Result<()> {
     };
 
     println!("→ fetching L1 header at hash {:?}", l1_origin);
-    let fetcher = OPSuccinctDataFetcher::new_with_l1_rpc(args.l1_rpc).await?;
+    // OPSuccinctDataFetcher::new() reads L1_RPC / L2_RPC / L2_NODE_RPC from
+    // env and panics if any is missing. The TEE-execute path only needs L1,
+    // but we still need to satisfy the fetcher's constructor — so unconditionally
+    // overwrite L1_RPC from --l1-rpc, and fill in dummies for the L2 vars if
+    // the operator didn't already set them.
+    std::env::set_var("L1_RPC", &args.l1_rpc);
+    if std::env::var("L2_RPC").is_err() {
+        std::env::set_var("L2_RPC", &args.l1_rpc);
+    }
+    if std::env::var("L2_NODE_RPC").is_err() {
+        std::env::set_var("L2_NODE_RPC", &args.l1_rpc);
+    }
+    let fetcher = OPSuccinctDataFetcher::new();
     let header: Header = fetcher
         .get_l1_header(BlockId::hash(l1_origin))
         .await
