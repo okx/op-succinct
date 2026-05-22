@@ -97,8 +97,13 @@ async fn main() -> Result<()> {
         if let Some(p) = args.proof.as_ref() {
             let hex_str = p.strip_prefix("0x").unwrap_or(p);
             let bytes = hex::decode(hex_str).context("decode --proof hex")?;
-            let w = RangeJournalWire::abi_decode(&bytes)
-                .context("abi-decode RangeJournalWire")?;
+            // The enclave encodes via `(RangeJournal, bytes).abi_encode_params()`
+            // (see tee/host/src/packager.rs) — no outer 0x20 offset wrapper.
+            // Must decode in params mode; plain `abi_decode` would read the
+            // first 32 bytes as an outer offset and bail with
+            // "type check failed for offset (usize)".
+            let w = RangeJournalWire::abi_decode_params(&bytes)
+                .context("abi-decode RangeJournalWire (params mode)")?;
             println!("→ decoded journal:");
             println!("    pcr0           = {:?}", w.pcr0);
             println!("    configHash     = {:?}", w.configHash);
