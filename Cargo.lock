@@ -7855,6 +7855,7 @@ dependencies = [
 name = "op-succinct-prove"
 version = "4.3.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-contract",
  "alloy-eips",
  "alloy-network",
@@ -7869,6 +7870,7 @@ dependencies = [
  "clap",
  "csv",
  "dotenv",
+ "hex",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
  "op-succinct-elfs",
@@ -7878,6 +7880,7 @@ dependencies = [
  "op-succinct-scripts",
  "reqwest 0.12.28",
  "rustls 0.23.37",
+ "serde_cbor",
  "serde_json",
  "sp1-cluster-utils",
  "sp1-sdk",
