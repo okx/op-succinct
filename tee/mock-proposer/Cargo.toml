@@ -3,23 +3,34 @@ name = "xlayer-tee-mock-proposer"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Local-dev proposer mock: fetches data from a real OP devnet, generates real DefaultWitnessData via op-succinct, POSTs to tee-host. NOT a production proposer; intended for end-to-end testing while the real op-succinct fault-proof proposer is being modified."
+description = "Local-dev proposer mock: fetches data from a real OP devnet, generates witness via op-succinct, POSTs to tee-host, optionally generates an aggregation proof from the returned TEE proof. NOT a production proposer."
 
 [[bin]]
 name = "xlayer-tee-mock-proposer"
 path = "src/main.rs"
 
 [dependencies]
-# op-succinct integration — produces the real DefaultWitnessData
+# op-succinct integration
 op-succinct-host-utils.workspace = true
 op-succinct-ethereum-host-utils.workspace = true
 op-succinct-client-utils.workspace = true
+op-succinct-elfs.workspace = true
 
-# Witness serialization
+# Witness + headers serialization
 rkyv.workspace = true
+serde_cbor.workspace = true
 
-# alloy types used in fetcher params
+# SP1 prover + stdin
+sp1-sdk.workspace = true
+
+# alloy types
 alloy-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-sol-types.workspace = true
+
+# proofBytes / attestation_doc decoding
+hex.workspace = true
+base64.workspace = true
 
 # HTTP client to tee-host
 reqwest.workspace = true
