@@ -173,6 +173,12 @@ parking_lot = "0.12"
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 sha3 = { version = "0.10", default-features = false }
 
+# tee — Nitro Enclave attestation verification inside the SP1 aggregation
+# guest. Pure-Rust; P-384 runs in software (no SP1 precompile).
+p384 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+ciborium = { version = "0.2", default-features = false }
+x509-parser = { version = "0.17", default-features = false }
+
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
 alloy-provider = { version = "1.6.3" }

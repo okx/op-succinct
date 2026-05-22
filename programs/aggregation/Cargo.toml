@@ -15,6 +15,8 @@ op-succinct-client-utils.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
 serde_cbor.workspace = true
 bincode.workspace = true
 
@@ -22,3 +24,8 @@ bincode.workspace = true
 # Uses the SP1-patched k256 (workspace dep) so all curve ops route through
 # the SP1 secp256k1 precompile.
 k256 = { workspace = true, features = ["ecdsa"] }
+
+# Nitro Enclave attestation verification (see `src/tee_attestation/`).
+p384 = { workspace = true, features = ["ecdsa"] }
+ciborium = { workspace = true }
+x509-parser = { workspace = true }
