@@ -463,8 +463,10 @@ where
         let mut boot_infos = Vec::with_capacity(results.len());
         for (_, range_proof) in results {
             let proof = range_proof.proof.clone();
-            let mut pv = range_proof.public_values.clone();
-            let boot_info: BootInfoStruct = pv.read();
+            // tz range program commits via commit_slice(abi_encode()), not commit() (bincode).
+            // Must ABI-decode here; pv.read() would expect bincode and panic on 160-byte ABI output.
+            let boot_info = BootInfoStruct::abi_decode(range_proof.public_values.as_slice())
+                .context("tz: failed to ABI-decode BootInfoStruct from range proof public values")?;
             proofs.push(proof);
             boot_infos.push(boot_info);
         }
