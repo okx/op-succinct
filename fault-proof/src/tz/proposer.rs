@@ -499,6 +499,7 @@ where
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
             game_deadline.saturating_sub(now_for_agg).min(self.config.proof_provider.timeout)
         };
+        let agg_start = std::time::Instant::now();
         let agg_proof = tz_cluster_agg_proof(
             agg_timeout,
             self.config.proof_provider.agg_proof_mode,
@@ -506,9 +507,21 @@ where
             agg_stdin,
         )
         .await?;
+        let agg_elapsed = agg_start.elapsed();
+        info!(
+            game_address = %game_address,
+            elapsed_secs = agg_elapsed.as_secs_f64(),
+            "agg proof completed"
+        );
 
         // Step 5: submit agg proof to L1
-        let tx = game.prove(agg_proof.bytes().into()).into_transaction_request();
+        let prove_calldata = game.prove(agg_proof.bytes().into());
+        info!(
+            game_address = %game_address,
+            input = %alloy::hex::encode(prove_calldata.calldata()),
+            "submitting agg proof to L1"
+        );
+        let tx = prove_calldata.into_transaction_request();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
