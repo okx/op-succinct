@@ -518,7 +518,7 @@ where
         let prove_calldata = game.prove(agg_proof.bytes().into());
         info!(
             game_address = %game_address,
-            input = %alloy::hex::encode(prove_calldata.calldata()),
+            input = %hex::encode(prove_calldata.calldata()),
             "submitting agg proof to L1"
         );
         let tx = prove_calldata.into_transaction_request();
