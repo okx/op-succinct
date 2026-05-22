@@ -481,12 +481,33 @@ where
             };
             agg_stdin.write_proof(*compressed, range_vk.vk.clone());
         }
+        let prover_address = self.signer.address();
+        let multi_block_vkey = range_vk.hash_u32();
+        for (i, bi) in boot_infos.iter().enumerate() {
+            tracing::info!(
+                game_address = %game_address,
+                index = i,
+                l1_head = %bi.l1Head,
+                l2_pre_root = %bi.l2PreRoot,
+                l2_post_root = %bi.l2PostRoot,
+                l2_block_number = bi.l2BlockNumber,
+                rollup_config_hash = %bi.rollupConfigHash,
+                "agg stdin boot_info"
+            );
+        }
+        tracing::info!(
+            game_address = %game_address,
+            latest_l1_checkpoint_head = %B256::ZERO,
+            multi_block_vkey = ?multi_block_vkey,
+            prover_address = %prover_address,
+            "agg stdin AggregationInputs"
+        );
         agg_stdin.write(&AggregationInputs {
             boot_infos,
             // tz: no L1 derivation — L1 checkpoint head is always zero (R8.7)
             latest_l1_checkpoint_head: B256::ZERO,
-            multi_block_vkey: range_vk.hash_u32(),
-            prover_address: self.signer.address(),
+            multi_block_vkey,
+            prover_address,
         });
         // NOTE: no write_vec(headers_bytes) — tz omits the L1 header chain (R8.7)
 
