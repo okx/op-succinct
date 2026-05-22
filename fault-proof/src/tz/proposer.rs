@@ -535,6 +535,23 @@ where
             "agg proof completed"
         );
 
+        // Step 4.5: verify agg proof locally before sending L1 tx — catches bad proofs early
+        let agg_vk_for_verify = self.prover.keys().agg_vk.clone();
+        let agg_proof_for_verify = agg_proof.clone();
+        let verify_start = std::time::Instant::now();
+        tokio::task::spawn_blocking(move || {
+            CpuProver::new()
+                .verify(&agg_proof_for_verify, &agg_vk_for_verify, None)
+                .map_err(|e| anyhow::anyhow!("tz: local agg proof verification failed: {e:?}"))
+        })
+        .await
+        .context("tz: local agg proof verify task panicked")??;
+        tracing::info!(
+            game_address = %game_address,
+            elapsed_secs = verify_start.elapsed().as_secs_f64(),
+            "tz: agg proof verified locally"
+        );
+
         // Step 5: submit agg proof to L1
         let prove_calldata = game.prove(agg_proof.bytes().into());
         tracing::info!(
