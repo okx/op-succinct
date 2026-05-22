@@ -191,8 +191,19 @@ async fn main() -> Result<()> {
     stdin.write_vec(headers_cbor);
 
     println!("→ executing aggregation program (no proof generation)");
-    let prover = blocking::CpuProver::new();
-    match prover.execute(Elf::Static(AGGREGATION_ELF), stdin).run() {
+    // sp1_sdk::blocking::CpuProver internally calls `block_on` to drive
+    // SP1's async core, which panics if invoked from within a tokio
+    // runtime worker (this main fn is `#[tokio::main]`). Push the
+    // blocking call onto a dedicated thread so SP1 can spin up its own
+    // runtime there without colliding with ours.
+    let execute_result = tokio::task::spawn_blocking(move || {
+        let prover = blocking::CpuProver::new();
+        prover.execute(Elf::Static(AGGREGATION_ELF), stdin).run()
+    })
+    .await
+    .context("execute join failed")?;
+
+    match execute_result {
         Ok((public_values, report)) => {
             println!("✅ aggregation execute passed");
             println!("   total instructions: {}", report.total_instruction_count());
