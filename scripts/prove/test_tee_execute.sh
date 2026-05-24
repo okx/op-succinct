@@ -6,23 +6,36 @@
 # aggregation program is actually checking what it claims to check, not just
 # rubber-stamping anything that decodes.
 #
-# Cases that require recompiling the aggregation ELF (whitelist removal /
-# new enclave signer) are documented at the bottom but not automated, since
-# rebuilding the ELF takes ~10 minutes and there's no clean way to do it
-# inside this script.
+# Cases that require recompiling the aggregation ELF (e.g. rotating
+# EXPECTED_PCR0_HASH / AWS_NITRO_ROOT_G1_PUBKEY trust anchors) are documented
+# at the bottom but not automated, since rebuilding the ELF takes ~10 minutes.
 #
 # Usage:
-#   # from /data/xlayer_user/op-succinct
-#   bash scripts/prove/test_tee_execute.sh
+#   # 1. Fetch the attestation doc from a running tee-host:
+#   ATTEST_HEX=$(curl -s http://localhost:18080/tee/info | \
+#                jq -r .data.attestationDoc | base64 -d | xxd -p | tr -d '\n')
 #
-# Knobs (env vars, all optional):
-#   BIN     — path to compiled binary (default: ./target/release/agg_tee_execute)
-#   L1_RPC  — L1 execution RPC (default: http://localhost:8545)
+#   # 2. Run the suite from /data/xlayer_user/op-succinct:
+#   ATTESTATION="$ATTEST_HEX" bash scripts/prove/test_tee_execute.sh
+#
+# Knobs (env vars):
+#   ATTESTATION — hex of raw COSE_Sign1 attestation doc (required)
+#   BIN         — compiled binary path (default: ./target/release/agg_tee_execute)
+#   L1_RPC      — L1 execution RPC (default: http://localhost:8545)
 
 set -uo pipefail
 
 BIN="${BIN:-./target/release/agg_tee_execute}"
 L1_RPC="${L1_RPC:-http://localhost:8545}"
+ATTESTATION="${ATTESTATION:-}"
+
+if [[ -z "$ATTESTATION" ]]; then
+    echo "ERROR: ATTESTATION env var required (raw COSE_Sign1 hex)"
+    echo "Fetch from running tee-host:"
+    echo "  ATTEST_HEX=\$(curl -s http://localhost:18080/tee/info | \\"
+    echo "               jq -r .data.attestationDoc | base64 -d | xxd -p | tr -d '\\n')"
+    exit 1
+fi
 
 # The known-good proof — the one we just verified passes end-to-end.
 # Field map (each 32 bytes = 64 hex chars):
@@ -71,7 +84,7 @@ run_case() {
     echo "expect: $expect ${pattern:+(match: $pattern)}"
 
     local output
-    output=$("$BIN" --l1-rpc "$L1_RPC" --proof "0x$proof" 2>&1) || true
+    output=$("$BIN" --l1-rpc "$L1_RPC" --attestation "$ATTESTATION" --proof "0x$proof" 2>&1) || true
 
     if [[ "$expect" == "pass" ]]; then
         if grep -qF "aggregation execute passed" <<<"$output"; then
@@ -113,22 +126,20 @@ run_case "baseline: known-good proof passes" \
 # ----------------------------------------------------------------------------
 # Case 1 — corrupt signature `s` component.
 # Flip a byte in the middle of the signature (chars 512..642). The EIP712
-# digest is unchanged, but ecrecover gets a different (s) → recovers a
-# different (or invalid) public key. Outcome: either ecrecover fails or
-# (pcr0, signer) tuple miss.
+# digest is unchanged, but ecrecover yields a different signer that no
+# longer matches the attestation-derived session signer.
 # ----------------------------------------------------------------------------
-BAD_SIG_S=$(flip_char "$GOOD_HEX" 570)   # ~middle of signature
+BAD_SIG_S=$(flip_char "$GOOD_HEX" 570)
 run_case "corrupt signature s byte" \
     "$BAD_SIG_S" \
     "fail" \
-    "TEE enclave not in approved set|ecrecover"
+    "TEE signer must match attested enclave pubkey|ecrecover"
 
 # ----------------------------------------------------------------------------
 # Case 2 — corrupt signature `v` byte (last byte of sig, position 640-641).
-# `v` ∈ {27, 28} is the recovery id. Flipping it to 0x1c→0x1d makes it 29,
-# triggering `signature v must be 27 or 28` assert.
+# `v` ∈ {27, 28} is the recovery id. Flipping it to 0x1d (= 29) triggers
+# the `signature v must be 27 or 28` assert.
 # ----------------------------------------------------------------------------
-# Change "1b" (= 27) to "1d" (= 29)
 BAD_SIG_V="${GOOD_HEX:0:640}1d${GOOD_HEX:642}"
 run_case "out-of-range signature v" \
     "$BAD_SIG_V" \
@@ -136,31 +147,33 @@ run_case "out-of-range signature v" \
     "signature v must be 27 or 28"
 
 # ----------------------------------------------------------------------------
-# Case 3 — flip a byte in pcr0.
-# EIP712 digest changes → ecrecover yields a different signer → (new_pcr0,
-# signer) tuple isn't in APPROVED_TEE_ENCLAVES.
+# Case 3 — flip a byte in pcr0 (in the wire blob).
+# The pcr0 field in the wire is informational only since the guest uses the
+# vkey-baked EXPECTED_PCR0_HASH. So this mutation should *not* affect
+# verification — baseline still passes even with a bogus wire pcr0.
+# (If this case fails, something's reading pcr0 from the wire when it
+# shouldn't.)
 # ----------------------------------------------------------------------------
 BAD_PCR0=$(flip_char "$GOOD_HEX" 5)
-run_case "flipped pcr0 byte" \
+run_case "flipped pcr0 byte (wire only; vkey pcr0 unchanged)" \
     "$BAD_PCR0" \
-    "fail" \
-    "TEE enclave not in approved set"
+    "pass"
 
 # ----------------------------------------------------------------------------
 # Case 4 — flip a byte in configHash.
-# Same mechanism: digest changes → different recovered signer → whitelist
-# miss.
+# digest changes → ecrecover yields a different signer → mismatch vs
+# attestation-derived session signer.
 # ----------------------------------------------------------------------------
 BAD_CFG=$(flip_char "$GOOD_HEX" 70)
 run_case "flipped configHash byte" \
     "$BAD_CFG" \
     "fail" \
-    "TEE enclave not in approved set"
+    "TEE signer must match attested enclave pubkey"
 
 # ----------------------------------------------------------------------------
-# Case 5 — flip l1OriginHash. The host then queries L1 for a block hash that
-# doesn't exist on chain. The fetcher returns Err → the binary aborts before
-# entering SP1 execute, reporting "fetch L1 header at l1_origin".
+# Case 5 — flip l1OriginHash. The host queries L1 for a block hash that
+# doesn't exist on chain → fetcher returns Err → binary aborts before
+# entering SP1 execute.
 # ----------------------------------------------------------------------------
 BAD_L1=$(flip_char "$GOOD_HEX" 130)
 run_case "non-existent l1OriginHash" \
@@ -170,13 +183,36 @@ run_case "non-existent l1OriginHash" \
 
 # ----------------------------------------------------------------------------
 # Case 6 — flip a byte in outputRoot.
-# Same as Case 3/4: digest changes, signer changes, whitelist miss.
+# Same as Case 4: digest changes, signer mismatch.
 # ----------------------------------------------------------------------------
 BAD_OUT=$(flip_char "$GOOD_HEX" 322)
 run_case "flipped outputRoot byte" \
     "$BAD_OUT" \
     "fail" \
-    "TEE enclave not in approved set"
+    "TEE signer must match attested enclave pubkey"
+
+# ----------------------------------------------------------------------------
+# Case 7 — corrupt attestation doc.
+# Flip a byte in the COSE payload → COSE signature verify fails inside the
+# guest (`attestation: COSE_Sign1 signature invalid`).
+# ----------------------------------------------------------------------------
+BAD_ATTEST="${ATTESTATION:0:200}$(flip_char "$ATTESTATION" 200 | cut -c201)${ATTESTATION:201}"
+echo
+echo "===== Case: corrupted attestation doc ====="
+echo "expect: fail (match: attestation:|COSE)"
+output=$("$BIN" --l1-rpc "$L1_RPC" --attestation "$BAD_ATTEST" --proof "0x$GOOD_HEX" 2>&1) || true
+if grep -qF "aggregation execute passed" <<<"$output"; then
+    echo "[FAIL] corrupted attestation should have been rejected"
+    tail -15 <<<"$output"
+    FAIL_COUNT=$((FAIL_COUNT+1))
+elif grep -qE "attestation:|COSE" <<<"$output"; then
+    echo "[OK]"
+    PASS_COUNT=$((PASS_COUNT+1))
+else
+    echo "[FAIL] expected attestation:/COSE match. Last 15 lines:"
+    tail -15 <<<"$output"
+    FAIL_COUNT=$((FAIL_COUNT+1))
+fi
 
 # ----------------------------------------------------------------------------
 # Summary
@@ -188,16 +224,15 @@ echo "failed: $FAIL_COUNT"
 
 # Cases that need rebuilding the ELF (not automated):
 #
-#   * Whitelist removal: edit programs/aggregation/src/main.rs to drop the
-#     (0xc980..., 0xb1a2bcc3...) entry from APPROVED_TEE_ENCLAVES, then
-#     `just build-agg-elf`. Re-running the binary against the known-good
-#     proof should now fail with "TEE enclave not in approved set" (signer
-#     0xb1a2bcc3... no longer recognized).
+#   * Trust-anchor rotation: edit EXPECTED_PCR0_HASH or
+#     AWS_NITRO_ROOT_G1_PUBKEY in programs/aggregation/src/main.rs, run
+#     `just build-agg-elf`, and re-run the baseline. EXPECTED_PCR0_HASH
+#     mismatch surfaces as "PCR0 hash mismatch" from attestation verify;
+#     wrong AWS root pubkey surfaces as the cert-chain verify failing.
 #
-#   * New enclave signer: restart the enclave so OsRng generates a fresh
-#     ENCLAVE_KEY, run a new range proof, decode it, and (without updating
-#     the whitelist) run it through this binary. Expected: "TEE enclave not
-#     in approved set". Updating the whitelist with the new signer should
-#     make it pass again.
+#   * Enclave restart (fresh ENCLAVE_KEY): the attestation doc binds the new
+#     pubkey, so the new signer is implicit — no source change needed.
+#     Re-running with the new (attestation, proof) pair should still pass
+#     as long as PCR0 is unchanged (same EIF).
 
 [[ $FAIL_COUNT -eq 0 ]] && exit 0 || exit 1
