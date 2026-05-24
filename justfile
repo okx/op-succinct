@@ -494,6 +494,38 @@ da-integration-tests da="ethereum":
 
     cargo t -p op-succinct-{{da}}-host-utils --features integration --release -- --test-threads=1 --nocapture
 
+# ── ci-env: dev environment lifecycle ─────────────────────────────────
+
+# Start dev environment (fp-mock, fp-tz, fp-full)
+start *ARGS='fp-mock':
+    bash scripts/ci-env/start.sh {{ARGS}}
+
+# Stop dev environment
+stop *ARGS='':
+    bash scripts/ci-env/stop.sh {{ARGS}}
+
+# Show dev environment status
+status:
+    bash scripts/ci-env/status.sh
+
+# Stop + clean all runtime data
+clean:
+    bash scripts/ci-env/stop.sh --clean
+
+# Show ci-env usage
+env-help:
+    @echo "Usage:"
+    @echo "  just start fp-mock          # mock proving, zero Docker"
+    @echo "  just start fp-tz            # TradeZone fault proof"
+    @echo "  just start fp-tz --mock     # TradeZone + mock proofs"
+    @echo "  just start fp-tz -m         # TradeZone + monitoring"
+    @echo "  just start fp-full          # full proving + monitoring"
+    @echo "  just start fp-full --tz     # full + tz binaries"
+    @echo "  just stop                   # stop all"
+    @echo "  just stop --clean           # stop + clean data"
+    @echo "  just status                 # show service status"
+    @echo "  just clean                  # stop + clean all"
+
 forge-build *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
