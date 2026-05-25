@@ -4,18 +4,26 @@
 //! enclave's signature + this program's hardcoded approved-enclave set are
 //! consistent before paying for a full prove.
 //!
-//! Two input modes:
+//! Two input modes for the journal:
 //! * `--proof <hex>` — whole ABI-encoded `RangeJournalWire` blob from the
 //!   enclave; all 7 fields are decoded automatically. **Preferred path.**
 //! * The 7 individual `--pcr0 / --config-hash / ... / --signature` args —
 //!   kept for debugging / hand-crafted inputs. Ignored when `--proof` is
 //!   given.
 //!
+//! In addition, the aggregation guest unconditionally consumes an AWS Nitro
+//! attestation document whenever a TEE leaf is present. Provide it via
+//! `--attestation <hex>` (raw COSE_Sign1 bytes hex-encoded). The wire `pcr0`
+//! is informational only: the guest reconstructs the journal with the
+//! vkey-baked `EXPECTED_PCR0_HASH`, so flipping the wire `pcr0` does not
+//! by itself cause verification to fail.
+//!
 //! Usage:
 //! ```bash
 //! cargo run --release --bin agg_tee_execute -- \
 //!   --l1-rpc http://localhost:8545 \
-//!   --proof 0xc980...00000000
+//!   --proof 0xc980...00000000 \
+//!   --attestation 0x...
 //! ```
 
 use alloy_consensus::Header;
@@ -87,6 +95,14 @@ struct Args {
     /// 65-byte secp256k1 signature `r ‖ s ‖ v` (v ∈ {27, 28}).
     #[arg(long, required_unless_present = "proof")]
     signature: Option<String>,
+
+    /// AWS Nitro attestation document covering the enclave session that
+    /// produced the signature. Hex-encoded COSE_Sign1 bytes (`0x` prefix
+    /// optional). Required: the aggregation guest reads it unconditionally
+    /// whenever any TEE leaf is present, so omitting it crashes the guest
+    /// during `sp1_zkvm::io::read_vec()`.
+    #[arg(long)]
+    attestation: String,
 }
 
 #[tokio::main]
@@ -172,23 +188,35 @@ async fn main() -> Result<()> {
         header.number, header.parent_hash
     );
 
-    // Single-range aggregation input: one BootInfoStruct, one TEE proof.
+    // Single-range aggregation input: one BootInfoStruct, one TEE leaf.
+    // NOTE: `RangeProof::Tee` no longer carries `pcr0` — the aggregation
+    // guest pins PCR0 to its vkey-baked constant and reconstructs the
+    // journal accordingly. The wire `pcr0` decoded above is kept only for
+    // display (and surfaces a useful warning if it doesn't match what the
+    // operator expects against the deployed ELF).
+    let _ = pcr0; // unused; see note above.
     let agg_inputs = AggregationInputs {
         boot_infos: vec![boot],
-        range_proofs: vec![RangeProof::Tee {
-            pcr0,
-            signature,
-        }],
+        range_proofs: vec![RangeProof::Tee { signature }],
         latest_l1_checkpoint_head: l1_origin,
         // TEE-only path — `verify_sp1_proof` never gets called, vkey ignored.
         multi_block_vkey: [0u32; 8],
         prover_address: Address::ZERO,
     };
 
+    let attestation_bytes = hex::decode(
+        args.attestation.strip_prefix("0x").unwrap_or(&args.attestation),
+    )
+    .context("decode --attestation hex")?;
+    println!("→ attestation: {} bytes", attestation_bytes.len());
+
     let mut stdin = SP1Stdin::default();
     stdin.write(&agg_inputs);
     let headers_cbor = serde_cbor::to_vec(&vec![header])?;
     stdin.write_vec(headers_cbor);
+    // The guest reads this only when at least one RangeProof::Tee is in
+    // range_proofs — which is always the case for this binary.
+    stdin.write_vec(attestation_bytes);
 
     println!("→ executing aggregation program (no proof generation)");
     // sp1_sdk::blocking::CpuProver internally calls `block_on` to drive
@@ -205,6 +233,18 @@ async fn main() -> Result<()> {
 
     match execute_result {
         Ok((public_values, report)) => {
+            // Guest panic detection: SP1's CPU executor catches in-guest
+            // panics and returns Ok with empty public_values (the guest
+            // never reached its final `sp1_zkvm::io::commit_slice`). The
+            // aggregation guest unconditionally commits a non-empty
+            // ABI-encoded `AggregationOutputs` on the happy path, so empty
+            // here means "guest aborted" — surface that as a failure.
+            if public_values.as_slice().is_empty() {
+                println!("❌ aggregation execute failed: guest panicked before committing public values");
+                println!("   total instructions before abort: {}", report.total_instruction_count());
+                println!("   (look for the panic message in stderr above)");
+                std::process::exit(1);
+            }
             println!("✅ aggregation execute passed");
             println!("   total instructions: {}", report.total_instruction_count());
             println!("   public_values (ABI-encoded AggregationOutputs):");

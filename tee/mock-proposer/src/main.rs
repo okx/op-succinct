@@ -96,6 +96,15 @@ struct Args {
     #[arg(long, default_value_t = true)]
     safe_db_fallback: bool,
 
+    /// Explicit L1 head block hash to use as the derivation boundary. When set,
+    /// bypasses op-succinct's `calculate_safe_l1_head` heuristic — useful on
+    /// devnets where the SafeDB-based +20-block buffer is too small and kona
+    /// halts with `Critical(EndOfSource)` before deriving any L2 blocks.
+    /// Tip: pass the finalized L1 head, e.g.
+    ///   `--l1-head $(cast block finalized --rpc-url $L1_RPC --field hash)`.
+    #[arg(long)]
+    l1_head: Option<B256>,
+
     /// What to do once the TEE proof comes back.
     #[arg(long, value_enum, default_value = "skip")]
     agg_mode: AggMode,
@@ -136,9 +145,9 @@ async fn main() -> Result<()> {
 
     let host = SingleChainOPSuccinctHost::new(fetcher.clone());
 
-    info!("fetching host args from devnet");
+    info!(?args.l1_head, "fetching host args from devnet");
     let host_args = host
-        .fetch(args.start_block, args.end_block, None, args.safe_db_fallback)
+        .fetch(args.start_block, args.end_block, args.l1_head, args.safe_db_fallback)
         .await
         .context("host.fetch")?;
 
