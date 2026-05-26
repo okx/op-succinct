@@ -66,6 +66,14 @@ impl L2ProviderTrait for TzL2Provider {
         self.tz_client.get_confirmed_block_info().await?;
         Ok(())
     }
+
+    async fn fetch_dex_state_snapshot(&self, height: u64) -> Result<Vec<u8>> {
+        self.tz_client.get_dex_state_snapshot(height).await
+    }
+
+    async fn fetch_blocks_range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
+        self.tz_client.get_blocks_range(start, end).await
+    }
 }
 
 #[cfg(test)]

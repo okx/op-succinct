@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod backup;
 pub mod challenger;
 pub mod config;
@@ -75,6 +77,16 @@ pub trait L2ProviderTrait {
     // xlayer no-op (cache does not exist)
     async fn refresh_checkpoint_cache(&self) -> Result<()> {
         Ok(())
+    }
+
+    // for tz: fetch msgpack DexState snapshot at `height`. xlayer has no equivalent.
+    async fn fetch_dex_state_snapshot(&self, _height: u64) -> Result<Vec<u8>> {
+        bail!("fetch_dex_state_snapshot not supported on this L2 provider")
+    }
+
+    // for tz: fetch msgpack Vec<Block> for `[start, end]`. xlayer has no equivalent.
+    async fn fetch_blocks_range(&self, _start: u64, _end: u64) -> Result<Vec<u8>> {
+        bail!("fetch_blocks_range not supported on this L2 provider")
     }
 }
 

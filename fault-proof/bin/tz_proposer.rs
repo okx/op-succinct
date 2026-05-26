@@ -25,8 +25,8 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static ALLOCATOR: Jemalloc = Jemalloc;
 
-// for tz: placeholder ELF; replace with real tz range program ELF in Phase 2
 static TZ_RANGE_ELF: &[u8] = include_bytes!("../elfs/tz-range.elf");
+static TZ_AGGREGATION_ELF: &[u8] = include_bytes!("../elfs/tz-aggregation.elf");
 
 #[derive(Parser)]
 #[command(name = "tz-proposer")]
@@ -98,6 +98,7 @@ async fn run(tz_config: TzConfig) -> Result<()> {
             host,
             l2_provider,
             TZ_RANGE_ELF,
+            TZ_AGGREGATION_ELF,
         )
         .await?,
     );

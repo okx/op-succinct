@@ -88,6 +88,42 @@ impl TzChainClient {
     pub fn evict_below(&self, anchor_height: u64) {
         self.history.lock().unwrap().retain(|&h, _| h >= anchor_height);
     }
+
+    /// `GET /chain/dex_state_snapshot?height=N` — returns msgpack-encoded DexState bytes.
+    pub async fn get_dex_state_snapshot(&self, height: u64) -> Result<Vec<u8>> {
+        let mut last_err = anyhow!("no endpoints configured");
+        for endpoint in &self.endpoints {
+            let url = format!("{}/chain/dex_state_snapshot?height={}", endpoint, height);
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) => { last_err = e.into(); continue; }
+            };
+            if !resp.status().is_success() {
+                last_err = anyhow!("HTTP {} from {}", resp.status(), url);
+                continue;
+            }
+            return Ok(resp.bytes().await?.to_vec());
+        }
+        Err(last_err)
+    }
+
+    /// `GET /chain/blocks?start=N&end=M` — returns msgpack-encoded Vec<Block> bytes.
+    pub async fn get_blocks_range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
+        let mut last_err = anyhow!("no endpoints configured");
+        for endpoint in &self.endpoints {
+            let url = format!("{}/chain/blocks?start={}&end={}", endpoint, start, end);
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) => { last_err = e.into(); continue; }
+            };
+            if !resp.status().is_success() {
+                last_err = anyhow!("HTTP {} from {}", resp.status(), url);
+                continue;
+            }
+            return Ok(resp.bytes().await?.to_vec());
+        }
+        Err(last_err)
+    }
 }
 
 #[cfg(test)]

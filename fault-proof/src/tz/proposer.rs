@@ -5,6 +5,7 @@
 // all types and private fields from proposer.rs without changing their visibility.
 
 use super::*;
+use op_succinct_client_utils::types::AggregationInputs;
 
 impl<P, H> OPSuccinctProposer<P, H>
 where
@@ -118,6 +119,7 @@ where
         host: Arc<H>,
         l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
         range_elf: &'static [u8],
+        aggregation_elf: &'static [u8],
     ) -> Result<Self> {
         // tz: read all identity fields from the deployed game implementation so is_owned()
         // matches on-chain games regardless of which local ELF is loaded.
@@ -151,16 +153,9 @@ where
             let np = Arc::new(
                 ProverClient::builder().network_for(nm).signer(network_signer).build().await,
             );
-            // tz: range_elf is a placeholder (0 bytes) until Phase 2; in mock mode substitute
-            // AGGREGATION_ELF so key derivation succeeds.
-            let effective_range_elf = if config.mock_mode && range_elf.is_empty() {
-                AGGREGATION_ELF
-            } else {
-                range_elf
-            };
-            let range_pk = np.setup(Elf::Static(effective_range_elf)).await?;
+            let range_pk = np.setup(Elf::Static(range_elf)).await?;
             let range_vk = range_pk.verifying_key().clone();
-            let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
+            let agg_pk = np.setup(Elf::Static(aggregation_elf)).await?;
             let agg_vk = agg_pk.verifying_key().clone();
             (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
         };
@@ -187,7 +182,7 @@ where
                     .ok_or_else(|| anyhow::anyhow!("network_prover required in mock mode"))?,
                 keys.clone(),
                 config.proof_provider.clone(),
-                AGGREGATION_ELF,
+                aggregation_elf,
             ))
         } else {
             ProofProvider::Network(NetworkProofProvider::new(
@@ -229,26 +224,28 @@ where
 
     /// TZ-specific game proving.
     ///
-    /// Mock mode: SP1MockVerifier only checks `proofBytes.length == 0`, so we pass empty bytes.
+    /// Mock mode: SP1MockVerifier only checks `proofBytes.length == 0`, so submit empty bytes.
     ///
-    /// Real mode: not yet implemented (Phase 2).
+    /// Real mode: fetch DexState snapshot + Vec<Block> from the tz chain HTTP endpoints
+    /// (single segment), generate a compressed range proof, then wrap into a groth16 aggregation
+    /// proof. Submit the groth16 proof bytes to OPSuccinctFaultDisputeGame.prove.
     #[tracing::instrument(name = "[[Proving]]", skip(self), fields(game_address = ?game_address))]
     pub async fn prove_game(
         &self,
         game_address: Address,
-        _start_block: u64,
-        _end_block: u64,
+        start_block: u64,
+        end_block: u64,
     ) -> Result<(TxHash, u64, u64)> {
-        if !self.config.mock_mode {
-            anyhow::bail!("TZ real proving is not yet implemented; set MOCK_MODE=true");
-        }
-
         let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
-        let transaction_request =
-            game.prove(alloy_primitives::Bytes::new()).into_transaction_request();
 
-        tracing::info!(game_address = ?game_address, "tz: submitting mock proof (empty bytes)");
+        let proof_bytes = if self.config.mock_mode {
+            tracing::info!(game_address = ?game_address, "tz: submitting mock proof (empty bytes)");
+            alloy_primitives::Bytes::new()
+        } else {
+            self.tz_prove(start_block, end_block).await?
+        };
 
+        let transaction_request = game.prove(proof_bytes).into_transaction_request();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
@@ -265,8 +262,50 @@ where
         tracing::info!(
             game_address = ?game_address,
             tx_hash = ?receipt.transaction_hash,
-            "tz: mock proof submitted"
+            "tz: proof submitted"
         );
         Ok((receipt.transaction_hash, 0, 0))
+    }
+
+    /// Run the twin-layer prove pipeline (single segment): range proof → aggregation proof.
+    /// Returns groth16-wrapped proof bytes ready for OPSuccinctFaultDisputeGame.prove.
+    async fn tz_prove(
+        &self,
+        start_block: u64,
+        end_block: u64,
+    ) -> Result<alloy_primitives::Bytes> {
+        tracing::info!(
+            start_block,
+            end_block,
+            "tz: fetching witness (snapshot + blocks) from tz chain"
+        );
+        let snapshot = self.l2_provider.fetch_dex_state_snapshot(start_block).await?;
+        let blocks = self.l2_provider.fetch_blocks_range(start_block, end_block).await?;
+
+        let mut range_stdin = SP1Stdin::new();
+        range_stdin.write_vec(snapshot);
+        range_stdin.write_vec(blocks);
+
+        tracing::info!("tz: generating range proof");
+        let (range_proof, _cycles, _gas) = self.prover.generate_range_proof(range_stdin).await?;
+        let mut public_values = range_proof.public_values.clone();
+        let boot_info: BootInfoStruct = public_values.read();
+
+        let agg_inputs = AggregationInputs {
+            boot_infos: vec![boot_info],
+            // tz has no L1 derivation; the on-chain verifier expects ZERO.
+            latest_l1_checkpoint_head: B256::ZERO,
+            multi_block_vkey: self.prover.keys().range_vk.hash_u32(),
+            prover_address: self.signer.address(),
+        };
+        let agg_stdin = op_succinct_proof_utils::tz::aggregation_stdin(
+            vec![range_proof.proof.clone()],
+            &self.prover.keys().range_vk,
+            &agg_inputs,
+        )?;
+
+        tracing::info!("tz: generating aggregation proof");
+        let agg_proof = self.prover.generate_agg_proof(agg_stdin).await?;
+        Ok(agg_proof.bytes().into())
     }
 }
