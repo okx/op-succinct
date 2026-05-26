@@ -14805,7 +14805,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "tz-block-processor"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=1f79a6b171184d8ccd80bcb6a17619181508de61#1f79a6b171184d8ccd80bcb6a17619181508de61"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=140b890c78536b60d60fbd0ca376555736b99b42#140b890c78536b60d60fbd0ca376555736b99b42"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14824,7 +14824,7 @@ dependencies = [
 [[package]]
 name = "tz-dex"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=1f79a6b171184d8ccd80bcb6a17619181508de61#1f79a6b171184d8ccd80bcb6a17619181508de61"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=140b890c78536b60d60fbd0ca376555736b99b42#140b890c78536b60d60fbd0ca376555736b99b42"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14850,7 +14850,7 @@ dependencies = [
 [[package]]
 name = "tz-macros"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=1f79a6b171184d8ccd80bcb6a17619181508de61#1f79a6b171184d8ccd80bcb6a17619181508de61"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=140b890c78536b60d60fbd0ca376555736b99b42#140b890c78536b60d60fbd0ca376555736b99b42"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14860,7 +14860,7 @@ dependencies = [
 [[package]]
 name = "tz-primitives"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=1f79a6b171184d8ccd80bcb6a17619181508de61#1f79a6b171184d8ccd80bcb6a17619181508de61"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=140b890c78536b60d60fbd0ca376555736b99b42#140b890c78536b60d60fbd0ca376555736b99b42"
 dependencies = [
  "alloy",
  "alloy-primitives",
