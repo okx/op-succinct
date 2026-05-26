@@ -1,54 +1,17 @@
-//! `RangeJournal` — the EIP712 typed-data structure signed by the enclave for
-//! each Range proof.
-//!
-//! Two flavors:
-//! - `RangeJournal`: `sol!`-generated, used for **EIP712 hashing** and
-//!   Solidity ABI compatibility (`alloy_sol_types::SolStruct`).
-//! - `RangeJournalWire`: rkyv-friendly mirror, used as the journal portion
-//!   of [`crate::response::RangeTaskResponse`] over the HTTP wire.
-//!
-//! ## Field selection
-//!
-//! Fields chosen to be 1:1 derivable from
-//! [`kona_proof::BootInfo`] (with one enclave-supplied field `pcr0`):
-//!
-//! | journal field        | source                                       |
-//! |----------------------|----------------------------------------------|
-//! | `pcr0`               | enclave (Nitro NSM measurement)              |
-//! | `config_hash`        | `hash_rollup_config(&boot.rollup_config)`    |
-//! | `l1_origin_hash`     | `boot.l1_head`                               |
-//! | `l2_block_number`    | `boot.claimed_l2_block_number`               |
-//! | `prev_output_root`   | `boot.agreed_l2_output_root`                 |
-//! | `output_root`        | computed by `kona_client::run` and compared against `boot.claimed_l2_output_root` |
-//!
-//! Aligns with `op-succinct/utils/client/src/boot.rs` `BootInfoStruct`.
-//!
-//! ## ⚠️ Field order is locked at v0.1
-//!
-//! EIP712 type hashes depend on field order. Reordering after the verifier
-//! contract is deployed breaks all existing signatures.
+//! `RangeJournal` — packed-bytes journal signed by the enclave per Range proof.
 
 use alloy_primitives::FixedBytes;
 use alloy_sol_types::sol;
 use rkyv::{Archive, Deserialize, Serialize};
 
+/// Byte length of the packed journal: 32 + 8 + 32 + 32 + 8 + 32 + 32.
+pub const PACKED_JOURNAL_LEN: usize = 176;
+
 sol! {
-    /// Journal signed by the enclave for a single Range proof.
-    ///
-    /// Solidity type:
-    /// ```solidity
-    /// struct RangeJournal {
-    ///     bytes32 pcr0;
-    ///     bytes32 configHash;
-    ///     bytes32 l1OriginHash;
-    ///     uint64  l2BlockNumber;
-    ///     bytes32 prevOutputRoot;
-    ///     bytes32 outputRoot;
-    /// }
-    /// ```
     #[derive(Debug, PartialEq, Eq)]
     struct RangeJournal {
         bytes32 pcr0;
+        uint64  chainId;
         bytes32 configHash;
         bytes32 l1OriginHash;
         uint64  l2BlockNumber;
@@ -57,10 +20,26 @@ sol! {
     }
 }
 
+impl RangeJournal {
+    /// Concatenated bytes hashed by `keccak256` to produce the ECDSA signing digest.
+    pub fn pack(&self) -> [u8; PACKED_JOURNAL_LEN] {
+        let mut out = [0u8; PACKED_JOURNAL_LEN];
+        out[0..32].copy_from_slice(&self.pcr0.0);
+        out[32..40].copy_from_slice(&self.chainId.to_be_bytes());
+        out[40..72].copy_from_slice(&self.configHash.0);
+        out[72..104].copy_from_slice(&self.l1OriginHash.0);
+        out[104..112].copy_from_slice(&self.l2BlockNumber.to_be_bytes());
+        out[112..144].copy_from_slice(&self.prevOutputRoot.0);
+        out[144..176].copy_from_slice(&self.outputRoot.0);
+        out
+    }
+}
+
 /// rkyv-friendly mirror of [`RangeJournal`] for HTTP wire transmission.
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct RangeJournalWire {
     pub pcr0: [u8; 32],
+    pub chain_id: u64,
     pub config_hash: [u8; 32],
     pub l1_origin_hash: [u8; 32],
     pub l2_block_number: u64,
@@ -72,6 +51,7 @@ impl From<&RangeJournal> for RangeJournalWire {
     fn from(j: &RangeJournal) -> Self {
         Self {
             pcr0: j.pcr0.0,
+            chain_id: j.chainId,
             config_hash: j.configHash.0,
             l1_origin_hash: j.l1OriginHash.0,
             l2_block_number: j.l2BlockNumber,
@@ -85,6 +65,7 @@ impl From<&RangeJournalWire> for RangeJournal {
     fn from(w: &RangeJournalWire) -> Self {
         Self {
             pcr0: FixedBytes(w.pcr0),
+            chainId: w.chain_id,
             configHash: FixedBytes(w.config_hash),
             l1OriginHash: FixedBytes(w.l1_origin_hash),
             l2BlockNumber: w.l2_block_number,

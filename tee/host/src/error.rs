@@ -58,7 +58,7 @@ fn map_enclave_kind(kind: ErrorKind) -> i32 {
         | ErrorKind::DeserializeRkyv
         | ErrorKind::Cancelled
         | ErrorKind::InvalidTaskId
-        | ErrorKind::InvalidEip712Header => CODE_INVALID_ARGUMENT,
+        | ErrorKind::InvalidChainIdHeader => CODE_INVALID_ARGUMENT,
         ErrorKind::KonaExec
         | ErrorKind::InternalEnclave
         | ErrorKind::Timeout
@@ -96,7 +96,7 @@ mod tests {
             ErrorKind::ChainBreak,
             ErrorKind::Inconsistent,
             ErrorKind::DeserializeRkyv,
-            ErrorKind::InvalidEip712Header,
+            ErrorKind::InvalidChainIdHeader,
         ] {
             let e = Error::Enclave { kind, message: "x".into() };
             assert_eq!(e.code(), CODE_INVALID_ARGUMENT, "kind {kind:?}");

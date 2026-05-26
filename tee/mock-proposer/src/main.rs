@@ -13,7 +13,7 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_consensus::Header;
 use alloy_primitives::{hex, Address, Bytes, B256};
-use alloy_sol_types::{sol, SolValue};
+use alloy_sol_types::SolValue;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::{Parser, ValueEnum};
@@ -32,18 +32,7 @@ use sp1_sdk::{
 use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
-
-// Mirror of the enclave's `RangeJournal` — used to ABI-decode `proofBytes`.
-sol! {
-    struct RangeJournal {
-        bytes32 pcr0;
-        bytes32 configHash;
-        bytes32 l1OriginHash;
-        uint64  l2BlockNumber;
-        bytes32 prevOutputRoot;
-        bytes32 outputRoot;
-    }
-}
+use xlayer_tee_types::RangeJournal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum AggMode {
@@ -180,16 +169,11 @@ async fn main() -> Result<()> {
     let results = run_all_chunks(args.clone(), host, chunks).await?;
     enforce_chunk_continuity(&results)?;
 
+    // Per-chunk proofs (journal + signature) were printed via
+    // `print_chunk_proof` as each chunk finished. Here we just emit a final
+    // summary line so the operator can confirm the total count.
+    println!("──── all {} chunk(s) proven ────", results.len());
     if args.agg_mode == AggMode::Skip {
-        for r in &results {
-            info!(
-                chunk = format!("[{}, {}]", r.range.0, r.range.1),
-                task_id = %r.task_id,
-                l2_block = r.boot_info.l2BlockNumber,
-                l1_head = %r.boot_info.l1Head,
-                "chunk result"
-            );
-        }
         return Ok(());
     }
     run_aggregation(&args, &fetcher, &results).await
@@ -229,6 +213,11 @@ fn slice_range(start: u64, end: u64, chunk_size: u64) -> Vec<(u64, u64)> {
 struct ChunkResult {
     range: (u64, u64),
     boot_info: BootInfoStruct,
+    /// Full RangeJournal signed by the enclave. We keep it (instead of only
+    /// the derived `boot_info`) so the per-chunk diagnostic print can show
+    /// `pcr0` and the raw signed fields — useful when an aggregation run
+    /// fails and you want to compare against `EXPECTED_PCR0_HASH`.
+    journal: RangeJournal,
     signature: Vec<u8>,
     task_id: String,
 }
@@ -327,14 +316,39 @@ async fn submit_chunk(
             response
         );
     }
-    let (boot_info, signature) = parse_proof_bytes(&response)?;
+    let (proof_bytes_hex, journal, boot_info, signature) = parse_proof_bytes(&response)?;
     if boot_info.l2BlockNumber != chunk_end {
         bail!(
             "chunk [{chunk_start}, {chunk_end}] returned l2BlockNumber={} (expected {chunk_end})",
             boot_info.l2BlockNumber
         );
     }
-    Ok(ChunkResult { range: (chunk_start, chunk_end), boot_info, signature, task_id })
+    print_chunk_proof(chunk_start, chunk_end, &task_id, &journal, &signature, &proof_bytes_hex);
+    Ok(ChunkResult { range: (chunk_start, chunk_end), boot_info, journal, signature, task_id })
+}
+
+/// Pretty-print the TEE proof returned for one chunk. Emitted as soon as a
+/// chunk's task reaches `Finished`, so the operator can inspect each proof
+/// even when the run continues into aggregation.
+fn print_chunk_proof(
+    chunk_start: u64,
+    chunk_end: u64,
+    task_id: &str,
+    journal: &RangeJournal,
+    signature: &[u8],
+    proof_bytes_hex: &str,
+) {
+    println!("──── TEE proof: chunk [{chunk_start}, {chunk_end}] ────");
+    println!("  task_id        = {task_id}");
+    println!("  pcr0           = {:?}", journal.pcr0);
+    println!("  chainId        = {}", journal.chainId);
+    println!("  configHash     = {:?}", journal.configHash);
+    println!("  l1OriginHash   = {:?}", journal.l1OriginHash);
+    println!("  l2BlockNumber  = {}", journal.l2BlockNumber);
+    println!("  prevOutputRoot = {:?}", journal.prevOutputRoot);
+    println!("  outputRoot     = {:?}", journal.outputRoot);
+    println!("  signature(65B) = 0x{}", hex::encode(signature));
+    println!("  proofBytes     = 0x{proof_bytes_hex}");
 }
 
 fn enforce_chunk_continuity(results: &[ChunkResult]) -> Result<()> {
@@ -415,7 +429,9 @@ async fn poll_until_terminal(args: &Args, task_id: &str) -> Result<serde_json::V
     }
 }
 
-fn parse_proof_bytes(task_response: &serde_json::Value) -> Result<(BootInfoStruct, Vec<u8>)> {
+fn parse_proof_bytes(
+    task_response: &serde_json::Value,
+) -> Result<(String, RangeJournal, BootInfoStruct, Vec<u8>)> {
     let proof_bytes_hex =
         task_response["data"]["proofBytes"].as_str().context("missing data.proofBytes")?;
     let proof_bytes = hex::decode(proof_bytes_hex.trim_start_matches("0x"))
@@ -433,7 +449,8 @@ fn parse_proof_bytes(task_response: &serde_json::Value) -> Result<(BootInfoStruc
         l2BlockNumber: journal.l2BlockNumber,
         rollupConfigHash: journal.configHash,
     };
-    Ok((boot_info, signature))
+    let hex_clean = proof_bytes_hex.trim_start_matches("0x").to_string();
+    Ok((hex_clean, journal, boot_info, signature))
 }
 
 // =============================================================================
@@ -457,6 +474,18 @@ async fn run_aggregation(
         .iter()
         .map(|r| RangeProof::Tee { signature: r.signature.clone() })
         .collect();
+
+    // All chunks signed by the same enclave session must carry the same
+    // chain_id; cross-check before handing off to the guest.
+    let tee_chain_id = results[0].journal.chainId;
+    for r in &results[1..] {
+        if r.journal.chainId != tee_chain_id {
+            bail!(
+                "chunk chainId mismatch: {} vs {}",
+                r.journal.chainId, tee_chain_id,
+            );
+        }
+    }
 
     // The last chunk's L1 origin sits highest on L1; the guest will walk
     // back from this checkpoint and assert every chunk's l1Head appears
@@ -490,6 +519,7 @@ async fn run_aggregation(
         headers,
         latest_l1_checkpoint_head,
         args.prover_address,
+        tee_chain_id,
     )?;
 
     match args.agg_mode {
@@ -526,21 +556,19 @@ fn build_stdin(
     headers: Vec<Header>,
     latest_l1_checkpoint_head: B256,
     prover_address: Address,
+    tee_chain_id: u64,
 ) -> Result<SP1Stdin> {
     let mut stdin = SP1Stdin::default();
     stdin.write(&AggregationInputs {
         boot_infos,
         range_proofs,
         latest_l1_checkpoint_head,
-        // multi_block_vkey is only used in the SP1 branch; safe to zero
-        // when every leaf is a TEE leaf.
         multi_block_vkey: [0u32; 8],
         prover_address,
+        tee_chain_id,
     });
     let headers_cbor = serde_cbor::to_vec(&headers).context("CBOR-encode headers")?;
     stdin.write_vec(headers_cbor);
-    // The guest reads this conditionally — only if range_proofs contains a
-    // Tee variant, which is always the case here.
     stdin.write_vec(attestation);
     Ok(stdin)
 }

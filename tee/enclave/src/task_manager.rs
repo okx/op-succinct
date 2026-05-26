@@ -23,7 +23,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use alloy_sol_types::Eip712Domain;
 use parking_lot::Mutex as PlMutex;
 use tokio::sync::{Mutex as TokioMutex, oneshot};
 use tracing::{info, warn};
@@ -45,20 +44,13 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Outer state of a single task. `state` is held across `.await` (so it's a
-/// tokio mutex), `abort_tx` is fired-and-dropped (so it can be an option
-/// behind a parking_lot mutex without crossing await — but tokio mutex is
-/// also fine and matches lifetime of `state`, simpler).
-///
-/// `domain` is the EIP712 domain used to sign this task's response journal.
-/// Captured per-task from the `x-eip712-chain-id` and
-/// `x-eip712-verifying-contract` headers on `POST /tasks/range` so that
-/// **the same EIF can serve any number of verifier contracts and L1 chains**
-/// without re-build / re-attest.
+/// Outer state of a single task. `chain_id` is signed into every range
+/// journal — captured per-task from the `x-chain-id` header so one EIF can
+/// serve any number of L1 chains.
 pub struct TaskEntry {
     pub task_id: String,
     pub start_time_ms: u64,
-    domain: Arc<Eip712Domain>,
+    chain_id: u64,
     state: TokioMutex<TaskInnerState>,
     abort_tx: TokioMutex<Option<oneshot::Sender<()>>>,
 }
@@ -85,12 +77,12 @@ impl TaskStatusInternal {
 }
 
 impl TaskEntry {
-    fn new(task_id: String, domain: Arc<Eip712Domain>) -> (Arc<Self>, oneshot::Receiver<()>) {
+    fn new(task_id: String, chain_id: u64) -> (Arc<Self>, oneshot::Receiver<()>) {
         let (abort_tx, abort_rx) = oneshot::channel();
         let entry = Arc::new(Self {
             task_id,
             start_time_ms: now_ms(),
-            domain,
+            chain_id,
             state: TokioMutex::new(TaskInnerState {
                 phase: TaskPhase::Pending,
                 status: TaskStatusInternal::Running,
@@ -178,19 +170,13 @@ impl TaskManager {
 
     /// Submit a new task or return the existing one if `task_id` is already
     /// present (idempotent). Returns `Error::TooManyTasks` when the cap is
-    /// reached **and the request would create a new entry** — idempotent
-    /// hits on existing tasks bypass the cap.
-    ///
-    /// `domain` is the EIP712 domain (chainId + verifyingContract) that this
-    /// specific task will sign under — caller parses it from per-request
-    /// headers. Different tasks may carry different domains.
+    /// reached **and the request would create a new entry**.
     pub fn create(
         self: &Arc<Self>,
         task_id: String,
-        domain: Eip712Domain,
+        chain_id: u64,
         witness_bytes: bytes::Bytes,
     ) -> Result<CreateOutcome, Error> {
-        // Idempotent fast path: same id already present → just report state.
         {
             let map = self.tasks.lock();
             if let Some(existing) = map.get(&task_id) {
@@ -202,12 +188,8 @@ impl TaskManager {
             }
         }
 
-        // Cap check + insert under the same lock to avoid two POSTs racing
-        // past the cap.
-        let domain_arc = Arc::new(domain);
         let (entry, abort_rx) = {
             let mut map = self.tasks.lock();
-            // Re-check after acquiring the write-side lock.
             if let Some(existing) = map.get(&task_id) {
                 return Ok(CreateOutcome::AlreadyExists(CreateTaskResponse {
                     task_id: existing.task_id.clone(),
@@ -225,7 +207,7 @@ impl TaskManager {
                     cap: self.max_inflight,
                 });
             }
-            let (entry, abort_rx) = TaskEntry::new(task_id.clone(), Arc::clone(&domain_arc));
+            let (entry, abort_rx) = TaskEntry::new(task_id.clone(), chain_id);
             map.insert(task_id.clone(), Arc::clone(&entry));
             (entry, abort_rx)
         };
@@ -369,19 +351,17 @@ async fn spawn_task(
     witness_bytes: bytes::Bytes,
     mut abort_rx: oneshot::Receiver<()>,
 ) {
-    let domain = Arc::clone(&entry.domain);
+    let chain_id = entry.chain_id;
     let pcr0 = mgr.pcr0;
     let entry_for_pipeline = Arc::clone(&entry);
 
     let result = tokio::select! {
-        // abort_rx fires when DELETE handler takes & sends on abort_tx.
-        // Either side completing cancels the other (tokio future drop).
         _ = &mut abort_rx => {
             warn!(task_id = %entry.task_id, "task cancelled before completion");
             mgr.mark_cancelled(&entry).await;
             return;
         }
-        res = run_pipeline(entry_for_pipeline, witness_bytes, domain, pcr0) => res,
+        res = run_pipeline(entry_for_pipeline, witness_bytes, chain_id, pcr0) => res,
     };
 
     match result {

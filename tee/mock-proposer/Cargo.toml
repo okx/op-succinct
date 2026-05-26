@@ -16,6 +16,9 @@ op-succinct-ethereum-host-utils.workspace = true
 op-succinct-client-utils.workspace = true
 op-succinct-elfs.workspace = true
 
+# Canonical RangeJournal definition (shared with enclave + host)
+xlayer-tee-types.workspace = true
+
 # Witness + headers serialization
 rkyv.workspace = true
 serde_cbor.workspace = true

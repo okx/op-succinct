@@ -15822,6 +15822,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.22",
+ "xlayer-tee-types",
 ]
 
 [[package]]

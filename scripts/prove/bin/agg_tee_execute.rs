@@ -41,11 +41,9 @@ use op_succinct_host_utils::fetcher::OPSuccinctDataFetcher;
 use sp1_sdk::{blocking, blocking::Prover, Elf, SP1Stdin};
 
 sol! {
-    /// Wire-level shape of what the enclave ABI-encodes and ships back over
-    /// the HTTP boundary. Field order + types must match
-    /// `xlayer-tee-types::RangeJournalWire` exactly.
     struct RangeJournalWire {
         bytes32 pcr0;
+        uint64  chainId;
         bytes32 configHash;
         bytes32 l1OriginHash;
         uint64  l2BlockNumber;
@@ -71,6 +69,10 @@ struct Args {
     /// `keccak256(NSM PCR0)` — must match an entry in `APPROVED_TEE_ENCLAVES`.
     #[arg(long, required_unless_present = "proof")]
     pcr0: Option<B256>,
+
+    /// L2 chain id signed into the range journal.
+    #[arg(long, required_unless_present = "proof")]
+    chain_id: Option<u64>,
 
     /// `hash_rollup_config(&rollup_config)`.
     #[arg(long, required_unless_present = "proof")]
@@ -109,19 +111,15 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let (pcr0, config_hash, l1_origin, l2_block, prev_output_root, output_root, signature) =
+    let (pcr0, chain_id, config_hash, l1_origin, l2_block, prev_output_root, output_root, signature) =
         if let Some(p) = args.proof.as_ref() {
             let hex_str = p.strip_prefix("0x").unwrap_or(p);
             let bytes = hex::decode(hex_str).context("decode --proof hex")?;
-            // The enclave encodes via `(RangeJournal, bytes).abi_encode_params()`
-            // (see tee/host/src/packager.rs) — no outer 0x20 offset wrapper.
-            // Must decode in params mode; plain `abi_decode` would read the
-            // first 32 bytes as an outer offset and bail with
-            // "type check failed for offset (usize)".
             let w = RangeJournalWire::abi_decode_params(&bytes)
                 .context("abi-decode RangeJournalWire (params mode)")?;
             println!("→ decoded journal:");
             println!("    pcr0           = {:?}", w.pcr0);
+            println!("    chainId        = {}", w.chainId);
             println!("    configHash     = {:?}", w.configHash);
             println!("    l1OriginHash   = {:?}", w.l1OriginHash);
             println!("    l2BlockNumber  = {}", w.l2BlockNumber);
@@ -130,6 +128,7 @@ async fn main() -> Result<()> {
             println!("    signature.len  = {}", w.signature.len());
             (
                 w.pcr0,
+                w.chainId,
                 w.configHash,
                 w.l1OriginHash,
                 w.l2BlockNumber,
@@ -143,6 +142,7 @@ async fn main() -> Result<()> {
                 .context("decode --signature hex")?;
             (
                 args.pcr0.unwrap(),
+                args.chain_id.unwrap(),
                 args.config_hash.unwrap(),
                 args.l1_origin.unwrap(),
                 args.l2_block.unwrap(),
@@ -194,14 +194,14 @@ async fn main() -> Result<()> {
     // journal accordingly. The wire `pcr0` decoded above is kept only for
     // display (and surfaces a useful warning if it doesn't match what the
     // operator expects against the deployed ELF).
-    let _ = pcr0; // unused; see note above.
+    let _ = pcr0; // guest pins PCR0 to vkey-baked constant.
     let agg_inputs = AggregationInputs {
         boot_infos: vec![boot],
         range_proofs: vec![RangeProof::Tee { signature }],
         latest_l1_checkpoint_head: l1_origin,
-        // TEE-only path — `verify_sp1_proof` never gets called, vkey ignored.
         multi_block_vkey: [0u32; 8],
         prover_address: Address::ZERO,
+        tee_chain_id: chain_id,
     };
 
     let attestation_bytes = hex::decode(

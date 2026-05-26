@@ -26,13 +26,14 @@ pub fn get_agg_proof_stdin(
 
     let range_proofs = vec![RangeProof::Sp1; boot_infos.len()];
 
-    // Write the aggregation inputs to the stdin.
+    // Pure-SP1 path — no TEE leaves, so tee_chain_id is unused by the guest.
     stdin.write(&AggregationInputs {
         boot_infos,
         range_proofs,
         latest_l1_checkpoint_head: latest_checkpoint_head,
         multi_block_vkey: multi_block_vkey.hash_u32(),
         prover_address,
+        tee_chain_id: 0,
     });
     // The headers have issues serializing with bincode, so use serde_json instead.
     let headers_bytes = serde_cbor::to_vec(&headers).unwrap();

@@ -14,8 +14,6 @@
 
 use std::sync::Arc;
 
-use alloy_primitives::{Address, U256};
-use alloy_sol_types::Eip712Domain;
 use axum::{
     Json, Router,
     body::Bytes,
@@ -28,9 +26,7 @@ use rkyv::rancor::Error as RkyvError;
 use tracing::{info, warn};
 
 use xlayer_tee_types::{
-    ErrorResponse, TaskListResponse, content_type,
-    eip712::{NAME, VERSION},
-    limits, paths,
+    ErrorResponse, TaskListResponse, content_type, limits, paths,
 };
 
 use crate::{
@@ -99,9 +95,9 @@ async fn handle_tasks_range_post(
         .to_string();
     validate_task_id(&task_id)?;
 
-    let domain = parse_eip712_domain_headers(headers)?;
+    let chain_id = parse_chain_id_header(headers)?;
 
-    let outcome = state.task_manager.create(task_id, domain, body)?;
+    let outcome = state.task_manager.create(task_id, chain_id, body)?;
     let (status, response) = match outcome {
         CreateOutcome::Created(r) => (StatusCode::CREATED, r),
         CreateOutcome::AlreadyExists(r) => (StatusCode::OK, r),
@@ -117,40 +113,14 @@ async fn handle_tasks_range_post(
         .map_err(|e| Error::Internal(format!("rkyv encode CreateTaskResponse: {e}")))
 }
 
-/// Parse `x-eip712-chain-id` (u64 decimal) and `x-eip712-verifying-contract`
-/// (0x-prefixed 20-byte hex) headers into an `Eip712Domain`. Both headers are
-/// required.
-fn parse_eip712_domain_headers(headers: &HeaderMap) -> Result<Eip712Domain> {
-    let chain_id_raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
-        Error::InvalidEip712Header(format!("missing {} header", paths::HEADER_CHAIN_ID))
+fn parse_chain_id_header(headers: &HeaderMap) -> Result<u64> {
+    let raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
+        Error::InvalidChainIdHeader(format!("missing {} header", paths::HEADER_CHAIN_ID))
     })?;
-    let chain_id: u64 = chain_id_raw
-        .to_str()
-        .map_err(|e| Error::InvalidEip712Header(format!("non-ascii chain_id header: {e}")))?
+    raw.to_str()
+        .map_err(|e| Error::InvalidChainIdHeader(format!("non-ascii: {e}")))?
         .parse()
-        .map_err(|e| Error::InvalidEip712Header(format!("chain_id not a u64: {e}")))?;
-
-    let verifier_raw = headers.get(paths::HEADER_VERIFYING_CONTRACT).ok_or_else(|| {
-        Error::InvalidEip712Header(format!(
-            "missing {} header",
-            paths::HEADER_VERIFYING_CONTRACT
-        ))
-    })?;
-    let verifying_contract: Address = verifier_raw
-        .to_str()
-        .map_err(|e| Error::InvalidEip712Header(format!("non-ascii verifier header: {e}")))?
-        .parse()
-        .map_err(|e| {
-            Error::InvalidEip712Header(format!("verifying_contract not 0x..20-byte hex: {e}"))
-        })?;
-
-    Ok(Eip712Domain {
-        name: Some(NAME.into()),
-        version: Some(VERSION.into()),
-        chain_id: Some(U256::from(chain_id)),
-        verifying_contract: Some(verifying_contract),
-        salt: None,
-    })
+        .map_err(|e| Error::InvalidChainIdHeader(format!("not a u64: {e}")))
 }
 
 // -----------------------------------------------------------------------------

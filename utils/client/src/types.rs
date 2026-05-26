@@ -4,20 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::boot::BootInfoStruct;
 
-/// How an individual range was proven. The aggregation guest dispatches per-leaf:
-/// `Sp1` recurses into `verify_sp1_proof`; `Tee` runs EIP712 ecrecover with the
-/// signer authoritatively sourced from the per-cycle attestation document.
+/// How an individual range was proven.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RangeProof {
-    /// SP1 ZK proof of the range program. The proof is loaded into the SP1
-    /// deferred-proof buffer out-of-band; the guest just asserts a matching
-    /// proof exists.
+    /// SP1 ZK proof of the range program.
     Sp1,
-    /// TEE-signed range journal. 65-byte secp256k1 ECDSA signature
-    /// (r ‖ s ‖ v, v ∈ {27, 28}) over the EIP712 digest of the `RangeJournal`
-    /// reconstructed from this leaf's `BootInfoStruct` + the vkey-baked PCR0.
+    /// TEE-signed range journal. 65-byte secp256k1 ECDSA signature `r ‖ s ‖ v`
+    /// (v ∈ {27, 28}) over `keccak256` of the packed [`RangeJournal`] bytes
+    /// (defined in `xlayer-tee-types::journal`).
     Tee {
-        /// `r ‖ s ‖ v` — guest asserts `.len() == 65` before consuming.
         signature: Vec<u8>,
     },
 }
@@ -25,12 +20,14 @@ pub enum RangeProof {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationInputs {
     pub boot_infos: Vec<BootInfoStruct>,
-    /// Index-aligned with `boot_infos`. Pure-SP1 aggregations pass
-    /// `vec![RangeProof::Sp1; boot_infos.len()]`.
+    /// Index-aligned with `boot_infos`.
     pub range_proofs: Vec<RangeProof>,
     pub latest_l1_checkpoint_head: B256,
     pub multi_block_vkey: [u32; 8],
     pub prover_address: Address,
+    /// L2 chain id mixed into every TEE leaf's signed digest. Ignored on
+    /// pure-SP1 aggregations.
+    pub tee_chain_id: u64,
 }
 
 sol! {

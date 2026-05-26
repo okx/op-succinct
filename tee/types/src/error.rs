@@ -76,11 +76,9 @@ pub enum ErrorKind {
     /// The `x-task-id` header is missing or not a well-formed UUID. Terminal.
     /// HTTP `400 Bad Request`.
     InvalidTaskId,
-    /// The `x-eip712-chain-id` or `x-eip712-verifying-contract` header is
-    /// missing, malformed, or out of range. Terminal. HTTP `400 Bad Request`.
-    /// Per-task EIP712 domain headers — see `paths::HEADER_CHAIN_ID` and
-    /// `paths::HEADER_VERIFYING_CONTRACT`.
-    InvalidEip712Header,
+    /// The `x-chain-id` header is missing, malformed, or out of range.
+    /// HTTP `400 Bad Request`. See `paths::HEADER_CHAIN_ID`.
+    InvalidChainIdHeader,
 }
 
 impl ErrorKind {
@@ -101,7 +99,7 @@ impl ErrorKind {
             | Self::Inconsistent
             | Self::DeserializeRkyv
             | Self::InvalidTaskId
-            | Self::InvalidEip712Header => 400,
+            | Self::InvalidChainIdHeader => 400,
             Self::TooManyTasks => 429,
             Self::TaskUnknown => 404,
             Self::Cancelled => 409,
@@ -129,7 +127,7 @@ impl ErrorKind {
             | Self::DeserializeRkyv
             | Self::Cancelled
             | Self::InvalidTaskId
-            | Self::InvalidEip712Header => false,
+            | Self::InvalidChainIdHeader => false,
         }
     }
 }

@@ -114,7 +114,6 @@ fn spawn_task_monitor(
             let post = state.enclave.post_range(
                 &task_id,
                 state.config.verifier.chain_id,
-                &state.config.verifier.verifying_contract,
                 body.clone(),
             );
             tokio::pin!(post);

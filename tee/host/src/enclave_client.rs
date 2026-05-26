@@ -35,12 +35,10 @@ impl EnclaveClient {
         &self,
         task_id: &str,
         chain_id: u64,
-        verifying_contract: &str,
         body: Bytes,
     ) -> Result<()> {
         let task_id = task_id.to_string();
         let chain_id_hdr = chain_id.to_string();
-        let verifying_contract = verifying_contract.to_string();
         let body = body.clone();
         let resp = self
             .send_with_retry(|| {
@@ -49,8 +47,7 @@ impl EnclaveClient {
                     .uri(paths::TASKS_RANGE)
                     .header("host", "enclave")
                     .header(paths::HEADER_TASK_ID, &task_id)
-                    .header("x-eip712-chain-id", &chain_id_hdr)
-                    .header("x-eip712-verifying-contract", &verifying_contract)
+                    .header(paths::HEADER_CHAIN_ID, &chain_id_hdr)
                     .header("content-type", content_type::OCTET_STREAM)
                     .body(Full::new(body.clone()))
             })

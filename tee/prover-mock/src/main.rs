@@ -65,8 +65,8 @@ async fn main() {
 
 /// `POST /tasks/range` — mock handler.
 ///
-/// Validates wire-contract headers (`x-task-id`, `x-eip712-chain-id`,
-/// `x-eip712-verifying-contract`) so clients get the same shape of errors as
+/// Validates wire-contract headers (`x-task-id`, `x-chain-id`) so clients
+/// get the same shape of errors as
 /// from the real enclave. On success, returns
 /// `rkyv(RangeTaskResponse { journal: zeros, signature: zeros })`.
 async fn tasks_range(headers: HeaderMap, body: Bytes) -> Response {
@@ -83,6 +83,7 @@ async fn tasks_range(headers: HeaderMap, body: Bytes) -> Response {
     let response = RangeTaskResponse {
         journal: RangeJournalWire {
             pcr0: [0u8; 32],
+            chain_id: 0,
             config_hash: [0u8; 32],
             l1_origin_hash: [0u8; 32],
             l2_block_number: 0,
@@ -163,7 +164,7 @@ fn validate_required_headers(headers: &HeaderMap) -> Result<(), Response> {
 
     let chain_id_raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
         error(
-            ErrorKind::InvalidEip712Header,
+            ErrorKind::InvalidChainIdHeader,
             format!("missing {} header", paths::HEADER_CHAIN_ID),
         )
     })?;
@@ -173,35 +174,10 @@ fn validate_required_headers(headers: &HeaderMap) -> Result<(), Response> {
         .and_then(|s| s.parse::<u64>().ok())
         .ok_or_else(|| {
             error(
-                ErrorKind::InvalidEip712Header,
+                ErrorKind::InvalidChainIdHeader,
                 format!("{} not a u64", paths::HEADER_CHAIN_ID),
             )
         })?;
-
-    let verifier_raw = headers.get(paths::HEADER_VERIFYING_CONTRACT).ok_or_else(|| {
-        error(
-            ErrorKind::InvalidEip712Header,
-            format!("missing {} header", paths::HEADER_VERIFYING_CONTRACT),
-        )
-    })?;
-    let verifier_str = verifier_raw.to_str().map_err(|e| {
-        error(
-            ErrorKind::InvalidEip712Header,
-            format!("non-ascii {} header: {e}", paths::HEADER_VERIFYING_CONTRACT),
-        )
-    })?;
-    // Light shape check: 0x + 40 hex chars; full Address::parse happens in the
-    // real enclave path.
-    if !(verifier_str.starts_with("0x") && verifier_str.len() == 42) {
-        return Err(error(
-            ErrorKind::InvalidEip712Header,
-            format!(
-                "{} not 0x..20-byte hex (got len={})",
-                paths::HEADER_VERIFYING_CONTRACT,
-                verifier_str.len()
-            ),
-        ));
-    }
 
     Ok(())
 }

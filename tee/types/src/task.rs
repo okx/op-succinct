@@ -40,7 +40,7 @@ pub enum TaskPhase {
     /// `kona` derivation + execution pipeline running. **Hot phase**: this
     /// is where the wall-clock 5-15 minutes for a single range is spent.
     RunningKona,
-    /// `compute_output_root` complete; building & EIP712-signing the
+    /// `compute_output_root` complete; ECDSA-signing the packed
     /// `RangeJournalWire`.
     Signing,
     /// Task has reached a terminal status. `TaskStatusView` will be
