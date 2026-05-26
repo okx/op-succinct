@@ -65,3 +65,6 @@ copilot.pem
 # Claude Code local settings
 settings.local.json
 .claude/settings.json
+
+# ci-env runtime data (PID files, logs, test-env)
+dev/data/
