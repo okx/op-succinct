@@ -213,6 +213,9 @@ where
             next_task_id: Arc::new(AtomicU64::new(1)),
             state: Arc::new(RwLock::new(initial_state)),
             backup_semaphore: Arc::new(Semaphore::new(1)),
+            last_synced_l1_block: Arc::new(AtomicU64::new(0)),
+            last_created_game_l2_block: Arc::new(AtomicU64::new(0)),
+            last_created_game_address: Arc::new(Mutex::new(Address::ZERO)),
             identity,
         })
     }
