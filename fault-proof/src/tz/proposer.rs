@@ -48,7 +48,14 @@ where
             "Creating game"
         );
 
-        self.create_game(output_root, extra_data).await?;
+        let game_address = self.create_game(output_root, extra_data).await?;
+
+        // Mirror xlayer: record the created game so backup/restore keeps the duplicate-creation
+        // guard state consistent even though tz's should_create_game uses a one-shot checkpoint
+        // check instead of the pinned-cache guard.
+        self.last_created_game_l2_block
+            .store(next_l2_block_number_for_proposal.to::<u64>(), Ordering::Relaxed);
+        *self.last_created_game_address.lock().await = game_address;
 
         Ok(())
     }
