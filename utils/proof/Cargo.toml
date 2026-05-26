@@ -10,6 +10,7 @@ edition.workspace = true
 op-succinct-altda-host-utils = { workspace = true, optional = true }
 op-succinct-celestia-host-utils = { workspace = true, optional = true }
 op-succinct-eigenda-host-utils = { workspace = true, optional = true }
+op-succinct-client-utils.workspace = true
 op-succinct-elfs.workspace = true
 op-succinct-ethereum-host-utils = { workspace = true, optional = true }
 op-succinct-host-utils.workspace = true
