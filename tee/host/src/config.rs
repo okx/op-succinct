@@ -8,7 +8,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub enclave: EnclaveConfig,
     pub attestation: AttestationConfig,
-    pub verifier: VerifierConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -43,13 +42,6 @@ pub struct EnclaveConfig {
 pub struct AttestationConfig {
     #[serde(default = "default_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
-}
-
-/// L2 chain id forwarded to the enclave on every `POST /tasks/range` and signed
-/// into the range journal. Host restart switches chains; no EIF rebuild.
-#[derive(Debug, Clone, Deserialize)]
-pub struct VerifierConfig {
-    pub chain_id: u64,
 }
 
 impl Config {
@@ -116,8 +108,6 @@ mod tests {
 bind_addr = "127.0.0.1:1234"
 [enclave]
 [attestation]
-[verifier]
-chain_id = 1
 "#;
         let f = write_toml(toml);
         let cfg = Config::load(f.path()).expect("load");
@@ -140,8 +130,6 @@ chain_id = 1
 bind_addr = "127.0.0.1:1234"
 [enclave]
 [attestation]
-[verifier]
-chain_id = 1
 "#;
         let f = write_toml(toml);
         // SAFETY: held under env_lock() for the duration of this test.

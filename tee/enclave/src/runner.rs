@@ -19,7 +19,6 @@ use crate::{
 pub async fn run_pipeline(
     entry: Arc<TaskEntry>,
     witness_bytes: bytes::Bytes,
-    chain_id: u64,
     pcr0: [u8; 32],
 ) -> Result<RangeTaskResponse> {
     entry.set_phase(TaskPhase::DeserializingWitness).await;
@@ -45,7 +44,6 @@ pub async fn run_pipeline(
     entry.set_phase(TaskPhase::Signing).await;
     let wire = RangeJournalWire {
         pcr0,
-        chain_id,
         config_hash: hash_rollup_config(&boot.rollup_config).0,
         l1_origin_hash: boot.l1_head.0,
         l2_block_number: boot.claimed_l2_block_number,

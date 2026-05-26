@@ -5,7 +5,6 @@
 ///
 /// Required headers:
 /// - `x-task-id: <UUID v4>` — caller-allocated id for idempotency / polling.
-/// - `x-chain-id: <u64 decimal>` — L2 chain id bound into the signed digest.
 pub const TASKS_RANGE: &str = "/tasks/range";
 
 /// `POST` — Aggregate N range proofs into a single signed AggregationJournal.
@@ -25,9 +24,6 @@ pub const HEALTH: &str = "/health";
 
 /// HTTP header carrying the host-allocated UUID v4 task id.
 pub const HEADER_TASK_ID: &str = "x-task-id";
-
-/// HTTP header carrying the L2 chain id (decimal `u64`) signed into the journal.
-pub const HEADER_CHAIN_ID: &str = "x-chain-id";
 
 /// Format the client-side path for a single task — `/tasks/{id}`.
 pub fn task_path(task_id: &str) -> String {

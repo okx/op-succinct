@@ -25,9 +25,6 @@ pub struct AggregationInputs {
     pub latest_l1_checkpoint_head: B256,
     pub multi_block_vkey: [u32; 8],
     pub prover_address: Address,
-    /// L2 chain id mixed into every TEE leaf's signed digest. Ignored on
-    /// pure-SP1 aggregations.
-    pub tee_chain_id: u64,
 }
 
 sol! {

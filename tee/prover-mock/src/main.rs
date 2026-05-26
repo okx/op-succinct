@@ -83,7 +83,6 @@ async fn tasks_range(headers: HeaderMap, body: Bytes) -> Response {
     let response = RangeTaskResponse {
         journal: RangeJournalWire {
             pcr0: [0u8; 32],
-            chain_id: 0,
             config_hash: [0u8; 32],
             l1_origin_hash: [0u8; 32],
             l2_block_number: 0,
@@ -161,23 +160,6 @@ fn validate_required_headers(headers: &HeaderMap) -> Result<(), Response> {
             format!("x-task-id not a valid UUID: {task_id_str}"),
         ));
     }
-
-    let chain_id_raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
-        error(
-            ErrorKind::InvalidChainIdHeader,
-            format!("missing {} header", paths::HEADER_CHAIN_ID),
-        )
-    })?;
-    chain_id_raw
-        .to_str()
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or_else(|| {
-            error(
-                ErrorKind::InvalidChainIdHeader,
-                format!("{} not a u64", paths::HEADER_CHAIN_ID),
-            )
-        })?;
 
     Ok(())
 }

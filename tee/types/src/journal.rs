@@ -4,14 +4,13 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::sol;
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Byte length of the packed journal: 32 + 8 + 32 + 32 + 8 + 32 + 32.
-pub const PACKED_JOURNAL_LEN: usize = 176;
+/// Byte length of the packed journal: 32 + 32 + 32 + 8 + 32 + 32.
+pub const PACKED_JOURNAL_LEN: usize = 168;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
     struct RangeJournal {
         bytes32 pcr0;
-        uint64  chainId;
         bytes32 configHash;
         bytes32 l1OriginHash;
         uint64  l2BlockNumber;
@@ -25,12 +24,11 @@ impl RangeJournal {
     pub fn pack(&self) -> [u8; PACKED_JOURNAL_LEN] {
         let mut out = [0u8; PACKED_JOURNAL_LEN];
         out[0..32].copy_from_slice(&self.pcr0.0);
-        out[32..40].copy_from_slice(&self.chainId.to_be_bytes());
-        out[40..72].copy_from_slice(&self.configHash.0);
-        out[72..104].copy_from_slice(&self.l1OriginHash.0);
-        out[104..112].copy_from_slice(&self.l2BlockNumber.to_be_bytes());
-        out[112..144].copy_from_slice(&self.prevOutputRoot.0);
-        out[144..176].copy_from_slice(&self.outputRoot.0);
+        out[32..64].copy_from_slice(&self.configHash.0);
+        out[64..96].copy_from_slice(&self.l1OriginHash.0);
+        out[96..104].copy_from_slice(&self.l2BlockNumber.to_be_bytes());
+        out[104..136].copy_from_slice(&self.prevOutputRoot.0);
+        out[136..168].copy_from_slice(&self.outputRoot.0);
         out
     }
 }
@@ -39,7 +37,6 @@ impl RangeJournal {
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct RangeJournalWire {
     pub pcr0: [u8; 32],
-    pub chain_id: u64,
     pub config_hash: [u8; 32],
     pub l1_origin_hash: [u8; 32],
     pub l2_block_number: u64,
@@ -51,7 +48,6 @@ impl From<&RangeJournal> for RangeJournalWire {
     fn from(j: &RangeJournal) -> Self {
         Self {
             pcr0: j.pcr0.0,
-            chain_id: j.chainId,
             config_hash: j.configHash.0,
             l1_origin_hash: j.l1OriginHash.0,
             l2_block_number: j.l2BlockNumber,
@@ -65,7 +61,6 @@ impl From<&RangeJournalWire> for RangeJournal {
     fn from(w: &RangeJournalWire) -> Self {
         Self {
             pcr0: FixedBytes(w.pcr0),
-            chainId: w.chain_id,
             configHash: FixedBytes(w.config_hash),
             l1OriginHash: FixedBytes(w.l1_origin_hash),
             l2BlockNumber: w.l2_block_number,

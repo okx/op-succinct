@@ -111,11 +111,7 @@ fn spawn_task_monitor(
 
     tokio::spawn(async move {
         loop {
-            let post = state.enclave.post_range(
-                &task_id,
-                state.config.verifier.chain_id,
-                body.clone(),
-            );
+            let post = state.enclave.post_range(&task_id, body.clone());
             tokio::pin!(post);
 
             tokio::select! {

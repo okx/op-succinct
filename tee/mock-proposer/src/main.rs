@@ -341,7 +341,6 @@ fn print_chunk_proof(
     println!("──── TEE proof: chunk [{chunk_start}, {chunk_end}] ────");
     println!("  task_id        = {task_id}");
     println!("  pcr0           = {:?}", journal.pcr0);
-    println!("  chainId        = {}", journal.chainId);
     println!("  configHash     = {:?}", journal.configHash);
     println!("  l1OriginHash   = {:?}", journal.l1OriginHash);
     println!("  l2BlockNumber  = {}", journal.l2BlockNumber);
@@ -475,18 +474,6 @@ async fn run_aggregation(
         .map(|r| RangeProof::Tee { signature: r.signature.clone() })
         .collect();
 
-    // All chunks signed by the same enclave session must carry the same
-    // chain_id; cross-check before handing off to the guest.
-    let tee_chain_id = results[0].journal.chainId;
-    for r in &results[1..] {
-        if r.journal.chainId != tee_chain_id {
-            bail!(
-                "chunk chainId mismatch: {} vs {}",
-                r.journal.chainId, tee_chain_id,
-            );
-        }
-    }
-
     // The last chunk's L1 origin sits highest on L1; the guest will walk
     // back from this checkpoint and assert every chunk's l1Head appears
     // somewhere on the chain.
@@ -519,7 +506,6 @@ async fn run_aggregation(
         headers,
         latest_l1_checkpoint_head,
         args.prover_address,
-        tee_chain_id,
     )?;
 
     match args.agg_mode {
@@ -556,7 +542,6 @@ fn build_stdin(
     headers: Vec<Header>,
     latest_l1_checkpoint_head: B256,
     prover_address: Address,
-    tee_chain_id: u64,
 ) -> Result<SP1Stdin> {
     let mut stdin = SP1Stdin::default();
     stdin.write(&AggregationInputs {
@@ -565,7 +550,6 @@ fn build_stdin(
         latest_l1_checkpoint_head,
         multi_block_vkey: [0u32; 8],
         prover_address,
-        tee_chain_id,
     });
     let headers_cbor = serde_cbor::to_vec(&headers).context("CBOR-encode headers")?;
     stdin.write_vec(headers_cbor);

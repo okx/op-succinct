@@ -95,9 +95,7 @@ async fn handle_tasks_range_post(
         .to_string();
     validate_task_id(&task_id)?;
 
-    let chain_id = parse_chain_id_header(headers)?;
-
-    let outcome = state.task_manager.create(task_id, chain_id, body)?;
+    let outcome = state.task_manager.create(task_id, body)?;
     let (status, response) = match outcome {
         CreateOutcome::Created(r) => (StatusCode::CREATED, r),
         CreateOutcome::AlreadyExists(r) => (StatusCode::OK, r),
@@ -111,16 +109,6 @@ async fn handle_tasks_range_post(
 
     rkyv_response(status, &response)
         .map_err(|e| Error::Internal(format!("rkyv encode CreateTaskResponse: {e}")))
-}
-
-fn parse_chain_id_header(headers: &HeaderMap) -> Result<u64> {
-    let raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
-        Error::InvalidChainIdHeader(format!("missing {} header", paths::HEADER_CHAIN_ID))
-    })?;
-    raw.to_str()
-        .map_err(|e| Error::InvalidChainIdHeader(format!("non-ascii: {e}")))?
-        .parse()
-        .map_err(|e| Error::InvalidChainIdHeader(format!("not a u64: {e}")))
 }
 
 // -----------------------------------------------------------------------------

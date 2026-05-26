@@ -47,9 +47,6 @@ pub enum Error {
     #[error("task {task_id} was cancelled at phase {at_phase:?}")]
     Cancelled { task_id: String, at_phase: TaskPhase },
 
-    /// `x-chain-id` header missing or malformed.
-    #[error("invalid chain id header: {0}")]
-    InvalidChainIdHeader(String),
 }
 
 impl Error {
@@ -69,7 +66,6 @@ impl Error {
             Self::TaskUnknown(_) => ErrorKind::TaskUnknown,
             Self::TooManyTasks { .. } => ErrorKind::TooManyTasks,
             Self::Cancelled { .. } => ErrorKind::Cancelled,
-            Self::InvalidChainIdHeader(_) => ErrorKind::InvalidChainIdHeader,
         }
     }
 }

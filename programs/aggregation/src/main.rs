@@ -45,7 +45,7 @@ const TRUST_ANCHORS: TrustAnchors = TrustAnchors {
 
 /// Byte length of the packed range journal — must match
 /// `xlayer-tee-types::journal::PACKED_JOURNAL_LEN`.
-const PACKED_JOURNAL_LEN: usize = 176;
+const PACKED_JOURNAL_LEN: usize = 168;
 
 pub fn main() {
     let agg_inputs = sp1_zkvm::io::read::<AggregationInputs>();
@@ -87,7 +87,7 @@ pub fn main() {
             }
             RangeProof::Tee { signature } => {
                 let signer = session_signer.expect("Tee leaf without attestation (unreachable)");
-                verify_tee_range_proof(boot_info, signature, agg_inputs.tee_chain_id, signer);
+                verify_tee_range_proof(boot_info, signature, signer);
             }
         }
     }
@@ -135,7 +135,6 @@ pub fn main() {
 /// `xlayer-tee-types::journal::RangeJournal::pack`.
 fn pack_range_journal(
     pcr0: B256,
-    chain_id: u64,
     config_hash: B256,
     l1_origin_hash: B256,
     l2_block_number: u64,
@@ -144,19 +143,17 @@ fn pack_range_journal(
 ) -> [u8; PACKED_JOURNAL_LEN] {
     let mut out = [0u8; PACKED_JOURNAL_LEN];
     out[0..32].copy_from_slice(pcr0.as_slice());
-    out[32..40].copy_from_slice(&chain_id.to_be_bytes());
-    out[40..72].copy_from_slice(config_hash.as_slice());
-    out[72..104].copy_from_slice(l1_origin_hash.as_slice());
-    out[104..112].copy_from_slice(&l2_block_number.to_be_bytes());
-    out[112..144].copy_from_slice(prev_output_root.as_slice());
-    out[144..176].copy_from_slice(output_root.as_slice());
+    out[32..64].copy_from_slice(config_hash.as_slice());
+    out[64..96].copy_from_slice(l1_origin_hash.as_slice());
+    out[96..104].copy_from_slice(&l2_block_number.to_be_bytes());
+    out[104..136].copy_from_slice(prev_output_root.as_slice());
+    out[136..168].copy_from_slice(output_root.as_slice());
     out
 }
 
 fn verify_tee_range_proof(
     boot_info: &BootInfoStruct,
     signature: &[u8],
-    chain_id: u64,
     attested_signer: Address,
 ) {
     assert_eq!(
@@ -167,7 +164,6 @@ fn verify_tee_range_proof(
     );
     let packed = pack_range_journal(
         EXPECTED_PCR0_HASH,
-        chain_id,
         boot_info.rollupConfigHash,
         boot_info.l1Head,
         boot_info.l2BlockNumber,

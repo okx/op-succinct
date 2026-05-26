@@ -76,9 +76,6 @@ pub enum ErrorKind {
     /// The `x-task-id` header is missing or not a well-formed UUID. Terminal.
     /// HTTP `400 Bad Request`.
     InvalidTaskId,
-    /// The `x-chain-id` header is missing, malformed, or out of range.
-    /// HTTP `400 Bad Request`. See `paths::HEADER_CHAIN_ID`.
-    InvalidChainIdHeader,
 }
 
 impl ErrorKind {
@@ -98,8 +95,7 @@ impl ErrorKind {
             | Self::ChainBreak
             | Self::Inconsistent
             | Self::DeserializeRkyv
-            | Self::InvalidTaskId
-            | Self::InvalidChainIdHeader => 400,
+            | Self::InvalidTaskId => 400,
             Self::TooManyTasks => 429,
             Self::TaskUnknown => 404,
             Self::Cancelled => 409,
@@ -126,8 +122,7 @@ impl ErrorKind {
             | Self::Inconsistent
             | Self::DeserializeRkyv
             | Self::Cancelled
-            | Self::InvalidTaskId
-            | Self::InvalidChainIdHeader => false,
+            | Self::InvalidTaskId => false,
         }
     }
 }

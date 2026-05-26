@@ -8,17 +8,17 @@
 # The aggregation guest's actual checks (see programs/aggregation/src/main.rs):
 #   1. signature length == 65 bytes
 #   2. signature.v ∈ {27, 28}
-#   3. keccak256 of packed `RangeJournal {EXPECTED_PCR0_HASH, chainId,
-#      configHash, l1OriginHash, l2BlockNumber, prevOutputRoot, outputRoot}`
+#   3. keccak256 of packed `RangeJournal {EXPECTED_PCR0_HASH, configHash,
+#      l1OriginHash, l2BlockNumber, prevOutputRoot, outputRoot}`
 #      → ecrecover yields `recovered_signer`
 #   4. `recovered_signer == attestation-derived signer`
 #   5. l1 head must appear in the provided L1 header chain
 #
-# Notes vs older revisions of this script:
-#   * The wire `pcr0` field is NOT read by the guest — it pins PCR0 to a
-#     vkey-baked constant. Flipping wire pcr0 must NOT cause a failure.
-#   * The "approved enclave set" was removed; signer is now sourced from
-#     the per-cycle attestation. Failure messages changed accordingly.
+# Notes:
+#   * The wire `pcr0` field is informational. agg_tee_execute discards it
+#     before building AggregationInputs, and the guest pins PCR0 to
+#     `EXPECTED_PCR0_HASH` (vkey-baked). Flipping wire pcr0 is a no-op.
+#   * Signer is sourced per-cycle from the AWS Nitro attestation document.
 #
 # Usage:
 #   # from /data/xlayer_user/op-succinct
@@ -189,71 +189,61 @@ run_case "baseline" \
 
 # Wire ABI field offsets (hex chars):
 #   pcr0           0   ..  64
-#   chainId       64  .. 128
-#   configHash   128  .. 192
-#   l1OriginHash 192  .. 256
-#   l2BlockNum   256  .. 320
-#   prevOutRoot  320  .. 384
-#   outputRoot   384  .. 448
-#   sig offset   448  .. 512
-#   sig length   512  .. 576
-#   signature    576  .. 706
-BAD_SIG_S=$(flip_char "$GOOD_HEX" 634)
+#   configHash    64  .. 128
+#   l1OriginHash 128  .. 192
+#   l2BlockNum   192  .. 256
+#   prevOutRoot  256  .. 320
+#   outputRoot   320  .. 384
+#   sig offset   384  .. 448
+#   sig length   448  .. 512
+#   signature    512  .. 642
+BAD_SIG_S=$(flip_char "$GOOD_HEX" 570)
 run_case "corrupt signature s byte" \
     "$BAD_SIG_S" \
     "fail" \
     "$SIGNER_MISMATCH_RE"
 
 # `v` below 27 — checked_sub(27) underflows.
-BAD_SIG_V="${GOOD_HEX:0:704}00${GOOD_HEX:706}"
+BAD_SIG_V="${GOOD_HEX:0:640}00${GOOD_HEX:642}"
 run_case "signature v below 27 (underflow)" \
     "$BAD_SIG_V" \
     "fail" \
     "signature v must be 27 or 28"
 
-# Wire `pcr0` is pinned to a vkey-baked constant by the guest — flipping
-# the wire byte changes the journal the enclave signed (so the recovered
-# signer drifts away from attested), so this MUST fail.
-BAD_PCR0=$(flip_char "$GOOD_HEX" 5)
-run_case "flipped wire pcr0 byte" \
-    "$BAD_PCR0" \
-    "fail" \
-    "$SIGNER_MISMATCH_RE"
+# Wire `pcr0` is informational only: agg_tee_execute discards it before
+# building AggregationInputs, and the guest pins PCR0 to a vkey-baked
+# constant. The original signature is unchanged, the digest the guest
+# rebuilds is unchanged → recovery yields the same signer → STILL pass.
+NOOP_PCR0=$(flip_char "$GOOD_HEX" 5)
+run_case "wire pcr0 flip is a no-op (binary + guest both pin PCR0)" \
+    "$NOOP_PCR0" \
+    "pass"
 
-# Flip chainId — guest reads tee_chain_id from AggregationInputs; the
-# binary passes whatever's in the wire, so this would only fail if
-# agg_tee_execute also re-derives chain_id from the wire (it does).
-BAD_CHAIN=$(flip_char "$GOOD_HEX" 127)
-run_case "flipped chainId byte" \
-    "$BAD_CHAIN" \
-    "fail" \
-    "$SIGNER_MISMATCH_RE"
-
-BAD_CFG=$(flip_char "$GOOD_HEX" 130)
+BAD_CFG=$(flip_char "$GOOD_HEX" 70)
 run_case "flipped configHash byte" \
     "$BAD_CFG" \
     "fail" \
     "$SIGNER_MISMATCH_RE"
 
-BAD_L1=$(flip_char "$GOOD_HEX" 200)
+BAD_L1=$(flip_char "$GOOD_HEX" 130)
 run_case "non-existent l1OriginHash" \
     "$BAD_L1" \
     "fail" \
     "fetch L1 header at l1_origin|Failed to get L1 header|block .* not found"
 
-BAD_OUT=$(flip_char "$GOOD_HEX" 386)
+BAD_OUT=$(flip_char "$GOOD_HEX" 322)
 run_case "flipped outputRoot byte" \
     "$BAD_OUT" \
     "fail" \
     "$SIGNER_MISMATCH_RE"
 
-BAD_PREV=$(flip_char "$GOOD_HEX" 322)
+BAD_PREV=$(flip_char "$GOOD_HEX" 260)
 run_case "flipped prevOutputRoot byte" \
     "$BAD_PREV" \
     "fail" \
     "$SIGNER_MISMATCH_RE"
 
-BAD_L2N=$(flip_char "$GOOD_HEX" 318)
+BAD_L2N=$(flip_char "$GOOD_HEX" 254)
 run_case "flipped l2BlockNumber byte" \
     "$BAD_L2N" \
     "fail" \

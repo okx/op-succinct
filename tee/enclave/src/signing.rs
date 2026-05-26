@@ -51,7 +51,6 @@ mod tests {
     fn sample_wire() -> RangeJournalWire {
         RangeJournalWire {
             pcr0: [0u8; 32],
-            chain_id: 1,
             config_hash: [1u8; 32],
             l1_origin_hash: [2u8; 32],
             l2_block_number: 1800,

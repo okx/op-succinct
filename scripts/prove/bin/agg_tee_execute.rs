@@ -43,7 +43,6 @@ use sp1_sdk::{blocking, blocking::Prover, Elf, SP1Stdin};
 sol! {
     struct RangeJournalWire {
         bytes32 pcr0;
-        uint64  chainId;
         bytes32 configHash;
         bytes32 l1OriginHash;
         uint64  l2BlockNumber;
@@ -69,10 +68,6 @@ struct Args {
     /// `keccak256(NSM PCR0)` — must match an entry in `APPROVED_TEE_ENCLAVES`.
     #[arg(long, required_unless_present = "proof")]
     pcr0: Option<B256>,
-
-    /// L2 chain id signed into the range journal.
-    #[arg(long, required_unless_present = "proof")]
-    chain_id: Option<u64>,
 
     /// `hash_rollup_config(&rollup_config)`.
     #[arg(long, required_unless_present = "proof")]
@@ -111,7 +106,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let (pcr0, chain_id, config_hash, l1_origin, l2_block, prev_output_root, output_root, signature) =
+    let (pcr0, config_hash, l1_origin, l2_block, prev_output_root, output_root, signature) =
         if let Some(p) = args.proof.as_ref() {
             let hex_str = p.strip_prefix("0x").unwrap_or(p);
             let bytes = hex::decode(hex_str).context("decode --proof hex")?;
@@ -119,7 +114,6 @@ async fn main() -> Result<()> {
                 .context("abi-decode RangeJournalWire (params mode)")?;
             println!("→ decoded journal:");
             println!("    pcr0           = {:?}", w.pcr0);
-            println!("    chainId        = {}", w.chainId);
             println!("    configHash     = {:?}", w.configHash);
             println!("    l1OriginHash   = {:?}", w.l1OriginHash);
             println!("    l2BlockNumber  = {}", w.l2BlockNumber);
@@ -128,7 +122,6 @@ async fn main() -> Result<()> {
             println!("    signature.len  = {}", w.signature.len());
             (
                 w.pcr0,
-                w.chainId,
                 w.configHash,
                 w.l1OriginHash,
                 w.l2BlockNumber,
@@ -142,7 +135,6 @@ async fn main() -> Result<()> {
                 .context("decode --signature hex")?;
             (
                 args.pcr0.unwrap(),
-                args.chain_id.unwrap(),
                 args.config_hash.unwrap(),
                 args.l1_origin.unwrap(),
                 args.l2_block.unwrap(),
@@ -201,7 +193,6 @@ async fn main() -> Result<()> {
         latest_l1_checkpoint_head: l1_origin,
         multi_block_vkey: [0u32; 8],
         prover_address: Address::ZERO,
-        tee_chain_id: chain_id,
     };
 
     let attestation_bytes = hex::decode(

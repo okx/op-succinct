@@ -31,14 +31,8 @@ impl EnclaveClient {
         Ok(Self { config, sender: Arc::new(Mutex::new(sender)) })
     }
 
-    pub async fn post_range(
-        &self,
-        task_id: &str,
-        chain_id: u64,
-        body: Bytes,
-    ) -> Result<()> {
+    pub async fn post_range(&self, task_id: &str, body: Bytes) -> Result<()> {
         let task_id = task_id.to_string();
-        let chain_id_hdr = chain_id.to_string();
         let body = body.clone();
         let resp = self
             .send_with_retry(|| {
@@ -47,7 +41,6 @@ impl EnclaveClient {
                     .uri(paths::TASKS_RANGE)
                     .header("host", "enclave")
                     .header(paths::HEADER_TASK_ID, &task_id)
-                    .header(paths::HEADER_CHAIN_ID, &chain_id_hdr)
                     .header("content-type", content_type::OCTET_STREAM)
                     .body(Full::new(body.clone()))
             })

@@ -44,13 +44,9 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Outer state of a single task. `chain_id` is signed into every range
-/// journal — captured per-task from the `x-chain-id` header so one EIF can
-/// serve any number of L1 chains.
 pub struct TaskEntry {
     pub task_id: String,
     pub start_time_ms: u64,
-    chain_id: u64,
     state: TokioMutex<TaskInnerState>,
     abort_tx: TokioMutex<Option<oneshot::Sender<()>>>,
 }
@@ -77,12 +73,11 @@ impl TaskStatusInternal {
 }
 
 impl TaskEntry {
-    fn new(task_id: String, chain_id: u64) -> (Arc<Self>, oneshot::Receiver<()>) {
+    fn new(task_id: String) -> (Arc<Self>, oneshot::Receiver<()>) {
         let (abort_tx, abort_rx) = oneshot::channel();
         let entry = Arc::new(Self {
             task_id,
             start_time_ms: now_ms(),
-            chain_id,
             state: TokioMutex::new(TaskInnerState {
                 phase: TaskPhase::Pending,
                 status: TaskStatusInternal::Running,
@@ -174,7 +169,6 @@ impl TaskManager {
     pub fn create(
         self: &Arc<Self>,
         task_id: String,
-        chain_id: u64,
         witness_bytes: bytes::Bytes,
     ) -> Result<CreateOutcome, Error> {
         {
@@ -207,7 +201,7 @@ impl TaskManager {
                     cap: self.max_inflight,
                 });
             }
-            let (entry, abort_rx) = TaskEntry::new(task_id.clone(), chain_id);
+            let (entry, abort_rx) = TaskEntry::new(task_id.clone());
             map.insert(task_id.clone(), Arc::clone(&entry));
             (entry, abort_rx)
         };
@@ -351,7 +345,6 @@ async fn spawn_task(
     witness_bytes: bytes::Bytes,
     mut abort_rx: oneshot::Receiver<()>,
 ) {
-    let chain_id = entry.chain_id;
     let pcr0 = mgr.pcr0;
     let entry_for_pipeline = Arc::clone(&entry);
 
@@ -361,7 +354,7 @@ async fn spawn_task(
             mgr.mark_cancelled(&entry).await;
             return;
         }
-        res = run_pipeline(entry_for_pipeline, witness_bytes, chain_id, pcr0) => res,
+        res = run_pipeline(entry_for_pipeline, witness_bytes, pcr0) => res,
     };
 
     match result {
