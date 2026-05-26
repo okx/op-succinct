@@ -124,17 +124,12 @@ impl TaskManager {
             }
         }
 
-        // Single in-flight policy.
-        {
-            let tasks = self.tasks.lock().await;
-            for (id, state) in tasks.iter() {
-                let s = state.lock().await;
-                if matches!(s.status, TaskStatus::Running(_)) {
-                    return RegisterOutcome::Busy { running_task_id: id.clone() };
-                }
-            }
-        }
-
+        // No host-level in-flight cap. Multiple concurrent tasks are allowed
+        // up to the enclave's own `max_inflight`; if the enclave responds
+        // with `TooManyTasks`, `spawn_task_monitor` keeps retrying the POST
+        // (the task stays Running ("queued; enclave at capacity") until a
+        // slot opens). `RegisterOutcome::Busy` is retained for SPEC/ABI
+        // backward compatibility but is no longer produced here.
         let task_id = Uuid::new_v4().to_string();
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
         let state = TaskState {
@@ -333,15 +328,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn different_witness_while_one_running_returns_busy() {
+    async fn different_witness_while_one_running_creates_concurrent_task() {
+        // The host no longer enforces single-in-flight; concurrent tasks
+        // share the enclave's `max_inflight` budget (see `spawn_task_monitor`
+        // retry loop for backpressure).
         let m = mgr();
         let (id1, _rx) = assert_created(m.register(b"w-1", TaskArgs::default()).await);
-        match m.register(b"w-2", TaskArgs::default()).await {
-            RegisterOutcome::Busy { running_task_id } => {
-                assert_eq!(running_task_id, id1);
-            }
-            other => panic!("expected Busy, got {}", outcome_kind(&other)),
-        }
+        let (id2, _rx) = assert_created(m.register(b"w-2", TaskArgs::default()).await);
+        assert_ne!(id1, id2, "different witnesses must get distinct task_ids");
     }
 
     #[tokio::test]

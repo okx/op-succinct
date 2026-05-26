@@ -22,7 +22,8 @@ use crate::api::{
 };
 use crate::config::Config;
 use crate::enclave_client::EnclaveClient;
-use crate::error::{CODE_INVALID_ARGUMENT, CODE_RESOURCE_NOT_FOUND};
+use crate::error::{Error, CODE_INVALID_ARGUMENT, CODE_RESOURCE_NOT_FOUND};
+use xlayer_tee_types::ErrorKind;
 use crate::packager;
 use crate::task_manager::{RegisterOutcome, TaskArgs, TaskManager, TaskStatus};
 
@@ -94,31 +95,61 @@ async fn create_task(
 /// Background coordinator per task: POST to enclave, then watch the abort
 /// channel. On abort, mark Cancelled here; the enclave-side cancel runs from
 /// `delete_task` via `delete_task_with_retry`.
+///
+/// Concurrency: multiple tasks can run in parallel (no host-level cap). The
+/// enclave caps itself at `max_inflight`; if it returns `TooManyTasks` (429),
+/// this monitor sleeps `POST_RETRY_INTERVAL` and retries the POST — the task
+/// stays `Running ("queued; enclave at capacity")` until a slot opens. From
+/// the client's view it's just a slow task, never a failure.
 fn spawn_task_monitor(
     state: AppState,
     task_id: String,
     body: Bytes,
     mut abort_rx: oneshot::Receiver<()>,
 ) {
+    const POST_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
     tokio::spawn(async move {
-        tokio::select! {
-            biased;
-            _ = &mut abort_rx => {
-                info!(%task_id, "monitor received local abort signal");
-            }
-            res = state.enclave.post_range(
+        loop {
+            let post = state.enclave.post_range(
                 &task_id,
                 state.config.verifier.chain_id,
                 &state.config.verifier.verifying_contract,
-                body,
-            ) => {
-                if let Err(e) = res {
-                    state.tasks.set_failed(&task_id, e.to_string()).await;
-                    warn!(%task_id, error = %e, "enclave POST failed");
+                body.clone(),
+            );
+            tokio::pin!(post);
+
+            tokio::select! {
+                biased;
+                _ = &mut abort_rx => {
+                    info!(%task_id, "monitor received local abort signal");
                     return;
                 }
-                state.tasks.set_progress(&task_id, "submitted; awaiting result").await;
-                info!(%task_id, "submitted to enclave");
+                res = &mut post => match res {
+                    Ok(_) => {
+                        state.tasks.set_progress(&task_id, "submitted; awaiting result").await;
+                        info!(%task_id, "submitted to enclave");
+                        return;
+                    }
+                    Err(Error::Enclave { kind: ErrorKind::TooManyTasks, .. }) => {
+                        state.tasks.set_progress(&task_id, "queued; enclave at capacity").await;
+                        info!(%task_id, "enclave at capacity, retrying POST");
+                    }
+                    Err(e) => {
+                        state.tasks.set_failed(&task_id, e.to_string()).await;
+                        warn!(%task_id, error = %e, "enclave POST failed");
+                        return;
+                    }
+                },
+            }
+
+            // Sleep before retry, but stay responsive to abort.
+            tokio::select! {
+                _ = &mut abort_rx => {
+                    info!(%task_id, "aborted while queued for enclave");
+                    return;
+                }
+                _ = tokio::time::sleep(POST_RETRY_INTERVAL) => {}
             }
         }
     });
