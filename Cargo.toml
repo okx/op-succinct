@@ -18,6 +18,9 @@ members = [
     "fault-proof",
     "bindings",
 ]
+exclude = [
+    "scripts/ci-env",
+]
 resolver = "2"
 
 [workspace.package]
