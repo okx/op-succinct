@@ -1,0 +1,22 @@
+[package]
+name = "sp1-range-program"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+sp1-zkvm.workspace = true
+op-succinct-client-utils.workspace = true
+tz-block-processor.workspace = true
+tz-dex.workspace = true
+tz-primitives.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+rmp-serde = "1.1"
+
+[[bin]]
+name = "sp1-range-program"
+path = "src/main.rs"

@@ -15,6 +15,8 @@ members = [
     "utils/ethereum/host",
     "programs/range/*",
     "programs/aggregation",
+    "programs/tz/aggregation",
+    "programs/tz/range",
     "scripts/*",
     "validity",
     "fault-proof",
@@ -149,6 +151,11 @@ op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
 op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
+# tradezone (range guest deps)
+tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "1f79a6b171184d8ccd80bcb6a17619181508de61", features = ["tee"] }
+tz-dex = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "1f79a6b171184d8ccd80bcb6a17619181508de61", features = ["zkvm"] }
+tz-primitives = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "1f79a6b171184d8ccd80bcb6a17619181508de61" }
+
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
 alloy-provider = { version = "1.6.3" }
@@ -242,6 +249,9 @@ substrate-bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-s
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-6.0.0" }
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-6.0.0" }
 tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-6.0.0" }
+# tradezone range guest extras
+crypto-bigint = { git = "https://github.com/sp1-patches/RustCrypto-bigint", tag = "patch-0.5.5-sp1-6.0.0" }
+secp256k1 = { git = "https://github.com/sp1-patches/rust-secp256k1", tag = "patch-0.30.0-sp1-6.0.0" }
 
 # Patch sp1 crates to add gateway proxy support (only sp1-sdk is modified,
 # but all sp1/slop crates must be patched to avoid duplicate crate versions
