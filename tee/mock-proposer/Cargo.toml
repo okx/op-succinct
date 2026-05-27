@@ -15,6 +15,8 @@ op-succinct-host-utils.workspace = true
 op-succinct-ethereum-host-utils.workspace = true
 op-succinct-client-utils.workspace = true
 op-succinct-elfs.workspace = true
+# SP1 cluster dispatch (is_cluster_mode + cluster_agg_proof)
+op-succinct-proof-utils.workspace = true
 
 # Canonical RangeJournal definition (shared with enclave + host)
 xlayer-tee-types.workspace = true
@@ -44,4 +46,5 @@ clap = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
