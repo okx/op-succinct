@@ -9,7 +9,7 @@
 //! single attestation-derived signer across them, so all sub-tasks must
 //! hit the same enclave.
 
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_consensus::Header;
 use alloy_primitives::{hex, Address, Bytes, B256};
@@ -24,10 +24,12 @@ use op_succinct_client_utils::{
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_ethereum_host_utils::host::SingleChainOPSuccinctHost;
 use op_succinct_host_utils::{fetcher::OPSuccinctDataFetcher, host::OPSuccinctHost};
+use op_succinct_proof_utils::{cluster_agg_proof, is_cluster_mode};
 use rkyv::rancor::Error as RkyvError;
+use serde::{Deserialize, Serialize};
 use sp1_sdk::{
     blocking::{CpuProver, Prover, ProveRequest},
-    Elf, SP1Stdin,
+    Elf, SP1ProofMode, SP1Stdin,
 };
 use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::{info, warn};
@@ -66,13 +68,15 @@ struct Args {
     #[arg(long, env = "L2_NODE_RPC")]
     l2_node_rpc: String,
 
-    /// Overall L2 block range start (agreed boundary).
+    /// Overall L2 block range start (agreed boundary). Required unless
+    /// `--proofs-file` is set (which replays cached chunks).
     #[arg(long)]
-    start_block: u64,
+    start_block: Option<u64>,
 
-    /// Overall L2 block range end (claimed boundary).
+    /// Overall L2 block range end (claimed boundary). Required unless
+    /// `--proofs-file` is set.
     #[arg(long)]
-    end_block: u64,
+    end_block: Option<u64>,
 
     /// Size of each contiguous chunk submitted as a separate TEE task.
     /// The final chunk may be shorter than this when the range isn't
@@ -122,6 +126,43 @@ struct Args {
     /// Only used when `--agg-mode` ≠ skip.
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
     prover_address: Address,
+
+    /// Replay aggregation from a previously-saved proof cache. When set,
+    /// the TEE flow (chunking, witness gen, POST /tee/task, polling, /tee/info)
+    /// is skipped entirely; the chunks + attestation come from this JSON file.
+    /// `--start-block` / `--end-block` / `--tee-host` are ignored in this mode.
+    #[arg(long)]
+    proofs_file: Option<PathBuf>,
+
+    /// After a successful TEE run, dump every chunk's proof + the enclave's
+    /// attestation doc to this path. Pair with `--proofs-file <same path>` on
+    /// a later run to replay aggregation against a different SP1 backend (e.g.
+    /// SP1 cluster) without paying for TEE witness gen again.
+    #[arg(long)]
+    save_proofs_file: Option<PathBuf>,
+
+    /// Cluster proving timeout in seconds. Only used when `SP1_PROVER=cluster`
+    /// and `--agg-mode prove`.
+    #[arg(long, default_value_t = 14_400)]
+    cluster_timeout: u64,
+}
+
+/// On-disk format for `--save-proofs-file` / `--proofs-file`.
+#[derive(Serialize, Deserialize)]
+struct ProofCache {
+    chunks: Vec<ProofCacheChunk>,
+    /// COSE_Sign1 NSM attestation doc, base64(STANDARD) — same encoding as
+    /// `/tee/info`'s `data.attestationDoc`.
+    attestation_b64: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProofCacheChunk {
+    start: u64,
+    end: u64,
+    /// `0x`-prefixed ABI-encoded `(RangeJournal, signature)` blob — same as
+    /// `data.proofBytes` returned by `GET /tee/task/{id}`.
+    proof_bytes_hex: String,
 }
 
 #[tokio::main]
@@ -131,9 +172,6 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    if args.end_block <= args.start_block {
-        bail!("end_block ({}) must be > start_block ({})", args.end_block, args.start_block);
-    }
     if args.chunk_size == 0 {
         bail!("chunk_size must be > 0");
     }
@@ -149,10 +187,6 @@ async fn main() -> Result<()> {
         l1_rpc = %args.l1_rpc,
         l2_rpc = %args.l2_rpc,
         l2_node_rpc = %args.l2_node_rpc,
-        start = args.start_block,
-        end = args.end_block,
-        chunk_size = args.chunk_size,
-        max_concurrent_witness = args.max_concurrent_witness,
         "fetching rollup config and L1 config"
     );
     let fetcher = Arc::new(
@@ -161,22 +195,44 @@ async fn main() -> Result<()> {
             .context("OPSuccinctDataFetcher::new_with_rollup_config")?,
     );
 
-    let host = SingleChainOPSuccinctHost::new(fetcher.clone());
+    let (results, attestation) = if let Some(path) = args.proofs_file.clone() {
+        info!(path = %path.display(), "replay mode: loading proofs from cache");
+        let (results, attestation) = load_proof_cache(&path)?;
+        enforce_chunk_continuity(&results)?;
+        println!("──── replaying {} cached chunk(s) ────", results.len());
+        (results, Some(attestation))
+    } else {
+        let start_block = args.start_block.context("--start-block is required when --proofs-file is not set")?;
+        let end_block = args.end_block.context("--end-block is required when --proofs-file is not set")?;
+        if end_block <= start_block {
+            bail!("end_block ({end_block}) must be > start_block ({start_block})");
+        }
+        let host = SingleChainOPSuccinctHost::new(fetcher.clone());
+        let chunks = slice_range(start_block, end_block, args.chunk_size);
+        info!(
+            start = start_block,
+            end = end_block,
+            chunk_size = args.chunk_size,
+            max_concurrent_witness = args.max_concurrent_witness,
+            n_chunks = chunks.len(),
+            "scheduling chunks"
+        );
+        let results = run_all_chunks(args.clone(), host, chunks).await?;
+        enforce_chunk_continuity(&results)?;
+        println!("──── all {} chunk(s) proven ────", results.len());
 
-    let chunks = slice_range(args.start_block, args.end_block, args.chunk_size);
-    info!(n_chunks = chunks.len(), "scheduling chunks");
+        if let Some(path) = args.save_proofs_file.as_ref() {
+            let attestation = fetch_attestation(&args.tee_host).await?;
+            save_proof_cache(path, &results, &attestation)?;
+            info!(path = %path.display(), "wrote proof cache");
+        }
+        (results, None)
+    };
 
-    let results = run_all_chunks(args.clone(), host, chunks).await?;
-    enforce_chunk_continuity(&results)?;
-
-    // Per-chunk proofs (journal + signature) were printed via
-    // `print_chunk_proof` as each chunk finished. Here we just emit a final
-    // summary line so the operator can confirm the total count.
-    println!("──── all {} chunk(s) proven ────", results.len());
     if args.agg_mode == AggMode::Skip {
         return Ok(());
     }
-    run_aggregation(&args, &fetcher, &results).await
+    run_aggregation(&args, &fetcher, &results, attestation).await
 }
 
 fn export_rpc_env(args: &Args) {
@@ -433,6 +489,15 @@ fn parse_proof_bytes(
 ) -> Result<(String, RangeJournal, BootInfoStruct, Vec<u8>)> {
     let proof_bytes_hex =
         task_response["data"]["proofBytes"].as_str().context("missing data.proofBytes")?;
+    parse_proof_bytes_hex(proof_bytes_hex)
+}
+
+/// Decode the same `(RangeJournal, signature)` blob as [`parse_proof_bytes`],
+/// but starting from a raw hex string instead of a task-response JSON object.
+/// Used by the `--proofs-file` replay path.
+fn parse_proof_bytes_hex(
+    proof_bytes_hex: &str,
+) -> Result<(String, RangeJournal, BootInfoStruct, Vec<u8>)> {
     let proof_bytes = hex::decode(proof_bytes_hex.trim_start_matches("0x"))
         .context("decode proofBytes hex")?;
     let (journal, signature) = <(RangeJournal, Bytes)>::abi_decode_params(&proof_bytes)
@@ -453,6 +518,74 @@ fn parse_proof_bytes(
 }
 
 // =============================================================================
+// Proof cache (save / load)
+// =============================================================================
+
+fn save_proof_cache(
+    path: &std::path::Path,
+    results: &[ChunkResult],
+    attestation: &[u8],
+) -> Result<()> {
+    let chunks: Vec<ProofCacheChunk> = results
+        .iter()
+        .map(|r| {
+            // RangeJournal doesn't derive Clone — rebuild by copying each
+            // (`Copy`) field so we can hand an owned value to abi_encode_params.
+            let journal = RangeJournal {
+                pcr0: r.journal.pcr0,
+                configHash: r.journal.configHash,
+                l1OriginHash: r.journal.l1OriginHash,
+                l2BlockNumber: r.journal.l2BlockNumber,
+                prevOutputRoot: r.journal.prevOutputRoot,
+                outputRoot: r.journal.outputRoot,
+            };
+            let proof_bytes =
+                (journal, Bytes::from(r.signature.clone())).abi_encode_params();
+            ProofCacheChunk {
+                start: r.range.0,
+                end: r.range.1,
+                proof_bytes_hex: format!("0x{}", hex::encode(&proof_bytes)),
+            }
+        })
+        .collect();
+    let cache = ProofCache {
+        chunks,
+        attestation_b64: base64::engine::general_purpose::STANDARD.encode(attestation),
+    };
+    let json = serde_json::to_string_pretty(&cache).context("serialize proof cache")?;
+    std::fs::write(path, json).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn load_proof_cache(path: &std::path::Path) -> Result<(Vec<ChunkResult>, Vec<u8>)> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let cache: ProofCache = serde_json::from_str(&raw).context("parse proof cache JSON")?;
+    let attestation = base64::engine::general_purpose::STANDARD
+        .decode(&cache.attestation_b64)
+        .context("base64-decode attestation_b64")?;
+    let mut results = Vec::with_capacity(cache.chunks.len());
+    for c in cache.chunks {
+        let (_, journal, boot_info, signature) = parse_proof_bytes_hex(&c.proof_bytes_hex)
+            .with_context(|| format!("chunk [{}, {}] proof_bytes_hex", c.start, c.end))?;
+        if boot_info.l2BlockNumber != c.end {
+            bail!(
+                "cached chunk [{}, {}] has l2BlockNumber={} (expected {})",
+                c.start, c.end, boot_info.l2BlockNumber, c.end,
+            );
+        }
+        results.push(ChunkResult {
+            range: (c.start, c.end),
+            boot_info,
+            journal,
+            signature,
+            task_id: format!("cached-[{},{}]", c.start, c.end),
+        });
+    }
+    Ok((results, attestation))
+}
+
+// =============================================================================
 // Aggregation driver
 // =============================================================================
 
@@ -460,12 +593,16 @@ async fn run_aggregation(
     args: &Args,
     fetcher: &Arc<OPSuccinctDataFetcher>,
     results: &[ChunkResult],
+    cached_attestation: Option<Vec<u8>>,
 ) -> Result<()> {
     // Single attestation for the whole aggregation — all chunks were
     // signed by the same enclave session (same tee_host instance), so the
     // guest's session_signer derived from this doc covers every leaf.
-    let attestation = fetch_attestation(&args.tee_host).await?;
-    info!(attestation_bytes = attestation.len(), "fetched attestation doc");
+    let attestation = match cached_attestation {
+        Some(a) => a,
+        None => fetch_attestation(&args.tee_host).await?,
+    };
+    info!(attestation_bytes = attestation.len(), "using attestation doc");
 
     let boot_infos: Vec<BootInfoStruct> =
         results.iter().map(|r| r.boot_info.clone()).collect();
@@ -511,7 +648,7 @@ async fn run_aggregation(
     match args.agg_mode {
         AggMode::Skip => unreachable!("handled in main"),
         AggMode::Execute => run_execute(stdin).await,
-        AggMode::Prove => run_prove(stdin).await,
+        AggMode::Prove => run_prove(stdin, args.cluster_timeout).await,
     }
 }
 
@@ -575,8 +712,16 @@ async fn run_execute(stdin: SP1Stdin) -> Result<()> {
     Ok(())
 }
 
-async fn run_prove(stdin: SP1Stdin) -> Result<()> {
-    info!("running SP1 prove on aggregation guest (compressed)");
+async fn run_prove(stdin: SP1Stdin, cluster_timeout: u64) -> Result<()> {
+    if is_cluster_mode() {
+        info!(cluster_timeout, "running SP1 prove via self-hosted cluster (compressed)");
+        let proof = cluster_agg_proof(cluster_timeout, SP1ProofMode::Compressed, stdin).await?;
+        let bytes = proof.public_values.to_vec();
+        println!("cluster proof complete; public_values_len = {}", bytes.len());
+        println!("public_values_hex = 0x{}", hex::encode(&bytes));
+        return Ok(());
+    }
+    info!("running SP1 prove on aggregation guest via CpuProver (compressed)");
     let proof = tokio::task::spawn_blocking(move || -> Result<_> {
         let prover = CpuProver::new();
         let pk = prover.setup(Elf::Static(AGGREGATION_ELF))?;
