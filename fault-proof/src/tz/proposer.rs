@@ -299,7 +299,10 @@ where
             .and_then(|v| v.parse().ok())
             .filter(|&n: &u64| n > 0)
             .unwrap_or(1000);
-        let total_blocks = end_block.saturating_sub(start_block).saturating_add(1);
+        // snapshot is the post-state of block `start_block`; the blocks to replay are
+        // (start_block, end_block] — i.e. starting from start_block + 1.
+        let first_block = start_block.saturating_add(1);
+        let total_blocks = end_block.saturating_sub(start_block);
         let chunk_count: u32 = total_blocks
             .div_ceil(tz_blocks_per_fetch)
             .try_into()
@@ -309,7 +312,7 @@ where
         range_stdin.write_vec(snapshot);
         range_stdin.write(&chunk_count);
 
-        let mut cur = start_block;
+        let mut cur = first_block;
         for _ in 0..chunk_count {
             let chunk_end = cur.saturating_add(tz_blocks_per_fetch - 1).min(end_block);
             let chunk = self.l2_provider.fetch_blocks_range(cur, chunk_end).await?;
