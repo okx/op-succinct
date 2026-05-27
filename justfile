@@ -462,6 +462,12 @@ build-agg-elf:
     cd programs/aggregation
     ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v6.1.0 --output-directory ../../elf
 
+# Generate tz verification key hashes.
+tz-vkeys:
+    #!/usr/bin/env bash
+    set -e
+    RUST_LOG=error cargo run --release --bin tz-config
+
 # Build tz twin-layer ELFs.
 build-tz-elfs: build-tz-range-elf build-tz-agg-elf
 

@@ -25,8 +25,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static ALLOCATOR: Jemalloc = Jemalloc;
 
-static TZ_RANGE_ELF: &[u8] = include_bytes!("../elfs/tz-range.elf");
-static TZ_AGGREGATION_ELF: &[u8] = include_bytes!("../elfs/tz-aggregation.elf");
+use op_succinct_elfs::{TZ_AGGREGATION_ELF, TZ_RANGE_ELF};
 
 #[derive(Parser)]
 #[command(name = "tz-proposer")]

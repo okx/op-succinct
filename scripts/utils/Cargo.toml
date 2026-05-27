@@ -20,6 +20,10 @@ name = "config"
 path = "bin/config.rs"
 
 [[bin]]
+name = "tz-config"
+path = "bin/tz_config.rs"
+
+[[bin]]
 name = "cost-estimator"
 path = "bin/cost_estimator.rs"
 

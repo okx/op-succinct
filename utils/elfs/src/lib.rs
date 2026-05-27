@@ -9,3 +9,6 @@ pub const EIGENDA_RANGE_ELF_EMBEDDED: &[u8] =
     include_bytes!("../../../elf/eigenda-range-elf-embedded");
 
 pub const ALTDA_RANGE_ELF_EMBEDDED: &[u8] = include_bytes!("../../../elf/altda-range-elf-embedded");
+
+pub const TZ_RANGE_ELF: &[u8] = include_bytes!("../../../elf/tz-range-elf-embedded");
+pub const TZ_AGGREGATION_ELF: &[u8] = include_bytes!("../../../elf/tz-aggregation-elf");
