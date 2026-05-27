@@ -161,6 +161,18 @@ where
             (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
         };
 
+        let local_range_vk_hash = B256::from(op_succinct_client_utils::types::u32_to_u8(
+            range_vk.hash_u32(),
+        ));
+        let local_agg_vk_hash = B256::from(agg_vk.bytes32_raw());
+        tracing::info!(
+            ?local_range_vk_hash,
+            on_chain_range_vkey = ?on_chain_range_vkey,
+            ?local_agg_vk_hash,
+            on_chain_agg_vkey = ?on_chain_agg_vkey,
+            "tz: local-computed vkeys (from get_range_elf_embedded / AGGREGATION_ELF) vs on-chain"
+        );
+
         let identity =
             ProposerIdentity::new(on_chain_agg_vkey, on_chain_range_vkey, rollup_config_hash);
         identity.log_startup_info();
@@ -307,8 +319,18 @@ where
 
         tracing::info!("tz: generating range proof");
         let (range_proof, _cycles, _gas) = self.prover.generate_range_proof(range_stdin).await?;
-        let boot_info = BootInfoStruct::abi_decode(range_proof.public_values.as_slice())
-            .map_err(|e| anyhow::anyhow!("tz: failed to abi_decode range BootInfoStruct: {e}"))?;
+        let pv_bytes = range_proof.public_values.as_slice();
+        tracing::info!(
+            pv_len = pv_bytes.len(),
+            pv_head = %hex::encode(&pv_bytes[..pv_bytes.len().min(32)]),
+            "tz: range proof public_values"
+        );
+        let boot_info = BootInfoStruct::abi_decode(pv_bytes).map_err(|e| {
+            anyhow::anyhow!(
+                "tz: failed to abi_decode range BootInfoStruct (pv_len={}): {e}",
+                pv_bytes.len()
+            )
+        })?;
 
         let agg_inputs = AggregationInputs {
             boot_infos: vec![boot_info],
