@@ -1,3 +1,4 @@
+#[cfg(feature = "tz")]
 pub mod tz;
 
 use std::{
@@ -6,7 +7,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use op_succinct_elfs::AGGREGATION_ELF;
+#[cfg(not(feature = "tz"))]
+pub use op_succinct_elfs::AGGREGATION_ELF;
+#[cfg(feature = "tz")]
+pub use op_succinct_elfs::TZ_AGGREGATION_ELF as AGGREGATION_ELF;
 use op_succinct_host_utils::fetcher::OPSuccinctDataFetcher;
 use serde::{Deserialize, Serialize};
 use sp1_cluster_artifact::{
@@ -41,6 +45,10 @@ pub fn get_range_elf_embedded() -> &'static [u8] {
             use op_succinct_elfs::ALTDA_RANGE_ELF_EMBEDDED;
 
             ALTDA_RANGE_ELF_EMBEDDED
+        } else if #[cfg(feature = "tz")] {
+            use op_succinct_elfs::TZ_RANGE_ELF;
+
+            TZ_RANGE_ELF
         } else {
             use op_succinct_elfs::RANGE_ELF_EMBEDDED;
 

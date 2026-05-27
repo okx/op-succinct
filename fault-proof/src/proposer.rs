@@ -17,7 +17,6 @@ use alloy_sol_types::{SolEvent, SolValue};
 use anyhow::{bail, Context, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use op_succinct_client_utils::boot::{hash_rollup_config, BootInfoStruct};
-use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
     fetcher::OPSuccinctDataFetcher,
     get_agg_proof_stdin,
@@ -26,7 +25,9 @@ use op_succinct_host_utils::{
     network::{determine_network_mode, get_network_signer},
     witness_generation::WitnessGenerator,
 };
-use op_succinct_proof_utils::{cluster_setup_keys, get_range_elf_embedded, is_cluster_mode};
+use op_succinct_proof_utils::{
+    cluster_setup_keys, get_range_elf_embedded, is_cluster_mode, AGGREGATION_ELF,
+};
 use op_succinct_signer_utils::SignerLock;
 use sp1_sdk::{
     Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1ProofWithPublicValues, SP1Stdin,

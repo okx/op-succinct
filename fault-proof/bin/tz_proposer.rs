@@ -25,7 +25,6 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static ALLOCATOR: Jemalloc = Jemalloc;
 
-use op_succinct_elfs::{TZ_AGGREGATION_ELF, TZ_RANGE_ELF};
 
 #[derive(Parser)]
 #[command(name = "tz-proposer")]
@@ -96,8 +95,6 @@ async fn run(tz_config: TzConfig) -> Result<()> {
             Arc::new(fetcher),
             host,
             l2_provider,
-            TZ_RANGE_ELF,
-            TZ_AGGREGATION_ELF,
         )
         .await?,
     );

@@ -107,9 +107,11 @@ where
         }
     }
 
-    /// Creates a new proposer with an injected L2 provider and range ELF.
+    /// Creates a new proposer with an injected L2 provider.
     /// Avoids optimism_rollupConfig RPC and allows a custom L2 data source.
     /// Reads rollup_config_hash from the on-chain game implementation.
+    /// Range / aggregation ELFs are selected by the `tz` cargo feature
+    /// (see `op_succinct_proof_utils::{get_range_elf_embedded, AGGREGATION_ELF}`).
     pub async fn new_with_l2_provider(
         config: ProposerConfig,
         signer: SignerLock,
@@ -118,8 +120,6 @@ where
         fetcher: Arc<OPSuccinctDataFetcher>,
         host: Arc<H>,
         l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
-        range_elf: &'static [u8],
-        aggregation_elf: &'static [u8],
     ) -> Result<Self> {
         // tz: read all identity fields from the deployed game implementation so is_owned()
         // matches on-chain games regardless of which local ELF is loaded.
@@ -153,9 +153,9 @@ where
             let np = Arc::new(
                 ProverClient::builder().network_for(nm).signer(network_signer).build().await,
             );
-            let range_pk = np.setup(Elf::Static(range_elf)).await?;
+            let range_pk = np.setup(Elf::Static(get_range_elf_embedded())).await?;
             let range_vk = range_pk.verifying_key().clone();
-            let agg_pk = np.setup(Elf::Static(aggregation_elf)).await?;
+            let agg_pk = np.setup(Elf::Static(AGGREGATION_ELF)).await?;
             let agg_vk = agg_pk.verifying_key().clone();
             (range_pk, range_vk, agg_pk, agg_vk, Some(np), Some(nm))
         };
@@ -182,7 +182,7 @@ where
                     .ok_or_else(|| anyhow::anyhow!("network_prover required in mock mode"))?,
                 keys.clone(),
                 config.proof_provider.clone(),
-                aggregation_elf,
+                AGGREGATION_ELF,
             ))
         } else {
             ProofProvider::Network(NetworkProofProvider::new(
