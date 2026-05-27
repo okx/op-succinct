@@ -475,7 +475,7 @@ build-tz-agg-elf:
     #!/usr/bin/env bash
 
     cd programs/tz/aggregation
-    ~/.sp1/bin/cargo-prove prove build --elf-name tz-aggregation-elf --docker --tag v6.1.0 --output-directory ../../elf
+    ~/.sp1/bin/cargo-prove prove build --elf-name tz-aggregation-elf --docker --tag v6.1.0 --output-directory ../../../elf
 
 # Run Foundry contract tests for OPSuccinctFaultDisputeGame.
 fp-contract-tests *args='':
