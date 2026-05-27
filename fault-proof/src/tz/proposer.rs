@@ -281,15 +281,6 @@ where
         );
         let snapshot = self.l2_provider.fetch_dex_state_snapshot(start_block).await?;
 
-        // tz's /chain/blocks endpoint caps single responses (~1000 by default);
-        // paginate when the propose range exceeds the cap and stream each chunk
-        // into SP1Stdin as a separate write_vec. The range guest reads
-        // `chunk_count` then loops `chunk_count` read_vec + process calls, so
-        // host and guest layouts stay symmetric without manual msgpack merging
-        // and the guest never holds the full Vec<Block> in memory.
-        //
-        // `TZ_BLOCKS_PER_FETCH` is configurable (env) to match whatever cap the
-        // tz node advertises; default 1000 mirrors the spec'd default cap.
         let tz_blocks_per_fetch: u64 = std::env::var("TZ_BLOCKS_PER_FETCH")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -300,21 +291,14 @@ where
             .div_ceil(tz_blocks_per_fetch)
             .try_into()
             .context("chunk_count overflows u32")?;
-        tracing::info!(
-            total_blocks,
-            chunk_count,
-            chunk_size = tz_blocks_per_fetch,
-            "tz: paginating block fetch"
-        );
 
         let mut range_stdin = SP1Stdin::new();
         range_stdin.write_vec(snapshot);
         range_stdin.write(&chunk_count);
 
         let mut cur = start_block;
-        for chunk_idx in 0..chunk_count {
+        for _ in 0..chunk_count {
             let chunk_end = cur.saturating_add(tz_blocks_per_fetch - 1).min(end_block);
-            tracing::debug!(chunk_idx, cur, chunk_end, "tz: fetching block chunk");
             let chunk = self.l2_provider.fetch_blocks_range(cur, chunk_end).await?;
             range_stdin.write_vec(chunk);
             cur = chunk_end.saturating_add(1);
