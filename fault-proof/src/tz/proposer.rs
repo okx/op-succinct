@@ -6,6 +6,7 @@
 
 use super::*;
 use op_succinct_client_utils::types::AggregationInputs;
+use sp1_sdk::{SP1Proof, SP1VerifyingKey};
 
 impl<P, H> OPSuccinctProposer<P, H>
 where
@@ -138,7 +139,7 @@ where
 
         anyhow::ensure!(
             !(is_cluster && config.mock_mode),
-            "mock and cluster modes are mutually exclusive"
+            "mock and cluster modes are mutually exclusive — set only one of SP1_PROVER=cluster or mock_mode=true"
         );
 
         let (range_pk, range_vk, agg_pk, agg_vk, network_prover, network_mode) = if is_cluster {
@@ -316,7 +317,7 @@ where
             multi_block_vkey: self.prover.keys().range_vk.hash_u32(),
             prover_address: self.signer.address(),
         };
-        let agg_stdin = op_succinct_proof_utils::tz::aggregation_stdin(
+        let agg_stdin = aggregation_stdin(
             vec![range_proof.proof.clone()],
             &self.prover.keys().range_vk,
             &agg_inputs,
@@ -326,4 +327,24 @@ where
         let agg_proof = self.prover.generate_agg_proof(agg_stdin).await?;
         Ok(agg_proof.bytes().into())
     }
+}
+
+/// Build the SP1Stdin for the tz aggregation guest: write each compressed range
+/// proof + its vkey, then the `AggregationInputs` body.
+fn aggregation_stdin(
+    compressed_proofs: Vec<SP1Proof>,
+    range_vk: &SP1VerifyingKey,
+    agg_inputs: &AggregationInputs,
+) -> Result<SP1Stdin> {
+    let mut stdin = SP1Stdin::new();
+    for proof in compressed_proofs {
+        let SP1Proof::Compressed(compressed) = proof else {
+            return Err(anyhow::anyhow!(
+                "aggregation_stdin: range proofs must be Compressed variant"
+            ));
+        };
+        stdin.write_proof(*compressed, range_vk.vk.clone());
+    }
+    stdin.write(agg_inputs);
+    Ok(stdin)
 }
