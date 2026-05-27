@@ -46,27 +46,42 @@ enum AggMode {
     Prove,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProverBackend {
+    /// Dispatch by env: use the self-hosted cluster when `SP1_PROVER=cluster`,
+    /// otherwise fall back to the local CpuProver.
+    Auto,
+    /// Always use the local SP1 CpuProver. Slow but self-contained.
+    Cpu,
+    /// Always use the self-hosted SP1 cluster (requires `SP1_PROVER=cluster`
+    /// + `CLI_CLUSTER_RPC` + an artifact store env var).
+    Cluster,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "xlayer-tee-mock-proposer",
     about = "Local-dev mock: split a range into chunks, fetch witness per chunk, POST each to tee-host, optionally aggregate the returned TEE proofs."
 )]
 struct Args {
-    /// L1 execution RPC URL (also exported as `L1_RPC`).
+    /// L1 execution RPC URL (also exported as `L1_RPC`). Required unless
+    /// `--proofs-file` is set (cache is self-contained, no live RPC needed).
     #[arg(long, env = "L1_RPC")]
-    l1_rpc: String,
+    l1_rpc: Option<String>,
 
     /// L1 beacon RPC URL (also exported as `L1_BEACON_RPC`).
     #[arg(long, env = "L1_BEACON_RPC")]
     l1_beacon_rpc: Option<String>,
 
-    /// L2 execution RPC URL (also exported as `L2_RPC`).
+    /// L2 execution RPC URL (also exported as `L2_RPC`). Required unless
+    /// `--proofs-file` is set.
     #[arg(long, env = "L2_RPC")]
-    l2_rpc: String,
+    l2_rpc: Option<String>,
 
-    /// L2 rollup node RPC (also exported as `L2_NODE_RPC`).
+    /// L2 rollup node RPC (also exported as `L2_NODE_RPC`). Required unless
+    /// `--proofs-file` is set.
     #[arg(long, env = "L2_NODE_RPC")]
-    l2_node_rpc: String,
+    l2_node_rpc: Option<String>,
 
     /// Overall L2 block range start (agreed boundary). Required unless
     /// `--proofs-file` is set (which replays cached chunks).
@@ -141,19 +156,33 @@ struct Args {
     #[arg(long)]
     save_proofs_file: Option<PathBuf>,
 
-    /// Cluster proving timeout in seconds. Only used when `SP1_PROVER=cluster`
-    /// and `--agg-mode prove`.
+    /// Cluster proving timeout in seconds. Only used by the cluster backend.
     #[arg(long, default_value_t = 14_400)]
     cluster_timeout: u64,
+
+    /// Which SP1 backend `--agg-mode prove` should target. `auto` mirrors
+    /// `is_cluster_mode()` (env-driven); `cpu` forces local CpuProver; `cluster`
+    /// forces the self-hosted SP1 cluster.
+    #[arg(long, value_enum, default_value = "auto")]
+    prover_backend: ProverBackend,
 }
 
 /// On-disk format for `--save-proofs-file` / `--proofs-file`.
+///
+/// Self-contained: replay mode reads this file and needs no L1/L2 RPC.
 #[derive(Serialize, Deserialize)]
 struct ProofCache {
     chunks: Vec<ProofCacheChunk>,
     /// COSE_Sign1 NSM attestation doc, base64(STANDARD) — same encoding as
     /// `/tee/info`'s `data.attestationDoc`.
     attestation_b64: String,
+    /// CBOR-encoded `Vec<alloy_consensus::Header>` covering every chunk's
+    /// `l1Head` back to the L1 checkpoint head. base64(STANDARD).
+    headers_cbor_b64: String,
+    /// `headers.last().hash_slow()` — passed to the aggregation guest as the
+    /// checkpoint it walks back from. Stored explicitly so replay doesn't have
+    /// to hash + parse the headers blob just to recover it.
+    latest_l1_checkpoint_head: B256,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -163,6 +192,13 @@ struct ProofCacheChunk {
     /// `0x`-prefixed ABI-encoded `(RangeJournal, signature)` blob — same as
     /// `data.proofBytes` returned by `GET /tee/task/{id}`.
     proof_bytes_hex: String,
+}
+
+/// Aggregation guest inputs shared between live and replay modes.
+struct AggregationContext {
+    attestation: Vec<u8>,
+    headers: Vec<Header>,
+    latest_l1_checkpoint_head: B256,
 }
 
 #[tokio::main]
@@ -180,33 +216,36 @@ async fn main() -> Result<()> {
     }
     let args = Arc::new(args);
 
-    // op-succinct's fetcher reads RPCs from process env; mirror CLI args.
-    export_rpc_env(&args);
-
-    info!(
-        l1_rpc = %args.l1_rpc,
-        l2_rpc = %args.l2_rpc,
-        l2_node_rpc = %args.l2_node_rpc,
-        "fetching rollup config and L1 config"
-    );
-    let fetcher = Arc::new(
-        OPSuccinctDataFetcher::new_with_rollup_config()
-            .await
-            .context("OPSuccinctDataFetcher::new_with_rollup_config")?,
-    );
-
-    let (results, attestation) = if let Some(path) = args.proofs_file.clone() {
+    let (results, agg_ctx) = if let Some(path) = args.proofs_file.clone() {
         info!(path = %path.display(), "replay mode: loading proofs from cache");
-        let (results, attestation) = load_proof_cache(&path)?;
+        let (results, attestation, headers, latest_l1_checkpoint_head) = load_proof_cache(&path)?;
         enforce_chunk_continuity(&results)?;
         println!("──── replaying {} cached chunk(s) ────", results.len());
-        (results, Some(attestation))
+        let ctx = AggregationContext { attestation, headers, latest_l1_checkpoint_head };
+        (results, Some(ctx))
     } else {
+        // Live TEE flow — RPCs are required, and we need the fetcher to drive
+        // witness gen and (later) header preimages.
+        require_rpcs(&args)?;
+        export_rpc_env(&args);
         let start_block = args.start_block.context("--start-block is required when --proofs-file is not set")?;
         let end_block = args.end_block.context("--end-block is required when --proofs-file is not set")?;
         if end_block <= start_block {
             bail!("end_block ({end_block}) must be > start_block ({start_block})");
         }
+
+        info!(
+            l1_rpc = %args.l1_rpc.as_deref().unwrap_or(""),
+            l2_rpc = %args.l2_rpc.as_deref().unwrap_or(""),
+            l2_node_rpc = %args.l2_node_rpc.as_deref().unwrap_or(""),
+            "fetching rollup config and L1 config"
+        );
+        let fetcher = Arc::new(
+            OPSuccinctDataFetcher::new_with_rollup_config()
+                .await
+                .context("OPSuccinctDataFetcher::new_with_rollup_config")?,
+        );
+
         let host = SingleChainOPSuccinctHost::new(fetcher.clone());
         let chunks = slice_range(start_block, end_block, args.chunk_size);
         info!(
@@ -221,27 +260,74 @@ async fn main() -> Result<()> {
         enforce_chunk_continuity(&results)?;
         println!("──── all {} chunk(s) proven ────", results.len());
 
-        if let Some(path) = args.save_proofs_file.as_ref() {
+        // Build aggregation inputs once if we'll need them — for `--agg-mode prove/execute`
+        // and/or for `--save-proofs-file`. Otherwise skip the extra L1 fetches.
+        let need_agg_ctx = args.agg_mode != AggMode::Skip || args.save_proofs_file.is_some();
+        let agg_ctx = if need_agg_ctx {
             let attestation = fetch_attestation(&args.tee_host).await?;
-            save_proof_cache(path, &results, &attestation)?;
-            info!(path = %path.display(), "wrote proof cache");
-        }
-        (results, None)
+            let boot_infos: Vec<BootInfoStruct> =
+                results.iter().map(|r| r.boot_info.clone()).collect();
+            let last_l1_head = results.last().expect("results non-empty").boot_info.l1Head;
+            let headers = fetcher
+                .get_header_preimages(&boot_infos, last_l1_head)
+                .await
+                .context("fetch L1 header preimages")?;
+            let latest_l1_checkpoint_head = headers
+                .last()
+                .map(|h| h.hash_slow())
+                .context("get_header_preimages returned empty chain")?;
+
+            if let Some(path) = args.save_proofs_file.as_ref() {
+                save_proof_cache(
+                    path,
+                    &results,
+                    &attestation,
+                    &headers,
+                    latest_l1_checkpoint_head,
+                )?;
+                info!(path = %path.display(), "wrote proof cache");
+            }
+            Some(AggregationContext { attestation, headers, latest_l1_checkpoint_head })
+        } else {
+            None
+        };
+        (results, agg_ctx)
     };
 
     if args.agg_mode == AggMode::Skip {
         return Ok(());
     }
-    run_aggregation(&args, &fetcher, &results, attestation).await
+    let ctx = agg_ctx.expect("agg_ctx populated whenever agg_mode != Skip");
+    run_aggregation(&args, &results, ctx).await
+}
+
+/// Validate that the three required RPC URLs are present for the live TEE flow.
+fn require_rpcs(args: &Args) -> Result<()> {
+    if args.l1_rpc.is_none() {
+        bail!("--l1-rpc (or env L1_RPC) is required unless --proofs-file is set");
+    }
+    if args.l2_rpc.is_none() {
+        bail!("--l2-rpc (or env L2_RPC) is required unless --proofs-file is set");
+    }
+    if args.l2_node_rpc.is_none() {
+        bail!("--l2-node-rpc (or env L2_NODE_RPC) is required unless --proofs-file is set");
+    }
+    Ok(())
 }
 
 fn export_rpc_env(args: &Args) {
     // SAFETY: process-global mutation, performed once at startup before any
-    // op-succinct code reads env.
+    // op-succinct code reads env. Caller ensures the live-flow RPCs are Some.
     unsafe {
-        std::env::set_var("L1_RPC", &args.l1_rpc);
-        std::env::set_var("L2_RPC", &args.l2_rpc);
-        std::env::set_var("L2_NODE_RPC", &args.l2_node_rpc);
+        if let Some(v) = &args.l1_rpc {
+            std::env::set_var("L1_RPC", v);
+        }
+        if let Some(v) = &args.l2_rpc {
+            std::env::set_var("L2_RPC", v);
+        }
+        if let Some(v) = &args.l2_node_rpc {
+            std::env::set_var("L2_NODE_RPC", v);
+        }
         if let Some(b) = &args.l1_beacon_rpc {
             std::env::set_var("L1_BEACON_RPC", b);
         }
@@ -525,6 +611,8 @@ fn save_proof_cache(
     path: &std::path::Path,
     results: &[ChunkResult],
     attestation: &[u8],
+    headers: &[Header],
+    latest_l1_checkpoint_head: B256,
 ) -> Result<()> {
     let chunks: Vec<ProofCacheChunk> = results
         .iter()
@@ -548,22 +636,43 @@ fn save_proof_cache(
             }
         })
         .collect();
+    let headers_cbor =
+        serde_cbor::to_vec(&headers.to_vec()).context("CBOR-encode headers for cache")?;
     let cache = ProofCache {
         chunks,
         attestation_b64: base64::engine::general_purpose::STANDARD.encode(attestation),
+        headers_cbor_b64: base64::engine::general_purpose::STANDARD.encode(&headers_cbor),
+        latest_l1_checkpoint_head,
     };
     let json = serde_json::to_string_pretty(&cache).context("serialize proof cache")?;
     std::fs::write(path, json).with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
-fn load_proof_cache(path: &std::path::Path) -> Result<(Vec<ChunkResult>, Vec<u8>)> {
+fn load_proof_cache(
+    path: &std::path::Path,
+) -> Result<(Vec<ChunkResult>, Vec<u8>, Vec<Header>, B256)> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read {}", path.display()))?;
     let cache: ProofCache = serde_json::from_str(&raw).context("parse proof cache JSON")?;
     let attestation = base64::engine::general_purpose::STANDARD
         .decode(&cache.attestation_b64)
         .context("base64-decode attestation_b64")?;
+    let headers_cbor = base64::engine::general_purpose::STANDARD
+        .decode(&cache.headers_cbor_b64)
+        .context("base64-decode headers_cbor_b64")?;
+    let headers: Vec<Header> =
+        serde_cbor::from_slice(&headers_cbor).context("CBOR-decode cached headers")?;
+    let expected_head = headers
+        .last()
+        .map(|h| h.hash_slow())
+        .context("cached headers vec is empty")?;
+    if expected_head != cache.latest_l1_checkpoint_head {
+        bail!(
+            "cached headers tail hash {:?} != cached latest_l1_checkpoint_head {:?}",
+            expected_head, cache.latest_l1_checkpoint_head,
+        );
+    }
     let mut results = Vec::with_capacity(cache.chunks.len());
     for c in cache.chunks {
         let (_, journal, boot_info, signature) = parse_proof_bytes_hex(&c.proof_bytes_hex)
@@ -582,7 +691,7 @@ fn load_proof_cache(path: &std::path::Path) -> Result<(Vec<ChunkResult>, Vec<u8>
             task_id: format!("cached-[{},{}]", c.start, c.end),
         });
     }
-    Ok((results, attestation))
+    Ok((results, attestation, headers, cache.latest_l1_checkpoint_head))
 }
 
 // =============================================================================
@@ -591,17 +700,13 @@ fn load_proof_cache(path: &std::path::Path) -> Result<(Vec<ChunkResult>, Vec<u8>
 
 async fn run_aggregation(
     args: &Args,
-    fetcher: &Arc<OPSuccinctDataFetcher>,
     results: &[ChunkResult],
-    cached_attestation: Option<Vec<u8>>,
+    ctx: AggregationContext,
 ) -> Result<()> {
     // Single attestation for the whole aggregation — all chunks were
     // signed by the same enclave session (same tee_host instance), so the
     // guest's session_signer derived from this doc covers every leaf.
-    let attestation = match cached_attestation {
-        Some(a) => a,
-        None => fetch_attestation(&args.tee_host).await?,
-    };
+    let AggregationContext { attestation, headers, latest_l1_checkpoint_head } = ctx;
     info!(attestation_bytes = attestation.len(), "using attestation doc");
 
     let boot_infos: Vec<BootInfoStruct> =
@@ -610,20 +715,6 @@ async fn run_aggregation(
         .iter()
         .map(|r| RangeProof::Tee { signature: r.signature.clone() })
         .collect();
-
-    // The last chunk's L1 origin sits highest on L1; the guest will walk
-    // back from this checkpoint and assert every chunk's l1Head appears
-    // somewhere on the chain.
-    let last_l1_head = results.last().expect("results non-empty").boot_info.l1Head;
-
-    let headers = fetcher
-        .get_header_preimages(&boot_infos, last_l1_head)
-        .await
-        .context("fetch L1 header preimages")?;
-    let latest_l1_checkpoint_head = headers
-        .last()
-        .map(|h| h.hash_slow())
-        .context("get_header_preimages returned empty chain")?;
 
     info!(
         n_leaves = boot_infos.len(),
@@ -648,7 +739,7 @@ async fn run_aggregation(
     match args.agg_mode {
         AggMode::Skip => unreachable!("handled in main"),
         AggMode::Execute => run_execute(stdin).await,
-        AggMode::Prove => run_prove(stdin, args.cluster_timeout).await,
+        AggMode::Prove => run_prove(stdin, args.prover_backend, args.cluster_timeout).await,
     }
 }
 
@@ -712,16 +803,25 @@ async fn run_execute(stdin: SP1Stdin) -> Result<()> {
     Ok(())
 }
 
-async fn run_prove(stdin: SP1Stdin, cluster_timeout: u64) -> Result<()> {
-    if is_cluster_mode() {
-        info!(cluster_timeout, "running SP1 prove via self-hosted cluster (compressed)");
+async fn run_prove(
+    stdin: SP1Stdin,
+    backend: ProverBackend,
+    cluster_timeout: u64,
+) -> Result<()> {
+    let use_cluster = match backend {
+        ProverBackend::Auto => is_cluster_mode(),
+        ProverBackend::Cluster => true,
+        ProverBackend::Cpu => false,
+    };
+    if use_cluster {
+        info!(?backend, cluster_timeout, "running SP1 prove via self-hosted cluster (compressed)");
         let proof = cluster_agg_proof(cluster_timeout, SP1ProofMode::Compressed, stdin).await?;
         let bytes = proof.public_values.to_vec();
         println!("cluster proof complete; public_values_len = {}", bytes.len());
         println!("public_values_hex = 0x{}", hex::encode(&bytes));
         return Ok(());
     }
-    info!("running SP1 prove on aggregation guest via CpuProver (compressed)");
+    info!(?backend, "running SP1 prove on aggregation guest via CpuProver (compressed)");
     let proof = tokio::task::spawn_blocking(move || -> Result<_> {
         let prover = CpuProver::new();
         let pk = prover.setup(Elf::Static(AGGREGATION_ELF))?;
