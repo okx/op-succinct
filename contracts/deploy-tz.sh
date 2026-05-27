@@ -73,8 +73,10 @@ echo "Deploying via RPC: $RPC_URL"
 # bootstrap game's 1s challenge deadline lapse before resolve() is called.
 forge script \
   script/fp/DeployOPSuccinctLiteTz.s.sol:DeployOPSuccinctLiteTz \
-  -vvv \
+  -vvvv \
   --slow \
+  --via-ir \
+  --optimize \
   --private-key="$PRIVATE_KEY" \
   --rpc-url="$RPC_URL" \
   --broadcast
