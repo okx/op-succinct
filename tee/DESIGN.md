@@ -460,7 +460,7 @@ sequenceDiagram
         else TooManyTasks
             EE-->>EC: 429
             EC-->>Mon: Err(TooManyTasks)
-            Mon->>TMH: set_progress("queued; capacity")
+            Mon->>TMH: set_progress("queued (capacity)")
             Mon->>Mon: sleep 2s, 继续重试
         else 其他错误
             EE-->>EC: 4xx/5xx
