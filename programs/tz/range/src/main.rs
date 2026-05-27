@@ -13,29 +13,45 @@ use tz_block_processor::{Block, compute_app_hash, process_block, verify_next_blo
 use tz_dex::DexState;
 
 pub fn main() {
+    // stdin layout:
+    //   1. snapshot_bytes : Vec<u8>     (order-preserving msgpack of DexState)
+    //   2. chunk_count    : u32         (number of block chunks; >= 1)
+    //   3. for each chunk : Vec<u8>     (default rmp_serde msgpack of Vec<Block>)
+    //
+    // Chunked because the tz node's /chain/blocks endpoint caps single
+    // requests (configurable on the host, default 1000). Streaming each
+    // chunk straight into the verify/process loop keeps the guest's
+    // memory footprint to `state + current chunk` instead of `state +
+    // full Vec<Block>`, and avoids the Vec growth/realloc that an
+    // up-front merge would incur.
     let snapshot_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
-    let blocks_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
+    let chunk_count: u32 = sp1_zkvm::io::read();
 
     // Snapshot decode goes through the order-preserving path so the `Slab`
     // free-list is recovered exactly; the default rmp_serde path would
     // reshuffle slot indices and break post-replay hash determinism.
     let mut state: DexState = tz_dex::order_preserving_serde::from_msgpack(&snapshot_bytes)
         .unwrap_or_else(|e| panic!("failed to deserialize DexState snapshot: {}", e));
-    let blocks: Vec<Block> = rmp_serde::from_slice(&blocks_bytes)
-        .unwrap_or_else(|e| panic!("failed to deserialize Vec<Block> witness: {}", e));
 
     let start_block_hash = state.context.block_hash;
     let start_state_hash = blake3_hash_state(&state);
 
-    for block in &blocks {
-        verify_next_block(&state, block).unwrap_or_else(|e| {
-            panic!("verify_next_block failed at height {}: {}", block.header.height, e)
+    for chunk_idx in 0..chunk_count {
+        let chunk_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
+        let chunk: Vec<Block> = rmp_serde::from_slice(&chunk_bytes).unwrap_or_else(|e| {
+            panic!("failed to deserialize Vec<Block> chunk {}: {}", chunk_idx, e)
         });
-        // verify_pool = None: zkVM has no parallel runtime; signature
-        // verification falls back to a serial path.
-        process_block(&mut state, block, None).unwrap_or_else(|e| {
-            panic!("process_block failed at height {}: {}", block.header.height, e)
-        });
+        for block in &chunk {
+            verify_next_block(&state, block).unwrap_or_else(|e| {
+                panic!("verify_next_block failed at height {}: {}", block.header.height, e)
+            });
+            // verify_pool = None: zkVM has no parallel runtime; signature
+            // verification falls back to a serial path.
+            process_block(&mut state, block, None).unwrap_or_else(|e| {
+                panic!("process_block failed at height {}: {}", block.header.height, e)
+            });
+        }
+        // chunk is dropped here, releasing its Block buffer before the next read.
     }
 
     let end_block_hash = state.context.block_hash;
