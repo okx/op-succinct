@@ -94,8 +94,8 @@ cargo run -p xlayer-tee-mock-proposer --release -- \
 ```
 
 Step 2a — replay aggregation against a self-hosted SP1 cluster, **no RPC
-needed**. Pass `--output-proof <path>` to write the bincode-serialized SNARK
-alongside the printed public values:
+needed**. Pass `--proof-mode groth16` (or `plonk`) for an on-chain
+verifiable SNARK, plus `--output-proof <path>` to persist it:
 
 ```bash
 SP1_PROVER=cluster \
@@ -106,10 +106,15 @@ cargo run -p xlayer-tee-mock-proposer --release -- \
   --proofs-file     /tmp/tee-proofs.json \
   --agg-mode        prove \
   --prover-backend  cluster \
+  --proof-mode      groth16 \
   --cluster-timeout 14400 \
   --output-proof    /tmp/agg-proof.bin \
   --prover-address  0xYourAddress
 ```
+
+`--proof-mode compressed` (the default) is faster but produces an SP1
+internal proof that **cannot** be passed to `ISP1Verifier.verifyProof` —
+use it only when the next consumer is another SP1 prove (recursion).
 
 Step 2b — replay with the local CPU prover, also no RPC needed:
 
@@ -155,6 +160,7 @@ Notes:
 | `--proofs-file` | — | replay aggregation from a previously-saved cache; skips the TEE flow and all RPCs |
 | `--save-proofs-file` | — | after a successful TEE run, dump chunks + attestation + L1 header preimages to this path |
 | `--cluster-timeout` | `14400` | seconds; only consulted by the cluster backend |
+| `--proof-mode` | `compressed` | `compressed` (cheap, off-chain only) / `groth16` / `plonk` (on-chain verifiable) |
 | `--output-proof` | — | save the full `SP1ProofWithPublicValues` (bincode) to this path; reload with `SP1ProofWithPublicValues::load()` |
 
 ## Cache format (`--save-proofs-file` / `--proofs-file`)
