@@ -72,16 +72,19 @@ Useful for measuring guest cycles and verifying that
 ```bash
 cargo run -p xlayer-tee-mock-proposer --release -- \
   ... (RPCs and range as above) ...
-  --agg-mode      prove \
+  --agg-mode       prove \
+  --prover-backend cpu \
   --prover-address 0xYourAddress
 ```
 
 Slow on a laptop; suitable for small ranges to verify the end-to-end path.
+`--prover-backend cpu` is forced; the default `auto` would also pick CPU as
+long as `SP1_PROVER` env is not set to `cluster`.
 
-### 4. TEE → cache → replay on SP1 cluster
+### 4. TEE → cache → replay (cluster or CPU, fully offline)
 
-Step 1 — run the TEE flow once, dump every chunk's proof + the enclave's
-attestation doc to JSON:
+Step 1 — run the TEE flow once, dump chunks + attestation + L1 header
+preimages + checkpoint head to a self-contained JSON cache:
 
 ```bash
 cargo run -p xlayer-tee-mock-proposer --release -- \
@@ -90,8 +93,8 @@ cargo run -p xlayer-tee-mock-proposer --release -- \
   --agg-mode skip
 ```
 
-Step 2 — replay aggregation against a self-hosted SP1 cluster (skipping the
-entire TEE flow: no chunking, no witness gen, no POST, no polling):
+Step 2a — replay aggregation against a self-hosted SP1 cluster, **no RPC
+needed**:
 
 ```bash
 SP1_PROVER=cluster \
@@ -99,23 +102,30 @@ CLI_CLUSTER_RPC=http://127.0.0.1:50051 \
 CLI_REDIS_NODES="redis://127.0.0.1:6379/0" \
 RUST_LOG=info \
 cargo run -p xlayer-tee-mock-proposer --release -- \
-  --l1-rpc       http://127.0.0.1:8545 \
-  --l2-rpc       http://127.0.0.1:9545 \
-  --l2-node-rpc  http://127.0.0.1:7545 \
-  --proofs-file  /tmp/tee-proofs.json \
-  --agg-mode     prove \
+  --proofs-file     /tmp/tee-proofs.json \
+  --agg-mode        prove \
+  --prover-backend  cluster \
   --cluster-timeout 14400 \
-  --prover-address 0xYourAddress
+  --prover-address  0xYourAddress
+```
+
+Step 2b — replay with the local CPU prover, also no RPC needed:
+
+```bash
+cargo run -p xlayer-tee-mock-proposer --release -- \
+  --proofs-file     /tmp/tee-proofs.json \
+  --agg-mode        prove \
+  --prover-backend  cpu \
+  --prover-address  0xYourAddress
 ```
 
 Notes:
 
-- `--l1-rpc/--l2-rpc/--l2-node-rpc` are still required in replay — the
-  fetcher fetches the rollup config and L1 header preimages used by the
-  aggregation guest. `--l1-beacon-rpc` is **not** needed (no witness gen).
-- `run_prove` auto-detects `SP1_PROVER=cluster` and dispatches to
-  `cluster_agg_proof()`. Without that env var it falls back to the CPU
-  prover.
+- The cache stores chunk proofs, the attestation, the L1 header preimages,
+  and the checkpoint head — so replay does **not** require L1/L2/L2-node
+  RPC. The devnet can be down.
+- `--prover-backend auto` (the default) routes to the cluster when
+  `SP1_PROVER=cluster`, else to CpuProver. `cpu` / `cluster` force one path.
 - For ranges that exceed Redis's 4-hour artifact TTL, swap to S3:
   `CLI_S3_BUCKET=... CLI_S3_REGION=...` instead of `CLI_REDIS_NODES`.
   Set exactly one — both or neither will panic.
@@ -126,7 +136,7 @@ Notes:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--l1-rpc` / `--l2-rpc` / `--l2-node-rpc` | env | RPC URLs (env: `L1_RPC` / `L2_RPC` / `L2_NODE_RPC`) |
+| `--l1-rpc` / `--l2-rpc` / `--l2-node-rpc` | env | RPC URLs (env: `L1_RPC` / `L2_RPC` / `L2_NODE_RPC`). Required for the live TEE flow; ignored in replay |
 | `--l1-beacon-rpc` | env `L1_BEACON_RPC` | L1 beacon RPC (witness gen only) |
 | `--start-block` / `--end-block` | — | required unless `--proofs-file` is set |
 | `--chunk-size` | `500` | half-open contiguous chunk size |
@@ -137,14 +147,15 @@ Notes:
 | `--safe-db-fallback` | `true` | fall back to timestamp-based L1 head when SafeDB is unavailable |
 | `--l1-head` | (auto) | override the derivation L1 head (devnet escape hatch) |
 | `--agg-mode` | `skip` | `skip` / `execute` / `prove` |
+| `--prover-backend` | `auto` | `auto` (env-driven) / `cpu` / `cluster`; only consulted under `--agg-mode prove` |
 | `--prover-address` | `0x0…0` | committed into `AggregationOutputs.proverAddress` |
-| `--proofs-file` | — | replay aggregation from a previously-saved cache; skips the TEE flow |
-| `--save-proofs-file` | — | after a successful TEE run, dump every chunk's proof + attestation to this path |
-| `--cluster-timeout` | `14400` | seconds; only consulted when `SP1_PROVER=cluster` |
+| `--proofs-file` | — | replay aggregation from a previously-saved cache; skips the TEE flow and all RPCs |
+| `--save-proofs-file` | — | after a successful TEE run, dump chunks + attestation + L1 header preimages to this path |
+| `--cluster-timeout` | `14400` | seconds; only consulted by the cluster backend |
 
 ## Cache format (`--save-proofs-file` / `--proofs-file`)
 
-JSON:
+JSON, self-contained — replay reads only this file:
 
 ```json
 {
@@ -152,14 +163,22 @@ JSON:
     { "start": 1000, "end": 1005, "proof_bytes_hex": "0x..." },
     { "start": 1005, "end": 1010, "proof_bytes_hex": "0x..." }
   ],
-  "attestation_b64": "..."
+  "attestation_b64": "...",
+  "headers_cbor_b64": "...",
+  "latest_l1_checkpoint_head": "0x..."
 }
 ```
 
 - `proof_bytes_hex` is the same ABI-encoded `(RangeJournal, signature)`
   blob that `GET /tee/task/{id}` returns under `data.proofBytes`.
-- `attestation_b64` is the COSE_Sign1 NSM document encoded with base64
-  standard alphabet — same encoding as `/tee/info`'s `data.attestationDoc`.
+- `attestation_b64` is the COSE_Sign1 NSM document, base64(STANDARD) — same
+  encoding as `/tee/info`'s `data.attestationDoc`.
+- `headers_cbor_b64` is `serde_cbor::to_vec(&Vec<alloy_consensus::Header>)`
+  covering every chunk's `l1Head` back to `latest_l1_checkpoint_head`,
+  base64(STANDARD). Used by the aggregation guest as the L1 chain
+  "dictionary"; loading validates that `headers.last().hash_slow()` equals
+  `latest_l1_checkpoint_head`.
+- `latest_l1_checkpoint_head` is the head the guest walks back from.
 
 ## Tracing
 
