@@ -58,6 +58,26 @@ enum ProverBackend {
     Cluster,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProofMode {
+    /// SP1 internal compressed proof. Cheap to generate; NOT verifiable on chain.
+    Compressed,
+    /// Groth16 SNARK. ~260-byte proof; verifiable by SP1VerifierGroth16 on chain.
+    Groth16,
+    /// PLONK SNARK. Larger proof, no trusted setup; verifiable by SP1VerifierPlonk on chain.
+    Plonk,
+}
+
+impl ProofMode {
+    fn to_sp1(self) -> SP1ProofMode {
+        match self {
+            ProofMode::Compressed => SP1ProofMode::Compressed,
+            ProofMode::Groth16 => SP1ProofMode::Groth16,
+            ProofMode::Plonk => SP1ProofMode::Plonk,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "xlayer-tee-mock-proposer",
@@ -165,6 +185,12 @@ struct Args {
     /// forces the self-hosted SP1 cluster.
     #[arg(long, value_enum, default_value = "auto")]
     prover_backend: ProverBackend,
+
+    /// SP1 proof mode. `compressed` (default) is the fastest to generate but
+    /// can only be aggregated again or wrapped; pick `groth16` or `plonk` to
+    /// get an on-chain-verifiable SNARK.
+    #[arg(long, value_enum, default_value = "compressed")]
+    proof_mode: ProofMode,
 
     /// Write the full `SP1ProofWithPublicValues` (bincode) to this path on a
     /// successful prove. Reload later with `SP1ProofWithPublicValues::load()`.
@@ -748,6 +774,7 @@ async fn run_aggregation(
         AggMode::Prove => run_prove(
             stdin,
             args.prover_backend,
+            args.proof_mode.to_sp1(),
             args.cluster_timeout,
             args.output_proof.as_deref(),
         )
@@ -818,6 +845,7 @@ async fn run_execute(stdin: SP1Stdin) -> Result<()> {
 async fn run_prove(
     stdin: SP1Stdin,
     backend: ProverBackend,
+    mode: SP1ProofMode,
     cluster_timeout: u64,
     output_proof: Option<&std::path::Path>,
 ) -> Result<()> {
@@ -827,22 +855,31 @@ async fn run_prove(
         ProverBackend::Cpu => false,
     };
     let proof = if use_cluster {
-        info!(?backend, cluster_timeout, "running SP1 prove via self-hosted cluster (compressed)");
-        cluster_agg_proof(cluster_timeout, SP1ProofMode::Compressed, stdin).await?
+        info!(?backend, ?mode, cluster_timeout, "running SP1 prove via self-hosted cluster");
+        cluster_agg_proof(cluster_timeout, mode, stdin).await?
     } else {
-        info!(?backend, "running SP1 prove on aggregation guest via CpuProver (compressed)");
+        info!(?backend, ?mode, "running SP1 prove on aggregation guest via CpuProver");
         tokio::task::spawn_blocking(move || -> Result<_> {
             let prover = CpuProver::new();
             let pk = prover.setup(Elf::Static(AGGREGATION_ELF))?;
-            let proof = prover.prove(&pk, stdin).compressed().run()?;
+            let proof = prover.prove(&pk, stdin).mode(mode).run()?;
             Ok(proof)
         })
         .await
         .context("prove task panicked")??
     };
-    let bytes = proof.public_values.to_vec();
-    println!("proof complete; public_values_len = {}", bytes.len());
-    println!("public_values_hex = 0x{}", hex::encode(&bytes));
+    let public_values = proof.public_values.to_vec();
+    println!("proof complete; public_values_len = {}", public_values.len());
+    println!("public_values_hex = 0x{}", hex::encode(&public_values));
+    // `proof.bytes()` returns the on-chain-verifiable proof blob (the third
+    // argument to `ISP1Verifier.verifyProof`). It is empty for compressed
+    // proofs, so we only print when there's something to submit.
+    let on_chain_bytes = proof.bytes();
+    if on_chain_bytes.is_empty() {
+        info!("proof_bytes is empty (compressed mode is not on-chain verifiable)");
+    } else {
+        println!("proof_bytes_hex = 0x{}", hex::encode(&on_chain_bytes));
+    }
     if let Some(path) = output_proof {
         proof.save(path).with_context(|| format!("save proof to {}", path.display()))?;
         println!("proof saved to {}", path.display());
