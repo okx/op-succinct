@@ -94,18 +94,20 @@ cargo run -p xlayer-tee-mock-proposer --release -- \
 ```
 
 Step 2a — replay aggregation against a self-hosted SP1 cluster, **no RPC
-needed**:
+needed**. Pass `--output-proof <path>` to write the bincode-serialized SNARK
+alongside the printed public values:
 
 ```bash
 SP1_PROVER=cluster \
 CLI_CLUSTER_RPC=http://127.0.0.1:50051 \
-CLI_REDIS_NODES="redis://127.0.0.1:6379/0" \
+CLI_REDIS_NODES="redis://:<password>@127.0.0.1:6379/0" \
 RUST_LOG=info \
 cargo run -p xlayer-tee-mock-proposer --release -- \
   --proofs-file     /tmp/tee-proofs.json \
   --agg-mode        prove \
   --prover-backend  cluster \
   --cluster-timeout 14400 \
+  --output-proof    /tmp/agg-proof.bin \
   --prover-address  0xYourAddress
 ```
 
@@ -116,6 +118,7 @@ cargo run -p xlayer-tee-mock-proposer --release -- \
   --proofs-file     /tmp/tee-proofs.json \
   --agg-mode        prove \
   --prover-backend  cpu \
+  --output-proof    /tmp/agg-proof.bin \
   --prover-address  0xYourAddress
 ```
 
@@ -152,6 +155,7 @@ Notes:
 | `--proofs-file` | — | replay aggregation from a previously-saved cache; skips the TEE flow and all RPCs |
 | `--save-proofs-file` | — | after a successful TEE run, dump chunks + attestation + L1 header preimages to this path |
 | `--cluster-timeout` | `14400` | seconds; only consulted by the cluster backend |
+| `--output-proof` | — | save the full `SP1ProofWithPublicValues` (bincode) to this path; reload with `SP1ProofWithPublicValues::load()` |
 
 ## Cache format (`--save-proofs-file` / `--proofs-file`)
 

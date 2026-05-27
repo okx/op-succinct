@@ -165,6 +165,12 @@ struct Args {
     /// forces the self-hosted SP1 cluster.
     #[arg(long, value_enum, default_value = "auto")]
     prover_backend: ProverBackend,
+
+    /// Write the full `SP1ProofWithPublicValues` (bincode) to this path on a
+    /// successful prove. Reload later with `SP1ProofWithPublicValues::load()`.
+    /// Convention in op-succinct is `*.bin`.
+    #[arg(long)]
+    output_proof: Option<PathBuf>,
 }
 
 /// On-disk format for `--save-proofs-file` / `--proofs-file`.
@@ -739,7 +745,13 @@ async fn run_aggregation(
     match args.agg_mode {
         AggMode::Skip => unreachable!("handled in main"),
         AggMode::Execute => run_execute(stdin).await,
-        AggMode::Prove => run_prove(stdin, args.prover_backend, args.cluster_timeout).await,
+        AggMode::Prove => run_prove(
+            stdin,
+            args.prover_backend,
+            args.cluster_timeout,
+            args.output_proof.as_deref(),
+        )
+        .await,
     }
 }
 
@@ -807,32 +819,34 @@ async fn run_prove(
     stdin: SP1Stdin,
     backend: ProverBackend,
     cluster_timeout: u64,
+    output_proof: Option<&std::path::Path>,
 ) -> Result<()> {
     let use_cluster = match backend {
         ProverBackend::Auto => is_cluster_mode(),
         ProverBackend::Cluster => true,
         ProverBackend::Cpu => false,
     };
-    if use_cluster {
+    let proof = if use_cluster {
         info!(?backend, cluster_timeout, "running SP1 prove via self-hosted cluster (compressed)");
-        let proof = cluster_agg_proof(cluster_timeout, SP1ProofMode::Compressed, stdin).await?;
-        let bytes = proof.public_values.to_vec();
-        println!("cluster proof complete; public_values_len = {}", bytes.len());
-        println!("public_values_hex = 0x{}", hex::encode(&bytes));
-        return Ok(());
-    }
-    info!(?backend, "running SP1 prove on aggregation guest via CpuProver (compressed)");
-    let proof = tokio::task::spawn_blocking(move || -> Result<_> {
-        let prover = CpuProver::new();
-        let pk = prover.setup(Elf::Static(AGGREGATION_ELF))?;
-        let proof = prover.prove(&pk, stdin).compressed().run()?;
-        Ok(proof)
-    })
-    .await
-    .context("prove task panicked")??;
+        cluster_agg_proof(cluster_timeout, SP1ProofMode::Compressed, stdin).await?
+    } else {
+        info!(?backend, "running SP1 prove on aggregation guest via CpuProver (compressed)");
+        tokio::task::spawn_blocking(move || -> Result<_> {
+            let prover = CpuProver::new();
+            let pk = prover.setup(Elf::Static(AGGREGATION_ELF))?;
+            let proof = prover.prove(&pk, stdin).compressed().run()?;
+            Ok(proof)
+        })
+        .await
+        .context("prove task panicked")??
+    };
     let bytes = proof.public_values.to_vec();
-    println!("proof generated; public_values_len = {}", bytes.len());
+    println!("proof complete; public_values_len = {}", bytes.len());
     println!("public_values_hex = 0x{}", hex::encode(&bytes));
+    if let Some(path) = output_proof {
+        proof.save(path).with_context(|| format!("save proof to {}", path.display()))?;
+        println!("proof saved to {}", path.display());
+    }
     Ok(())
 }
 
