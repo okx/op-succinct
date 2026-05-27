@@ -115,19 +115,6 @@ impl EnclaveClient {
         collect_body(resp).await
     }
 
-    pub async fn get_health(&self) -> Result<serde_json::Value> {
-        let resp = self
-            .send_with_retry(|| {
-                Request::builder()
-                    .method("GET")
-                    .uri("/health")
-                    .header("host", "enclave")
-                    .body(Full::new(Bytes::new()))
-            })
-            .await?;
-        decode_json(resp).await
-    }
-
     async fn send_with_retry<F>(&self, build: F) -> Result<Response<hyper::body::Incoming>>
     where
         F: Fn() -> std::result::Result<Request<Full<Bytes>>, hyper::http::Error>,
@@ -167,17 +154,6 @@ async fn ensure_success(resp: Response<hyper::body::Incoming>) -> Result<()> {
         return Ok(());
     }
     Err(parse_error_body(resp).await)
-}
-
-async fn decode_json<T: serde::de::DeserializeOwned>(
-    resp: Response<hyper::body::Incoming>,
-) -> Result<T> {
-    if !resp.status().is_success() {
-        return Err(parse_error_body(resp).await);
-    }
-    let body = collect_body(resp).await?;
-    serde_json::from_slice(&body)
-        .map_err(|e| Error::Internal(format!("enclave JSON decode: {e}")))
 }
 
 /// Decode an rkyv-encoded body. Copies into an 8-byte aligned buffer because

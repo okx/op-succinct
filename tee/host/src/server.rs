@@ -252,12 +252,8 @@ async fn get_info(State(state): State<AppState>) -> Json<ApiResponse<EnclaveInfo
 
 async fn fetch_enclave_info(client: &EnclaveClient) -> crate::error::Result<EnclaveInfoData> {
     let attestation = client.get_attestation().await?;
-    let health = client.get_health().await?;
-    let s = |k: &str| health.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     Ok(EnclaveInfoData {
         attestation_doc: base64::engine::general_purpose::STANDARD.encode(&attestation),
-        commit: s("elf_version"),
-        pub_key: s("signer_pubkey"),
     })
 }
 

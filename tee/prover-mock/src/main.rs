@@ -8,7 +8,6 @@
 //! - `POST /tasks/range` — reads body (no rkyv decoding), returns a
 //!   zero-filled `RangeTaskResponse`.
 //! - `GET /attestation` — returns 64 zero bytes (placeholder).
-//! - `GET /health` — returns 200 OK.
 //!
 //! Inject `FAIL_KIND` env var (e.g. `FAIL_KIND=ClaimMismatch`) to make the
 //! mock return that error instead of success — useful for testing the
@@ -50,7 +49,6 @@ async fn main() {
     let app = Router::new()
         .route(paths::TASKS_RANGE, post(tasks_range))
         .route(paths::ATTESTATION, get(attestation))
-        .route(paths::HEALTH, get(health))
         .layer(DefaultBodyLimit::max(limits::MAX_RANGE_BODY_BYTES));
 
     let addr: SocketAddr = std::env::var("LISTEN")
@@ -104,11 +102,6 @@ async fn attestation() -> Response {
         payload.to_vec(),
     )
         .into_response()
-}
-
-/// `GET /health` — 200 OK with empty body.
-async fn health() -> StatusCode {
-    StatusCode::OK
 }
 
 // -----------------------------------------------------------------------------
