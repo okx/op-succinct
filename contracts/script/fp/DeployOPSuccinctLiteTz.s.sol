@@ -4,7 +4,7 @@ pragma solidity ^0.8.15;
 // Libraries
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {Claim, Duration, GameStatus, GameType} from "src/dispute/lib/Types.sol";
+import {Claim, Duration, GameType} from "src/dispute/lib/Types.sol";
 
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
@@ -28,22 +28,22 @@ import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1Verif
 /// @title DeployOPSuccinctLiteTz
 /// @notice TradeZone (tz) variant of DeployOPSuccinctLite.
 ///
-/// In addition to the standard Lite deployment flow, this script bootstraps the
-/// AnchorStateRegistry by:
-///   1. Deploying a *bootstrap* OPSuccinctFaultDisputeGame implementation with very
-///      short challenge / prove durations (default 1s / 1s).
-///   2. Registering it on the factory.
-///   3. Creating a single bootstrap game with a known root + l2BlockNumber.
-///   4. Letting the challenge deadline lapse (next broadcast block) and calling
-///      `resolve()` so the game becomes DEFENDER_WINS.
-///   5. Best-effort calling `closeGame()` — this triggers `setAnchorState()` and
-///      updates the anchor root. NOTE: this only succeeds if
-///      `OptimismPortal2.disputeGameFinalityDelaySeconds()` has elapsed since
-///      `resolvedAt`. On chains with a long portal finality delay you must call
-///      `closeGame()` separately later.
-///   6. Deploying the *production* implementation (durations come from JSON) and
-///      swapping the factory implementation to point at it, so subsequent games use
-///      the real challenge window.
+/// Steps:
+///   1. Deploy a *bootstrap* OPSuccinctFaultDisputeGame impl with zero challenge /
+///      prove windows so the game is closable as soon as a single block passes
+///      after creation.
+///   2. Register it on the factory.
+///   3. Create a single bootstrap game with a known root + l2BlockNumber. This
+///      game will become the new anchor once it is resolved and closed.
+///   4. Deploy the *production* impl (durations come from JSON) and swap the
+///      factory implementation to point at it, so subsequent games use the real
+///      challenge window.
+///
+/// `resolve()` and `closeGame()` for the bootstrap game are intentionally NOT
+/// done here — anvil advances block.timestamp by exactly 1s per block, which is
+/// too tight to be reliable inside a single forge broadcast, and on production
+/// chains `closeGame()` also needs `disputeGameFinalityDelaySeconds` to elapse.
+/// Use `contracts/close-games.sh` afterwards to advance the bootstrap game.
 ///
 /// Required environment variables:
 ///   FACTORY_ADDRESS                     — DisputeGameFactory
@@ -66,8 +66,6 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         address bootstrapGame;
         address sp1Verifier;
         address accessManager;
-        bool resolved;
-        bool closed;
     }
 
     function run() public returns (DeployResult memory result) {
@@ -100,14 +98,14 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         );
 
         // -----------------------------------------------------------------
-        // 3. Deploy + register BOOTSTRAP impl with tiny challenge window
+        // 3. Deploy + register BOOTSTRAP impl with zero challenge window
         // -----------------------------------------------------------------
-        // 1-second windows: long enough that on any chain with >=1s blocktime the
-        // deadline will have passed by the next broadcast tx, short enough that the
-        // single bootstrap game finalizes immediately.
+        // Zero-second windows: deadline = block.timestamp at create. One block
+        // later, gameOver() returns true, so close-games.sh can resolve()
+        // immediately without waiting on a challenge clock.
         OPSuccinctFaultDisputeGame bootstrapImpl = deployGameImplementation(
-            1,
-            1,
+            0,
+            0,
             DisputeGameFactory(factoryAddress),
             sp1Config,
             IAnchorStateRegistry(registryAddress),
@@ -119,9 +117,9 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         configureFactory(factoryAddress, config.gameType, config.initialBondWei, address(bootstrapImpl));
 
         // -----------------------------------------------------------------
-        // 4. Create bootstrap game and try to resolve + close it
+        // 4. Create bootstrap game (resolve + close handled by close-games.sh)
         // -----------------------------------------------------------------
-        (address bootstrapGameAddr, bool didResolve, bool didClose) = _bootstrapAnchor(
+        address bootstrapGameAddr = _createBootstrapGame(
             factoryAddress, config.gameType, config.initialBondWei, bootstrapRoot, bootstrapBlock
         );
 
@@ -143,14 +141,15 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
 
         vm.stopBroadcast();
 
+        console.log("");
+        console.log("Next step: run ./close-games.sh to resolve + close the bootstrap game.");
+
         return DeployResult({
             bootstrapImpl: address(bootstrapImpl),
             productionImpl: address(productionImpl),
             bootstrapGame: bootstrapGameAddr,
             sp1Verifier: sp1Config.verifierAddress,
-            accessManager: address(accessManagerContract),
-            resolved: didResolve,
-            closed: didClose
+            accessManager: address(accessManagerContract)
         });
     }
 
@@ -158,17 +157,26 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
     // Bootstrap helpers
     // ---------------------------------------------------------------------
 
-    /// @dev Creates one bootstrap game, then best-effort resolves and closes it.
-    /// Splits the work into a helper so the outer run() stays readable and avoids
-    /// "stack too deep".
-    function _bootstrapAnchor(
+    /// @dev Creates the bootstrap dispute game. Extracted from run() to keep
+    /// the local-variable count down (avoids "stack too deep").
+    function _createBootstrapGame(
         address factoryAddress,
         uint32 gameTypeValue,
         uint256 bondWei,
         bytes32 rootClaim,
         uint256 l2BlockNumber
-    ) internal returns (address gameAddr, bool didResolve, bool didClose) {
+    ) internal returns (address gameAddr) {
         GameType gt = GameType.wrap(gameTypeValue);
+
+        // The game's constructor records `wasRespectedGameTypeWhenCreated` by
+        // comparing GAME_TYPE to AnchorStateRegistry.respectedGameType() at
+        // creation time. close-games.sh later requires this flag to be true
+        // (so the anchor advances on closeGame), so flip the registry first.
+        // Broadcasting EOA must be the guardian — true on the xlayer devnet
+        // where DEPLOYER_PRIVATE_KEY == systemConfig.guardian().
+        address registryAddress = vm.envAddress("ANCHOR_STATE_REGISTRY");
+        IAnchorStateRegistry(registryAddress).setRespectedGameType(gt);
+        console.log("Set respected game type to:", uint256(gameTypeValue));
 
         // First game in the chain: parent index is uint32.max so the game starts
         // from the current anchor root in the registry.
@@ -178,42 +186,9 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
             gt, Claim.wrap(rootClaim), extraData
         );
         gameAddr = address(created);
-        OPSuccinctFaultDisputeGame game = OPSuccinctFaultDisputeGame(gameAddr);
         console.log("Bootstrap game created at:", gameAddr);
         console.log("  l2BlockNumber:", l2BlockNumber);
         console.logBytes32(rootClaim);
-
-        // Try to resolve. With the hardcoded 1s challenge window, the next
-        // broadcast tx is in a later block on any chain with >=1s blocktime, so
-        // gameOver() returns true. We still wrap in try/catch so the deploy
-        // doesn't abort on faster chains; the caller can resolve manually.
-        try game.resolve() returns (GameStatus s) {
-            didResolve = true;
-            console.log("Bootstrap game resolved, status:", uint256(uint8(s)));
-        } catch Error(string memory reason) {
-            console.log("resolve() reverted:", reason);
-        } catch (bytes memory) {
-            console.log("resolve() reverted (low-level). Likely deadline not yet passed.");
-            console.log("Re-run resolve() in a follow-up tx; deadline is now+BOOTSTRAP_CHALLENGE_DURATION.");
-        }
-
-        // Best-effort closeGame() — only succeeds once
-        // AnchorStateRegistry.isGameFinalized() is true, which requires
-        // resolvedAt + portal.disputeGameFinalityDelaySeconds() < block.timestamp.
-        // If the portal uses a long delay, this will revert here; that's fine,
-        // the caller just needs to call closeGame() later.
-        if (didResolve) {
-            try game.closeGame() {
-                didClose = true;
-                console.log("Bootstrap game closed -- anchor state updated.");
-            } catch Error(string memory reason) {
-                console.log("closeGame() reverted:", reason);
-                console.log("Re-run game.closeGame() after the portal finality delay elapses.");
-            } catch (bytes memory) {
-                console.log("closeGame() reverted (low-level) -- most likely GameNotFinalized.");
-                console.log("Re-run game.closeGame() after the portal finality delay elapses.");
-            }
-        }
     }
 
     // ---------------------------------------------------------------------
