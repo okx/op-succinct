@@ -317,6 +317,25 @@ where
             cur = chunk_end.saturating_add(1);
         }
 
+        if std::env::var("TZ_LOCAL_EXECUTE").ok().as_deref() == Some("1") {
+            tracing::info!("tz: TZ_LOCAL_EXECUTE=1 — running range guest on local CPU first");
+            let cpu = sp1_sdk::ProverClient::builder().cpu().build().await;
+            match cpu
+                .execute(Elf::Static(get_range_elf_embedded()), range_stdin.clone())
+                .await
+            {
+                Ok((pv, report)) => tracing::info!(
+                    pv_len = pv.as_slice().len(),
+                    cycles = ?report.total_instruction_count(),
+                    "tz: local execute OK"
+                ),
+                Err(e) => {
+                    tracing::error!("tz: local execute FAILED: {e:?}");
+                    return Err(anyhow::anyhow!("tz: local execute failed: {e}"));
+                }
+            }
+        }
+
         tracing::info!("tz: generating range proof");
         let (range_proof, _cycles, _gas) = self.prover.generate_range_proof(range_stdin).await?;
         let pv_bytes = range_proof.public_values.as_slice();
