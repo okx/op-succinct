@@ -306,8 +306,8 @@ where
 
         tracing::info!("tz: generating range proof");
         let (range_proof, _cycles, _gas) = self.prover.generate_range_proof(range_stdin).await?;
-        let mut public_values = range_proof.public_values.clone();
-        let boot_info: BootInfoStruct = public_values.read();
+        let boot_info = BootInfoStruct::abi_decode(range_proof.public_values.as_slice())
+            .map_err(|e| anyhow::anyhow!("tz: failed to abi_decode range BootInfoStruct: {e}"))?;
 
         let agg_inputs = AggregationInputs {
             boot_infos: vec![boot_info],
