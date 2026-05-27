@@ -152,9 +152,9 @@ op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
 # tradezone (range guest deps)
-tz-block-processor = { git = "ssh://git@github.com/okx/x2.git", rev = "452d2c1d94601844814a20abdab061c04515447b", features = ["tee"] }
-tz-dex = { git = "ssh://git@github.com/okx/x2.git", rev = "452d2c1d94601844814a20abdab061c04515447b", features = ["zkvm"] }
-tz-primitives = { git = "ssh://git@github.com/okx/x2.git", rev = "452d2c1d94601844814a20abdab061c04515447b" }
+tz-block-processor = { git = "ssh://git@github.com/okx/x2.git", rev = "f62e2f5d2e2e834f9f962a2826eb6794e6f4df16", features = ["tee"] }
+tz-dex = { git = "ssh://git@github.com/okx/x2.git", rev = "f62e2f5d2e2e834f9f962a2826eb6794e6f4df16", features = ["zkvm"] }
+tz-primitives = { git = "ssh://git@github.com/okx/x2.git", rev = "f62e2f5d2e2e834f9f962a2826eb6794e6f4df16" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
@@ -260,7 +260,6 @@ sp1-sdk = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.
 sp1-build = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 sp1-core-executor = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 sp1-core-machine = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
-sp1-cuda = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 sp1-curves = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 sp1-derive = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 sp1-hypercube = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
