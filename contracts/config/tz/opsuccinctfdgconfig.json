@@ -15,7 +15,7 @@
   ],
   "startingL2BlockNumber": 8594221,
   "startingRoot": "0x8efd417266ee9d5c39a3ce7a0301368924216501300531b540a717c4e3b83d5e",
-  "rollupConfigHash": "0x3ed3598c92b6cd8bc44d3dba15ab51beb45bfd0093dcaf998a659a9ad1dcc851",
+  "rollupConfigHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "systemConfigAddress": "0x06be4b4a9a28ff8eed6da09447bc5daa676efac3",
   "optimismPortal2Address": "0x1529a34331d7d85c8868fc88ec730ae56d3ec9c0",
   "useSp1MockVerifier": false,
