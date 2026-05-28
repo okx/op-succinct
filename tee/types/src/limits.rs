@@ -12,11 +12,3 @@
 /// Proposer MUST reject witnesses exceeding this. Enclave axum body limit
 /// is configured to this value.
 pub const MAX_RANGE_BODY_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
-
-/// Maximum size of a single `/tasks/aggregation` request body
-/// (rkyv Vec<RangeTaskResponse>).
-pub const MAX_AGGREGATION_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
-
-/// Maximum number of range proofs accepted in one aggregation call.
-/// Proposer must batch larger aggregations recursively (out of scope v0.1).
-pub const MAX_AGGREGATION_INPUTS: usize = 32;

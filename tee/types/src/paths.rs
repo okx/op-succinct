@@ -7,9 +7,6 @@
 /// - `x-task-id: <UUID v4>` — caller-allocated id for idempotency / polling.
 pub const TASKS_RANGE: &str = "/tasks/range";
 
-/// `POST` — Aggregate N range proofs into a single signed AggregationJournal.
-pub const TASKS_AGGREGATION: &str = "/tasks/aggregation";
-
 /// `GET` — Snapshot the state of a previously submitted task.
 pub const TASKS_BY_ID: &str = "/tasks/{task_id}";
 
