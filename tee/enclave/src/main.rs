@@ -104,12 +104,10 @@ async fn main() {
     init_dev_keys();
 
     // dev build: PCR0 is a mock all-zero measurement.
-    // vsock build: read real PCR0 via NSM and compress 48-byte SHA-384 into
-    //   the `bytes32` slot used by the on-chain `approvedEnclaves` schema.
-    //   Compression = keccak256(full_pcr0) — preserves collision resistance
-    //   and matches the Solidity convention for "fingerprinting" longer hashes.
-    //   TODO(contract-team): confirm this matches the expected on-chain encoding
-    //   before going to mainnet.
+    // vsock build: read real PCR0 via NSM and compress the 48-byte SHA-384
+    //   into 32 bytes via keccak256 so it fits the signed RangeJournal.pcr0
+    //   field and matches EXPECTED_PCR0_HASH baked into the SP1 aggregation
+    //   vkey.
     #[cfg(not(all(target_os = "linux", feature = "vsock")))]
     let pcr0: [u8; 32] = [0u8; 32];
     #[cfg(all(target_os = "linux", feature = "vsock"))]
