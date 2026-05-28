@@ -7,7 +7,7 @@ edition.workspace = true
 [dependencies]
 
 # alloy
-alloy-consensus.workspace = true
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true

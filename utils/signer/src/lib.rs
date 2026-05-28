@@ -69,11 +69,13 @@ impl Signer {
         if let Ok(enabled) = std::env::var("XLAYER_SIGNER_ENABLED") {
             if enabled.to_lowercase() == "true" {
                 let config = XLayerConfig {
-                    endpoint: std::env::var("XLAYER_SIGNER_ENDPOINT")
-                        .context("XLAYER_SIGNER_ENDPOINT is required when XLAYER_SIGNER_ENABLED=true")?,
-                    address: Address::from_str(&std::env::var("XLAYER_SIGNER_ADDRESS")
-                        .context("XLAYER_SIGNER_ADDRESS is required when XLAYER_SIGNER_ENABLED=true")?)
-                        .context("Failed to parse XLAYER_SIGNER_ADDRESS")?,
+                    endpoint: std::env::var("XLAYER_SIGNER_ENDPOINT").context(
+                        "XLAYER_SIGNER_ENDPOINT is required when XLAYER_SIGNER_ENABLED=true",
+                    )?,
+                    address: Address::from_str(&std::env::var("XLAYER_SIGNER_ADDRESS").context(
+                        "XLAYER_SIGNER_ADDRESS is required when XLAYER_SIGNER_ENABLED=true",
+                    )?)
+                    .context("Failed to parse XLAYER_SIGNER_ADDRESS")?,
                     user_id: std::env::var("XLAYER_USER_ID")
                         .unwrap_or_else(|_| "0".to_string())
                         .parse()
@@ -96,10 +98,12 @@ impl Signer {
                         .unwrap_or_else(|_| "3".to_string())
                         .parse()
                         .context("Failed to parse XLAYER_SYS_FROM")?,
-                    request_sign_uri: std::env::var("XLAYER_REQUEST_SIGN_URI")
-                        .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/ecologyOperate".to_string()),
-                    query_sign_uri: std::env::var("XLAYER_QUERY_SIGN_URI")
-                        .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string()),
+                    request_sign_uri: std::env::var("XLAYER_REQUEST_SIGN_URI").unwrap_or_else(
+                        |_| "/priapi/v1/assetonchain/ecology/ecologyOperate".to_string(),
+                    ),
+                    query_sign_uri: std::env::var("XLAYER_QUERY_SIGN_URI").unwrap_or_else(|_| {
+                        "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string()
+                    }),
                     access_key: std::env::var("XLAYER_ACCESS_KEY")
                         .context("XLAYER_ACCESS_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
                     secret_key: std::env::var("XLAYER_SECRET_KEY")
@@ -108,7 +112,7 @@ impl Signer {
                         std::env::var("XLAYER_TIMEOUT")
                             .unwrap_or_else(|_| "30".to_string())
                             .parse()
-                            .context("Failed to parse XLAYER_TIMEOUT")?
+                            .context("Failed to parse XLAYER_TIMEOUT")?,
                     ),
                 };
 
@@ -189,12 +193,17 @@ impl Signer {
                 transaction_request.set_from(*signer_address);
 
                 // Fill the transaction request with all of the relevant gas and nonce information.
-                let provider = ProviderBuilder::new().network::<Ethereum>().connect_http(l1_rpc.clone());
-                let _filled_tx = provider.fill(transaction_request.clone()).await?;
+                let provider =
+                    ProviderBuilder::new().network::<Ethereum>().connect_http(l1_rpc.clone());
+                let filled_tx = provider.fill(transaction_request).await?;
+                let filled_request = filled_tx
+                    .as_builder()
+                    .context("provider.fill returned a signed envelope; expected unsigned TransactionRequest")?
+                    .clone();
 
                 tracing::info!("Signing transaction with XLayer remote signer");
                 let signed_tx_bytes = client
-                    .sign_transaction(&transaction_request)
+                    .sign_transaction(&filled_request)
                     .await
                     .context("XLayer remote signing failed")?;
 
@@ -212,7 +221,10 @@ impl Signer {
                     .get_receipt()
                     .await?;
 
-                tracing::info!("XLayer-signed transaction confirmed: tx_hash={:?}", receipt.transaction_hash);
+                tracing::info!(
+                    "XLayer-signed transaction confirmed: tx_hash={:?}",
+                    receipt.transaction_hash
+                );
                 Ok(receipt)
             }
             Signer::Web3Signer(signer_url, signer_address) => {
