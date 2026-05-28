@@ -115,12 +115,25 @@ impl EnclaveClient {
         collect_body(resp).await
     }
 
+    /// 3 attempts with 1 s / 2 s backoff and a fresh connection between
+    /// retries. Idempotent on the enclave side (POST keyed by `x-task-id`).
     async fn send_with_retry<F>(&self, build: F) -> Result<Response<hyper::body::Incoming>>
     where
         F: Fn() -> std::result::Result<Request<Full<Bytes>>, hyper::http::Error>,
     {
+        const MAX_ATTEMPTS: u8 = 3;
         let timeout = Duration::from_secs(self.config.request_timeout_secs);
-        for attempt in 0u8..2 {
+        let mut last_err: Option<Error> = None;
+        for attempt in 0u8..MAX_ATTEMPTS {
+            if attempt > 0 {
+                let delay = Duration::from_secs(1u64 << (attempt - 1));
+                tokio::time::sleep(delay).await;
+                if let Err(re) = self.reconnect().await {
+                    tracing::warn!(attempt, error = %re, "enclave reconnect failed");
+                    last_err = Some(Error::Internal(format!("reconnect: {re}")));
+                    continue;
+                }
+            }
             let req = build().map_err(|e| Error::Internal(e.to_string()))?;
             let send = async {
                 let mut sender = self.sender.lock().await;
@@ -128,18 +141,24 @@ impl EnclaveClient {
             };
             match tokio::time::timeout(timeout, send).await {
                 Ok(Ok(resp)) => return Ok(resp),
-                Ok(Err(e)) if attempt == 0 => {
-                    tracing::warn!(error = %e, "enclave send failed, reconnecting");
-                    self.reconnect().await
-                        .map_err(|re| Error::Internal(format!("reconnect: {re}")))?;
+                Ok(Err(e)) => {
+                    tracing::warn!(attempt, error = %e, "enclave send failed");
+                    last_err = Some(Error::Internal(format!("enclave send: {e}")));
                 }
-                Ok(Err(e)) => return Err(Error::Internal(format!("enclave send: {e}"))),
-                Err(_) => return Err(Error::Internal(format!(
-                    "enclave request timed out after {}s", timeout.as_secs()
-                ))),
+                Err(_) => {
+                    tracing::warn!(
+                        attempt,
+                        timeout_secs = timeout.as_secs(),
+                        "enclave request timed out",
+                    );
+                    last_err = Some(Error::Internal(format!(
+                        "enclave request timed out after {}s",
+                        timeout.as_secs()
+                    )));
+                }
             }
         }
-        Err(Error::Internal("enclave unreachable after retry".into()))
+        Err(last_err.unwrap_or_else(|| Error::Internal("enclave unreachable after retries".into())))
     }
 
     async fn reconnect(&self) -> anyhow::Result<()> {

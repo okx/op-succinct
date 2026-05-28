@@ -299,7 +299,11 @@ async fn main() -> Result<()> {
             let attestation = fetch_attestation(&args.tee_host).await?;
             let boot_infos: Vec<BootInfoStruct> =
                 results.iter().map(|r| r.boot_info.clone()).collect();
-            let last_l1_head = results.last().expect("results non-empty").boot_info.l1Head;
+            let last_l1_head = results
+                .last()
+                .context("internal: chunk results are empty after collection")?
+                .boot_info
+                .l1Head;
             let headers = fetcher
                 .get_header_preimages(&boot_infos, last_l1_head)
                 .await
@@ -329,7 +333,8 @@ async fn main() -> Result<()> {
     if args.agg_mode == AggMode::Skip {
         return Ok(());
     }
-    let ctx = agg_ctx.expect("agg_ctx populated whenever agg_mode != Skip");
+    let ctx = agg_ctx
+        .context("internal: aggregation context missing for non-skip mode")?;
     run_aggregation(&args, &results, ctx).await
 }
 
@@ -439,7 +444,11 @@ async fn run_all_chunks(
             }
         }
     }
-    Ok(results.into_iter().map(|x| x.expect("filled by loop")).collect())
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(idx, x)| x.with_context(|| format!("chunk {idx} produced no result")))
+        .collect()
 }
 
 async fn submit_chunk(
@@ -453,8 +462,11 @@ async fn submit_chunk(
     // Permit released as soon as witness_bytes is ready, so the next chunk
     // can start its own witness gen while this one sits at tee-host.
     let witness_bytes = {
-        let _permit =
-            witness_sem.clone().acquire_owned().await.expect("witness semaphore closed");
+        let _permit = witness_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .context("witness semaphore closed")?;
 
         info!(start = chunk_start, end = chunk_end, "chunk: fetching host args");
         let host_args = host
@@ -568,11 +580,23 @@ async fn post_witness(
         .await
         .context("POST /tee/task")?;
     let status = resp.status();
-    let body: serde_json::Value = resp.json().await.context("parse POST response")?;
-    if !status.is_success() || body["code"].as_i64() != Some(0) {
-        bail!("tee-host rejected POST: {}", body);
+    let text = resp.text().await.context("read POST response body")?;
+    let json: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            // Non-JSON usually means axum 413 (witness > MAX_RANGE_BODY_BYTES).
+            let preview: String = text.chars().take(256).collect();
+            bail!(
+                "tee-host returned non-JSON response: status={status} body=\"{preview}\" \
+                 (json parse error: {e}). 413 means witness exceeds MAX_RANGE_BODY_BYTES; \
+                 reduce --chunk-size."
+            );
+        }
+    };
+    if !status.is_success() || json["code"].as_i64() != Some(0) {
+        bail!("tee-host rejected POST: {}", json);
     }
-    body["data"]["taskId"]
+    json["data"]["taskId"]
         .as_str()
         .map(str::to_string)
         .context("missing data.taskId in POST response")
@@ -748,14 +772,14 @@ async fn run_aggregation(
         .map(|r| RangeProof::Tee { signature: r.signature.clone() })
         .collect();
 
+    let (first, last) = match (boot_infos.first(), boot_infos.last()) {
+        (Some(f), Some(l)) => (f, l),
+        _ => bail!("aggregation requires at least one chunk; got 0"),
+    };
     info!(
         n_leaves = boot_infos.len(),
         n_headers = headers.len(),
-        l2_block_range = format!(
-            "[{}, {}]",
-            boot_infos.first().unwrap().l2PreRoot,
-            boot_infos.last().unwrap().l2PostRoot,
-        ),
+        l2_block_range = format!("[{}, {}]", first.l2PreRoot, last.l2PostRoot),
         "building aggregation stdin"
     );
 

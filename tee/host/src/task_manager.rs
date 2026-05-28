@@ -113,21 +113,18 @@ impl TaskManager {
 
     pub async fn register(&self, witness_body: &[u8], args: TaskArgs) -> RegisterOutcome {
         let witness_hash = keccak256(witness_body);
-
-        {
-            let mut dedup = self.dedup.lock().await;
-            evict_stale(&mut dedup, self.dedup_ttl);
-            if let Some((task_id, _)) = dedup.get(&witness_hash) {
-                return RegisterOutcome::Duplicate(task_id.clone());
-            }
-        }
-
-        // No host-level in-flight cap. Multiple concurrent tasks are allowed
-        // up to the enclave's own `max_inflight`; if the enclave responds
-        // with `TooManyTasks`, `spawn_task_monitor` keeps retrying the POST
-        // (the task stays Running ("queued; enclave at capacity") until a
-        // slot opens).
         let task_id = Uuid::new_v4().to_string();
+
+        // Hold dedup across check + insert: two concurrent identical
+        // submissions must not both create new tasks.
+        let mut dedup = self.dedup.lock().await;
+        evict_stale(&mut dedup, self.dedup_ttl);
+        if let Some((existing_id, _)) = dedup.get(&witness_hash) {
+            return RegisterOutcome::Duplicate(existing_id.clone());
+        }
+        dedup.insert(witness_hash, (task_id.clone(), Instant::now()));
+        drop(dedup);
+
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
         let state = TaskState {
             task_id: task_id.clone(),
@@ -145,10 +142,6 @@ impl TaskManager {
             .lock()
             .await
             .insert(task_id.clone(), Arc::new(Mutex::new(state)));
-        self.dedup
-            .lock()
-            .await
-            .insert(witness_hash, (task_id.clone(), Instant::now()));
 
         RegisterOutcome::Created { task_id, abort_rx }
     }
@@ -181,6 +174,16 @@ impl TaskManager {
     pub async fn set_failed(&self, task_id: &str, error: impl Into<String>) {
         if let Some(witness_hash) =
             self.transition_terminal(task_id, TaskStatus::Failed(error.into())).await
+        {
+            self.dedup.lock().await.remove(&witness_hash);
+        }
+    }
+
+    /// Mark Cancelled when the enclave reports an abort (local DELETE goes
+    /// through [`Self::cancel`]). Evicts the dedup entry.
+    pub async fn set_cancelled(&self, task_id: &str) {
+        if let Some(witness_hash) =
+            self.transition_terminal(task_id, TaskStatus::Cancelled).await
         {
             self.dedup.lock().await.remove(&witness_hash);
         }

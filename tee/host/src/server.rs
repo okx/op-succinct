@@ -83,15 +83,9 @@ async fn create_task(
     Json(ApiResponse::ok(CreateTaskData { task_id }))
 }
 
-/// Background coordinator per task: POST to enclave, then watch the abort
-/// channel. On abort, mark Cancelled here; the enclave-side cancel runs from
-/// `delete_task` via `delete_task_with_retry`.
-///
-/// Concurrency: multiple tasks can run in parallel (no host-level cap). The
-/// enclave caps itself at `max_inflight`; if it returns `TooManyTasks` (429),
-/// this monitor sleeps `POST_RETRY_INTERVAL` and retries the POST — the task
-/// stays `Running ("queued; enclave at capacity")` until a slot opens. From
-/// the client's view it's just a slow task, never a failure.
+/// Background coordinator per task: POST to enclave, watch the abort channel.
+/// On `TooManyTasks` (enclave at capacity), retry up to
+/// `MAX_TOO_MANY_RETRIES * POST_RETRY_INTERVAL` before failing the task.
 fn spawn_task_monitor(
     state: AppState,
     task_id: String,
@@ -99,8 +93,10 @@ fn spawn_task_monitor(
     mut abort_rx: oneshot::Receiver<()>,
 ) {
     const POST_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+    const MAX_TOO_MANY_RETRIES: u32 = 60; // ~2 min total
 
     tokio::spawn(async move {
+        let mut too_many_attempts: u32 = 0;
         loop {
             let post = state.enclave.post_range(&task_id, body.clone());
             tokio::pin!(post);
@@ -118,8 +114,23 @@ fn spawn_task_monitor(
                         return;
                     }
                     Err(Error::Enclave { kind: ErrorKind::TooManyTasks, .. }) => {
+                        too_many_attempts += 1;
+                        if too_many_attempts >= MAX_TOO_MANY_RETRIES {
+                            let msg = format!(
+                                "enclave at capacity for {}s; giving up",
+                                MAX_TOO_MANY_RETRIES * POST_RETRY_INTERVAL.as_secs() as u32,
+                            );
+                            warn!(%task_id, "{msg}");
+                            state.tasks.set_failed(&task_id, msg).await;
+                            return;
+                        }
                         state.tasks.set_progress(&task_id, "queued; enclave at capacity").await;
-                        info!(%task_id, "enclave at capacity, retrying POST");
+                        info!(
+                            %task_id,
+                            attempt = too_many_attempts,
+                            max = MAX_TOO_MANY_RETRIES,
+                            "enclave at capacity, retrying POST",
+                        );
                     }
                     Err(e) => {
                         state.tasks.set_failed(&task_id, e.to_string()).await;
@@ -184,14 +195,14 @@ async fn get_task(
                 Err(e) => return Json(ApiResponse::err(e.code(), e.to_string())),
             }
         }
-        Some(TaskStatusView::Failed { .. }) | Some(TaskStatusView::Cancelled { .. }) => {
-            ("Failed".into(), String::new())
-        }
+        Some(TaskStatusView::Cancelled { .. }) => ("Cancelled".into(), String::new()),
+        Some(TaskStatusView::Failed { .. }) => ("Failed".into(), String::new()),
         Some(TaskStatusView::Running) => ("Running".into(), String::new()),
         // Enclave unreachable — fall back to local snapshot.
         None => match snapshot.status {
             TaskStatus::Finished => ("Finished".into(), String::new()),
-            TaskStatus::Failed(_) | TaskStatus::Cancelled => ("Failed".into(), String::new()),
+            TaskStatus::Cancelled => ("Cancelled".into(), String::new()),
+            TaskStatus::Failed(_) => ("Failed".into(), String::new()),
             TaskStatus::Running(_) => ("Running".into(), String::new()),
         },
     };
@@ -324,9 +335,7 @@ async fn apply_enclave_state(tasks: &TaskManager, task_id: &str, es: &TaskStateV
         TaskStatusView::Failed { kind, message } => {
             tasks.set_failed(task_id, format!("{kind:?}: {message}")).await;
         }
-        TaskStatusView::Cancelled { at_phase } => {
-            tasks.set_failed(task_id, format!("cancelled at {at_phase:?}")).await;
-        }
+        TaskStatusView::Cancelled { .. } => tasks.set_cancelled(task_id).await,
     }
 }
 

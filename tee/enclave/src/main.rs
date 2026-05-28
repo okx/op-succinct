@@ -104,17 +104,19 @@ async fn main() {
 
     init_dev_keys();
 
-    // dev build: PCR0 is a mock all-zero measurement.
-    // vsock build: NSM returns the raw 48-byte SHA-384 measurement; we compress
-    // it to 32 bytes via `keccak256` so it fits the journal's `bytes32 pcr0`
-    // slot and the aggregation guest's `EXPECTED_PCR0_HASH` constant.
+    // dev build: mock all-zero PCR0.
+    // vsock build: keccak256-compress NSM's 48-byte measurement to fit
+    // `bytes32`. An all-zero compressed PCR0 is impossible from a real
+    // measurement — refuse to start on misconfig.
     #[cfg(not(all(target_os = "linux", feature = "vsock")))]
     let pcr0: [u8; 32] = [0u8; 32];
     #[cfg(all(target_os = "linux", feature = "vsock"))]
     let pcr0: [u8; 32] = {
         let raw = xlayer_tee_enclave::attestation::read_pcr0()
             .expect("NSM DescribePCR { index: 0 } must succeed inside the enclave");
-        alloy_primitives::keccak256(&raw).0
+        let compressed = alloy_primitives::keccak256(&raw).0;
+        assert_ne!(compressed, [0u8; 32], "compressed PCR0 is all-zero; refusing to start");
+        compressed
     };
 
     let max_inflight: usize = std::env::var(ENV_MAX_INFLIGHT)

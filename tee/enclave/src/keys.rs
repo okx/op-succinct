@@ -19,11 +19,10 @@ use std::sync::OnceLock;
 use alloy_primitives::{Address, keccak256};
 use k256::ecdsa::SigningKey;
 
-/// Hardcoded 32-byte secp256k1 secret key used in dev builds (hex without `0x`).
+/// Hardcoded 32-byte secp256k1 secret key for dev builds (hex without `0x`).
 ///
-/// This is **public information** — see module docs. Keep stable so the
-/// matching uncompressed pubkey baked into the placeholder attestation
-/// document stays consistent.
+/// ⚠️ Public test key — Anvil account #0. Only loaded by builds without
+/// `--features vsock`. Never ship a default build to production.
 pub const DEV_KEY_HEX: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 /// Length in bytes of an uncompressed SEC1 secp256k1 public key

@@ -80,9 +80,8 @@ async fn handle_tasks_range_post(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<Response> {
-    // Read headers before touching the (potentially 200MB) body, so an
-    // idempotent hit (existing task_id) or a malformed header can short-circuit
-    // without paying for body parse.
+    // Header check first: an idempotent task_id hit or malformed header skips
+    // the downstream rkyv decode + kona spawn.
     let task_id = headers
         .get(wire::HEADER_TASK_ID)
         .ok_or_else(|| Error::InvalidTaskId(format!("missing {} header", wire::HEADER_TASK_ID)))?
