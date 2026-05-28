@@ -2,15 +2,9 @@
 //!
 //! Per-leaf dispatch:
 //! - `RangeProof::Sp1` → `sp1_lib::verify::verify_sp1_proof` recursion.
-//! - `RangeProof::Tee` → in-zkVM EIP712 ecrecover, signer pinned by the
-//!   per-cycle AWS Nitro attestation document.
-//!
-//! ## Trust anchors are vkey-baked
-//!
-//! [`EXPECTED_PCR0_HASH`] and [`AWS_NITRO_ROOT_G1_PUBKEY`] are compile-time
-//! constants → ELF → vkey → on-chain verifier deployment. Rotating either
-//! is a protocol upgrade: edit constant, `just build-agg-elf`, update the
-//! vkey hash on-chain.
+//! - `RangeProof::Tee` → in-zkVM ECDSA ecrecover over `keccak256` of the
+//!   packed range journal; signer pinned by the per-cycle AWS Nitro
+//!   attestation document.
 
 #![cfg_attr(target_os = "zkvm", no_main)]
 #[cfg(target_os = "zkvm")]
@@ -19,8 +13,8 @@ sp1_zkvm::entrypoint!(main);
 mod tee_attestation;
 
 use alloy_consensus::Header;
-use alloy_primitives::{address, b256, hex, keccak256, Address, B256, U256};
-use alloy_sol_types::{sol, Eip712Domain, SolStruct, SolValue};
+use alloy_primitives::{b256, hex, keccak256, Address, B256};
+use alloy_sol_types::SolValue;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
@@ -31,23 +25,13 @@ use std::collections::HashMap;
 
 use tee_attestation::{verify_attestation, TrustAnchors, VerifiedSession};
 
-// ============================================================================
-// TEE trust anchors — vkey-baked constants
-// ============================================================================
-
-/// `keccak256(raw 48-byte NSM PCR0)` — same 32-byte form the enclave signs
-/// into `RangeJournal.pcr0`. Read from a running enclave via
-/// `GET /tee/info` → `data.pcr0`.
-///
-/// **Placeholder** — the all-zero value matches the dev-enclave non-vsock
-/// build only. Replace before any deployment that accepts TEE leaves.
+/// `keccak256(raw 48-byte NSM PCR0)` — same 32-byte form the enclave packs
+/// into the journal. Replace before any deployment that accepts TEE leaves.
 const EXPECTED_PCR0_HASH: B256 =
     b256!("c980e59163ce244bb4bb6211f48c7b46f88a4f40943e84eb99bdc41e129bd293");
 
 /// AWS Nitro Enclaves Root-G1 P-384 public key, SEC1 uncompressed X ‖ Y
-/// (no `0x04` prefix; 96 bytes). Public information.
-/// Source: <https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip>
-/// Valid until 2049-10-28.
+/// (no `0x04` prefix; 96 bytes). Valid until 2049-10-28.
 const AWS_NITRO_ROOT_G1_PUBKEY: [u8; 96] = hex!(
     "fc0254eba608c1f36870e29ada90be46383292736e894bfff672d989444b5051"
     "e534a4b1f6dbe3c0bc581a32b7b176070ede12d69a3fea211b66e752cf7dd1dd"
@@ -59,41 +43,9 @@ const TRUST_ANCHORS: TrustAnchors = TrustAnchors {
     aws_root_pubkey: AWS_NITRO_ROOT_G1_PUBKEY,
 };
 
-// ============================================================================
-// EIP712 domain for `RangeJournal` — also vkey-baked
-// ============================================================================
-
-const TEE_EIP712_DOMAIN_NAME: &str = "XLayerKonaTeeVerifier";
-const TEE_EIP712_DOMAIN_VERSION: &str = "1";
-
-/// L1 chainId where the aggregation proof is posted. Adjust per deployment.
-const TEE_EIP712_CHAIN_ID: u64 = 1337;
-
-/// With on-chain TEE registration removed this field has no natural value;
-/// zero address keeps the EIP712 domain well-formed. Security boundary lives
-/// in the SP1 vkey, not here.
-const TEE_EIP712_VERIFYING_CONTRACT: Address =
-    address!("0000000000000000000000000000000000000000");
-
-// ============================================================================
-// `RangeJournal` mirror — field order MUST match the enclave's definition;
-// EIP712 typeHash depends on field order.
-// ============================================================================
-
-sol! {
-    struct RangeJournal {
-        bytes32 pcr0;
-        bytes32 configHash;
-        bytes32 l1OriginHash;
-        uint64  l2BlockNumber;
-        bytes32 prevOutputRoot;
-        bytes32 outputRoot;
-    }
-}
-
-// ============================================================================
-// Main
-// ============================================================================
+/// Byte length of the packed range journal — must match
+/// `xlayer-tee-types::journal::PACKED_JOURNAL_LEN`.
+const PACKED_JOURNAL_LEN: usize = 168;
 
 pub fn main() {
     let agg_inputs = sp1_zkvm::io::read::<AggregationInputs>();
@@ -106,17 +58,12 @@ pub fn main() {
         "boot_infos and range_proofs must be parallel-indexed",
     );
 
-    // boot_infos must form a contiguous chain on (l2PreRoot, l2PostRoot)
-    // and share rollupConfigHash.
     agg_inputs.boot_infos.windows(2).for_each(|pair| {
         let (prev, curr) = (&pair[0], &pair[1]);
         assert_eq!(prev.l2PostRoot, curr.l2PreRoot);
         assert_eq!(prev.rollupConfigHash, curr.rollupConfigHash);
     });
 
-    // TEE attestation: read iff this aggregation includes any TEE leaf, then
-    // verify once and derive the session signer that every Tee leaf must
-    // ecrecover to. Pure-SP1 aggregations skip this entirely.
     let has_tee_leaf =
         agg_inputs.range_proofs.iter().any(|rp| matches!(rp, RangeProof::Tee { .. }));
     let session_signer: Option<Address> = if has_tee_leaf {
@@ -127,8 +74,6 @@ pub fn main() {
         None
     };
 
-    // Verify each range program proof — dispatched on RangeProof variant.
-    let tee_domain = tee_eip712_domain();
     for (boot_info, range_proof) in
         agg_inputs.boot_infos.iter().zip(agg_inputs.range_proofs.iter())
     {
@@ -142,13 +87,11 @@ pub fn main() {
             }
             RangeProof::Tee { signature } => {
                 let signer = session_signer.expect("Tee leaf without attestation (unreachable)");
-                verify_tee_range_proof(boot_info, signature, &tee_domain, signer);
+                verify_tee_range_proof(boot_info, signature, signer);
             }
         }
     }
 
-    // L1 header chain: walk back from `latest_l1_checkpoint_head` and confirm
-    // every boot_info's l1Head appears somewhere on this chain.
     let mut l1_heads_map: HashMap<B256, bool> =
         agg_inputs.boot_infos.iter().map(|boot_info| (boot_info.l1Head, false)).collect();
     let mut current_hash = agg_inputs.latest_l1_checkpoint_head;
@@ -188,32 +131,29 @@ pub fn main() {
     sp1_zkvm::io::commit_slice(&agg_outputs.abi_encode());
 }
 
-// ============================================================================
-// TEE verification helpers
-// ============================================================================
-
-fn tee_eip712_domain() -> Eip712Domain {
-    Eip712Domain {
-        name: Some(TEE_EIP712_DOMAIN_NAME.into()),
-        version: Some(TEE_EIP712_DOMAIN_VERSION.into()),
-        chain_id: Some(U256::from(TEE_EIP712_CHAIN_ID)),
-        verifying_contract: Some(TEE_EIP712_VERIFYING_CONTRACT),
-        salt: None,
-    }
+/// Pack a range journal exactly as the enclave does in
+/// `xlayer-tee-types::journal::RangeJournal::pack`.
+fn pack_range_journal(
+    pcr0: B256,
+    config_hash: B256,
+    l1_origin_hash: B256,
+    l2_block_number: u64,
+    prev_output_root: B256,
+    output_root: B256,
+) -> [u8; PACKED_JOURNAL_LEN] {
+    let mut out = [0u8; PACKED_JOURNAL_LEN];
+    out[0..32].copy_from_slice(pcr0.as_slice());
+    out[32..64].copy_from_slice(config_hash.as_slice());
+    out[64..96].copy_from_slice(l1_origin_hash.as_slice());
+    out[96..104].copy_from_slice(&l2_block_number.to_be_bytes());
+    out[104..136].copy_from_slice(prev_output_root.as_slice());
+    out[136..168].copy_from_slice(output_root.as_slice());
+    out
 }
 
-/// Verify one TEE-signed range proof.
-///
-/// 1. Reconstruct the enclave's signed `RangeJournal`.
-/// 2. EIP712 signing hash.
-/// 3. secp256k1 ecrecover.
-/// 4. **Keystone**: recovered signer must equal the attestation-derived
-///    signer. Without this, anyone holding `sk_X ≠ sk_attested` could pair
-///    their own signature with someone else's attestation.
 fn verify_tee_range_proof(
     boot_info: &BootInfoStruct,
     signature: &[u8],
-    domain: &Eip712Domain,
     attested_signer: Address,
 ) {
     assert_eq!(
@@ -222,15 +162,15 @@ fn verify_tee_range_proof(
         "TEE signature must be 65 bytes (r ‖ s ‖ v), got {}",
         signature.len()
     );
-    let journal = RangeJournal {
-        pcr0: EXPECTED_PCR0_HASH,
-        configHash: boot_info.rollupConfigHash,
-        l1OriginHash: boot_info.l1Head,
-        l2BlockNumber: boot_info.l2BlockNumber,
-        prevOutputRoot: boot_info.l2PreRoot,
-        outputRoot: boot_info.l2PostRoot,
-    };
-    let digest: B256 = journal.eip712_signing_hash(domain);
+    let packed = pack_range_journal(
+        EXPECTED_PCR0_HASH,
+        boot_info.rollupConfigHash,
+        boot_info.l1Head,
+        boot_info.l2BlockNumber,
+        boot_info.l2PreRoot,
+        boot_info.l2PostRoot,
+    );
+    let digest = keccak256(packed);
 
     let recovered_signer = ecrecover(&digest, signature);
     assert_eq!(
@@ -240,12 +180,9 @@ fn verify_tee_range_proof(
     );
 }
 
-/// secp256k1 ECDSA `ecrecover` over a prehash. Returns the 20-byte address
-/// derived from `keccak256(uncompressed_pubkey[1..])[12..]`.
 fn ecrecover(digest: &B256, sig_65: &[u8]) -> Address {
     debug_assert_eq!(sig_65.len(), 65);
     let sig = Signature::from_slice(&sig_65[..64]).expect("malformed (r,s) signature");
-    // v in {27, 28} → RecoveryId {0, 1}.
     let rec_id_byte = sig_65[64].checked_sub(27).expect("signature v must be 27 or 28");
     let rec_id = RecoveryId::try_from(rec_id_byte).expect("invalid recovery id");
 

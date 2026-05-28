@@ -31,16 +31,8 @@ impl EnclaveClient {
         Ok(Self { config, sender: Arc::new(Mutex::new(sender)) })
     }
 
-    pub async fn post_range(
-        &self,
-        task_id: &str,
-        chain_id: u64,
-        verifying_contract: &str,
-        body: Bytes,
-    ) -> Result<()> {
+    pub async fn post_range(&self, task_id: &str, body: Bytes) -> Result<()> {
         let task_id = task_id.to_string();
-        let chain_id_hdr = chain_id.to_string();
-        let verifying_contract = verifying_contract.to_string();
         let body = body.clone();
         let resp = self
             .send_with_retry(|| {
@@ -49,8 +41,6 @@ impl EnclaveClient {
                     .uri(paths::TASKS_RANGE)
                     .header("host", "enclave")
                     .header(paths::HEADER_TASK_ID, &task_id)
-                    .header("x-eip712-chain-id", &chain_id_hdr)
-                    .header("x-eip712-verifying-contract", &verifying_contract)
                     .header("content-type", content_type::OCTET_STREAM)
                     .body(Full::new(body.clone()))
             })
@@ -125,19 +115,6 @@ impl EnclaveClient {
         collect_body(resp).await
     }
 
-    pub async fn get_health(&self) -> Result<serde_json::Value> {
-        let resp = self
-            .send_with_retry(|| {
-                Request::builder()
-                    .method("GET")
-                    .uri("/health")
-                    .header("host", "enclave")
-                    .body(Full::new(Bytes::new()))
-            })
-            .await?;
-        decode_json(resp).await
-    }
-
     async fn send_with_retry<F>(&self, build: F) -> Result<Response<hyper::body::Incoming>>
     where
         F: Fn() -> std::result::Result<Request<Full<Bytes>>, hyper::http::Error>,
@@ -177,17 +154,6 @@ async fn ensure_success(resp: Response<hyper::body::Incoming>) -> Result<()> {
         return Ok(());
     }
     Err(parse_error_body(resp).await)
-}
-
-async fn decode_json<T: serde::de::DeserializeOwned>(
-    resp: Response<hyper::body::Incoming>,
-) -> Result<T> {
-    if !resp.status().is_success() {
-        return Err(parse_error_body(resp).await);
-    }
-    let body = collect_body(resp).await?;
-    serde_json::from_slice(&body)
-        .map_err(|e| Error::Internal(format!("enclave JSON decode: {e}")))
 }
 
 /// Decode an rkyv-encoded body. Copies into an 8-byte aligned buffer because

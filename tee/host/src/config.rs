@@ -8,7 +8,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub enclave: EnclaveConfig,
     pub attestation: AttestationConfig,
-    pub verifier: VerifierConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -43,15 +42,6 @@ pub struct EnclaveConfig {
 pub struct AttestationConfig {
     #[serde(default = "default_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
-}
-
-/// EIP-712 verifier domain forwarded to the enclave on every `POST /tasks/range`.
-/// Keeps the EIF stateless: switching L1 chain or verifier contract is a host
-/// restart, not a re-bake of the enclave image.
-#[derive(Debug, Clone, Deserialize)]
-pub struct VerifierConfig {
-    pub chain_id: u64,
-    pub verifying_contract: String,
 }
 
 impl Config {
@@ -118,9 +108,6 @@ mod tests {
 bind_addr = "127.0.0.1:1234"
 [enclave]
 [attestation]
-[verifier]
-chain_id = 1
-verifying_contract = "0x0000000000000000000000000000000000000000"
 "#;
         let f = write_toml(toml);
         let cfg = Config::load(f.path()).expect("load");
@@ -143,9 +130,6 @@ verifying_contract = "0x0000000000000000000000000000000000000000"
 bind_addr = "127.0.0.1:1234"
 [enclave]
 [attestation]
-[verifier]
-chain_id = 1
-verifying_contract = "0x0000000000000000000000000000000000000000"
 "#;
         let f = write_toml(toml);
         // SAFETY: held under env_lock() for the duration of this test.

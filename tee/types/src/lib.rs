@@ -11,13 +11,12 @@
 //! ## Stability
 //!
 //! Once tagged v0.1 and aligned, **do not change field orders, names, or types**
-//! without explicit cross-team review. EIP712 type hashes are computed from field
-//! orderings; a silent reorder breaks signature compatibility on-chain.
+//! without explicit cross-team review. The packed-bytes signing layout
+//! depends on field ordering; a silent reorder breaks signature compatibility.
 
 pub mod paths;
 pub mod limits;
 pub mod content_type;
-pub mod eip712;
 pub mod journal;
 pub mod response;
 pub mod error;

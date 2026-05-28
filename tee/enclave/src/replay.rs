@@ -4,7 +4,7 @@
 //!
 //! Mirrors `op_succinct_range_utils::run_range_program` minus the
 //! SP1-specific `sp1_zkvm::io::commit` epilogue — the enclave commits via an
-//! EIP712 signature instead.
+//! ECDSA signature instead.
 //!
 //! The op-succinct `WitnessExecutor::run` trait method already enforces
 //! `output_root == boot.claimed_l2_output_root` and returns an error on

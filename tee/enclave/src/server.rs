@@ -6,7 +6,6 @@
 //! DELETE /tasks/{task_id}    → cancel a running task
 //! GET    /tasks              → list all in-memory tasks
 //! GET    /attestation        → raw COSE_Sign1 NSM doc
-//! GET    /health             → JSON status, includes inflight metrics
 //! ```
 //!
 //! `POST /tasks/range` registers the task and returns immediately; the
@@ -14,10 +13,8 @@
 
 use std::sync::Arc;
 
-use alloy_primitives::{Address, U256};
-use alloy_sol_types::Eip712Domain;
 use axum::{
-    Json, Router,
+    Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -28,15 +25,13 @@ use rkyv::rancor::Error as RkyvError;
 use tracing::{info, warn};
 
 use xlayer_tee_types::{
-    ErrorResponse, TaskListResponse, content_type,
-    eip712::{NAME, VERSION},
-    limits, paths,
+    ErrorResponse, TaskListResponse, content_type, limits, paths,
 };
 
 use crate::{
     attestation::generate_attestation_doc,
     error::{Error, Result},
-    keys::{enclave_address, enclave_pubkey_uncompressed},
+    keys::enclave_pubkey_uncompressed,
     task_manager::{CreateOutcome, TaskManager, validate_task_id},
 };
 
@@ -63,7 +58,6 @@ pub fn router(state: AppState) -> Router {
         .route(paths::TASKS_LIST, get(tasks_list))
         .route(paths::TASKS_BY_ID, get(tasks_get).delete(tasks_delete))
         .route(paths::ATTESTATION, get(attestation))
-        .route(paths::HEALTH, get(health))
         .layer(DefaultBodyLimit::max(limits::MAX_RANGE_BODY_BYTES))
         .with_state(state)
 }
@@ -99,9 +93,7 @@ async fn handle_tasks_range_post(
         .to_string();
     validate_task_id(&task_id)?;
 
-    let domain = parse_eip712_domain_headers(headers)?;
-
-    let outcome = state.task_manager.create(task_id, domain, body)?;
+    let outcome = state.task_manager.create(task_id, body)?;
     let (status, response) = match outcome {
         CreateOutcome::Created(r) => (StatusCode::CREATED, r),
         CreateOutcome::AlreadyExists(r) => (StatusCode::OK, r),
@@ -115,42 +107,6 @@ async fn handle_tasks_range_post(
 
     rkyv_response(status, &response)
         .map_err(|e| Error::Internal(format!("rkyv encode CreateTaskResponse: {e}")))
-}
-
-/// Parse `x-eip712-chain-id` (u64 decimal) and `x-eip712-verifying-contract`
-/// (0x-prefixed 20-byte hex) headers into an `Eip712Domain`. Both headers are
-/// required.
-fn parse_eip712_domain_headers(headers: &HeaderMap) -> Result<Eip712Domain> {
-    let chain_id_raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
-        Error::InvalidEip712Header(format!("missing {} header", paths::HEADER_CHAIN_ID))
-    })?;
-    let chain_id: u64 = chain_id_raw
-        .to_str()
-        .map_err(|e| Error::InvalidEip712Header(format!("non-ascii chain_id header: {e}")))?
-        .parse()
-        .map_err(|e| Error::InvalidEip712Header(format!("chain_id not a u64: {e}")))?;
-
-    let verifier_raw = headers.get(paths::HEADER_VERIFYING_CONTRACT).ok_or_else(|| {
-        Error::InvalidEip712Header(format!(
-            "missing {} header",
-            paths::HEADER_VERIFYING_CONTRACT
-        ))
-    })?;
-    let verifying_contract: Address = verifier_raw
-        .to_str()
-        .map_err(|e| Error::InvalidEip712Header(format!("non-ascii verifier header: {e}")))?
-        .parse()
-        .map_err(|e| {
-            Error::InvalidEip712Header(format!("verifying_contract not 0x..20-byte hex: {e}"))
-        })?;
-
-    Ok(Eip712Domain {
-        name: Some(NAME.into()),
-        version: Some(VERSION.into()),
-        chain_id: Some(U256::from(chain_id)),
-        verifying_contract: Some(verifying_contract),
-        salt: None,
-    })
 }
 
 // -----------------------------------------------------------------------------
@@ -208,35 +164,6 @@ async fn attestation() -> Response {
             .into_response(),
         Err(e) => internal_error_response(e),
     }
-}
-
-// -----------------------------------------------------------------------------
-// GET /health
-// -----------------------------------------------------------------------------
-
-#[derive(serde::Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    signer_address: String,
-    signer_pubkey: String,
-    pcr0: String,
-    elf_version: &'static str,
-    inflight_count: usize,
-    max_inflight: usize,
-}
-
-async fn health(State(state): State<AppState>) -> Response {
-    let pubkey = enclave_pubkey_uncompressed();
-    let body = HealthResponse {
-        status: "ready",
-        signer_address: format!("{:#x}", enclave_address()),
-        signer_pubkey: format!("0x{}", hex::encode(pubkey)),
-        pcr0: format!("0x{}", hex::encode(state.task_manager.pcr0())),
-        elf_version: env!("CARGO_PKG_VERSION"),
-        inflight_count: state.task_manager.inflight_count(),
-        max_inflight: state.task_manager.max_inflight(),
-    };
-    Json(body).into_response()
 }
 
 // -----------------------------------------------------------------------------

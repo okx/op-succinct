@@ -26,7 +26,6 @@ pub fn get_agg_proof_stdin(
 
     let range_proofs = vec![RangeProof::Sp1; boot_infos.len()];
 
-    // Write the aggregation inputs to the stdin.
     stdin.write(&AggregationInputs {
         boot_infos,
         range_proofs,

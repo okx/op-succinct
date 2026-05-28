@@ -18,9 +18,3 @@ request_timeout_secs = 180
 
 [attestation]
 cache_ttl_secs = 60
-
-# EIP-712 verifier domain forwarded to the enclave per task. Change here
-# (not in the EIF) when switching L1 chain / verifier contract.
-[verifier]
-chain_id = 1
-verifying_contract = "0x0000000000000000000000000000000000000000"

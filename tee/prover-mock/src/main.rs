@@ -8,7 +8,6 @@
 //! - `POST /tasks/range` — reads body (no rkyv decoding), returns a
 //!   zero-filled `RangeTaskResponse`.
 //! - `GET /attestation` — returns 64 zero bytes (placeholder).
-//! - `GET /health` — returns 200 OK.
 //!
 //! Inject `FAIL_KIND` env var (e.g. `FAIL_KIND=ClaimMismatch`) to make the
 //! mock return that error instead of success — useful for testing the
@@ -50,7 +49,6 @@ async fn main() {
     let app = Router::new()
         .route(paths::TASKS_RANGE, post(tasks_range))
         .route(paths::ATTESTATION, get(attestation))
-        .route(paths::HEALTH, get(health))
         .layer(DefaultBodyLimit::max(limits::MAX_RANGE_BODY_BYTES));
 
     let addr: SocketAddr = std::env::var("LISTEN")
@@ -65,8 +63,8 @@ async fn main() {
 
 /// `POST /tasks/range` — mock handler.
 ///
-/// Validates wire-contract headers (`x-task-id`, `x-eip712-chain-id`,
-/// `x-eip712-verifying-contract`) so clients get the same shape of errors as
+/// Validates wire-contract headers (`x-task-id`, `x-chain-id`) so clients
+/// get the same shape of errors as
 /// from the real enclave. On success, returns
 /// `rkyv(RangeTaskResponse { journal: zeros, signature: zeros })`.
 async fn tasks_range(headers: HeaderMap, body: Bytes) -> Response {
@@ -104,11 +102,6 @@ async fn attestation() -> Response {
         payload.to_vec(),
     )
         .into_response()
-}
-
-/// `GET /health` — 200 OK with empty body.
-async fn health() -> StatusCode {
-    StatusCode::OK
 }
 
 // -----------------------------------------------------------------------------
@@ -158,48 +151,6 @@ fn validate_required_headers(headers: &HeaderMap) -> Result<(), Response> {
         return Err(error(
             ErrorKind::InvalidTaskId,
             format!("x-task-id not a valid UUID: {task_id_str}"),
-        ));
-    }
-
-    let chain_id_raw = headers.get(paths::HEADER_CHAIN_ID).ok_or_else(|| {
-        error(
-            ErrorKind::InvalidEip712Header,
-            format!("missing {} header", paths::HEADER_CHAIN_ID),
-        )
-    })?;
-    chain_id_raw
-        .to_str()
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or_else(|| {
-            error(
-                ErrorKind::InvalidEip712Header,
-                format!("{} not a u64", paths::HEADER_CHAIN_ID),
-            )
-        })?;
-
-    let verifier_raw = headers.get(paths::HEADER_VERIFYING_CONTRACT).ok_or_else(|| {
-        error(
-            ErrorKind::InvalidEip712Header,
-            format!("missing {} header", paths::HEADER_VERIFYING_CONTRACT),
-        )
-    })?;
-    let verifier_str = verifier_raw.to_str().map_err(|e| {
-        error(
-            ErrorKind::InvalidEip712Header,
-            format!("non-ascii {} header: {e}", paths::HEADER_VERIFYING_CONTRACT),
-        )
-    })?;
-    // Light shape check: 0x + 40 hex chars; full Address::parse happens in the
-    // real enclave path.
-    if !(verifier_str.starts_with("0x") && verifier_str.len() == 42) {
-        return Err(error(
-            ErrorKind::InvalidEip712Header,
-            format!(
-                "{} not 0x..20-byte hex (got len={})",
-                paths::HEADER_VERIFYING_CONTRACT,
-                verifier_str.len()
-            ),
         ));
     }
 

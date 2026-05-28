@@ -1,7 +1,7 @@
 //! X.509 certificate chain validation for AWS Nitro Enclave attestations.
 //!
 //! Checks:
-//!   - M-01 content (algorithm OID, EC curve, basicConstraints, keyUsage,
+//!   - Per-cert content (algorithm OID, EC curve, basicConstraints, keyUsage,
 //!     issuer/subject chain, path length).
 //!   - Validity period vs `AttestationDoc.timestamp`.
 //!   - P-384 / ECDSA-SHA384 signature of every non-root cert by its parent.
@@ -42,7 +42,7 @@ impl<'a> CertChain<'a> {
         Self { certs }
     }
 
-    /// M-01 content checks on every certificate.
+    /// Per-cert content checks on every certificate.
     pub fn validate_each_cert(&self) {
         let last = self.certs.len() - 1;
         for (i, cert) in self.certs.iter().enumerate() {
@@ -71,7 +71,7 @@ impl<'a> CertChain<'a> {
     }
 
     /// Verify every non-root cert's signature against its parent's public key
-    /// and enforce M-01 chain coherence (issuer/subject match, path length).
+    /// and enforce chain coherence (issuer/subject match, path length).
     /// Root self-signature is **not** verified here.
     pub fn verify_signatures(&self) {
         let n = self.certs.len();
@@ -79,14 +79,14 @@ impl<'a> CertChain<'a> {
             let parent = &self.certs[i - 1];
             let child = &self.certs[i];
 
-            // M-01: issuer chain consistency.
+            // Issuer chain consistency.
             assert_eq!(
                 child.issuer(),
                 parent.subject(),
                 "cert chain: cert {i} issuer != parent subject"
             );
 
-            // M-01: pathLenConstraint on the parent.
+            // pathLenConstraint on the parent.
             if let Some(parent_bc) = parent
                 .basic_constraints()
                 .unwrap_or_else(|e| panic!("cert chain: cert {} basicConstraints: {e}", i - 1))
@@ -143,7 +143,7 @@ impl<'a> CertChain<'a> {
     }
 }
 
-/// M-01 content checks for a single certificate.
+/// Content checks for a single certificate.
 fn validate_cert_content(cert: &X509Certificate<'_>, is_leaf: bool, idx: usize) {
     // (a) Signature algorithm must be ecdsa-with-SHA384.
     let sig_oid = cert.signature_algorithm.oid();

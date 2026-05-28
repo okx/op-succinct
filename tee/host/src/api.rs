@@ -45,7 +45,5 @@ pub struct TaskStatusData {
 #[serde(rename_all = "camelCase")]
 pub struct EnclaveInfoData {
     pub attestation_doc: String,
-    pub commit: String,
-    pub pub_key: String,
 }
 

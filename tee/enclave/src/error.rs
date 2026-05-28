@@ -47,10 +47,6 @@ pub enum Error {
     #[error("task {task_id} was cancelled at phase {at_phase:?}")]
     Cancelled { task_id: String, at_phase: TaskPhase },
 
-    /// Per-task EIP712 header missing or malformed (`x-eip712-chain-id` /
-    /// `x-eip712-verifying-contract`).
-    #[error("invalid EIP712 header: {0}")]
-    InvalidEip712Header(String),
 }
 
 impl Error {
@@ -70,7 +66,6 @@ impl Error {
             Self::TaskUnknown(_) => ErrorKind::TaskUnknown,
             Self::TooManyTasks { .. } => ErrorKind::TooManyTasks,
             Self::Cancelled { .. } => ErrorKind::Cancelled,
-            Self::InvalidEip712Header(_) => ErrorKind::InvalidEip712Header,
         }
     }
 }

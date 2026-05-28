@@ -34,8 +34,8 @@ pub struct VerifiedSession {
 /// any failure; deterministic and side-effect-free.
 ///
 /// 1. Parse COSE_Sign1 + attestation document payload.
-/// 2. M-02 content checks.
-/// 3. Parse cert chain + M-01 content + expiry + per-cert P-384 sigs.
+/// 2. AttestationDoc field sanity (timestamp / digest / cabundle / PCR0 / public_key).
+/// 3. Parse cert chain + per-cert content checks + expiry + per-cert P-384 sigs.
 /// 4. Root SPKI == `anchors.aws_root_pubkey`.
 /// 5. COSE_Sign1 signature verified by leaf cert pubkey.
 /// 6. `keccak256(attestation.pcrs[0]) == anchors.expected_pcr0_hash`.
