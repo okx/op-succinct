@@ -11,13 +11,6 @@
 //! Task-manager environment variables:
 //! - `MAX_INFLIGHT_TASKS`: 0 (auto = num_cpus / 2) or a positive integer
 //! - `TERMINAL_TTL_SECS`: how long terminal task state persists (default 3600s)
-//!
-//! **EIP712 domain is *not* configured at startup.** `chainId` and
-//! `verifyingContract` come per-request via the `x-eip712-chain-id` and
-//! `x-eip712-verifying-contract` headers on `POST /tasks/range` (see
-//! `xlayer_tee_types::paths`). One EIF can therefore serve any number of
-//! verifier contracts and L1 chains — redeploying the verifier does **not**
-//! require rebuilding the EIF or re-attesting.
 
 use std::sync::Arc;
 
@@ -151,7 +144,7 @@ async fn main() {
             pcr0 = %hex::encode(pcr0),
             max_inflight = task_manager.max_inflight(),
             ttl_secs,
-            "xlayer-tee-enclave (vsock build, real NSM) listening; EIP712 domain set per-request",
+            "xlayer-tee-enclave (vsock build, real NSM) listening",
         );
 
         axum::serve(VsockListenerAdapter::new(listener), app)
@@ -174,7 +167,7 @@ async fn main() {
             signer_pubkey = %hex::encode(enclave_pubkey_uncompressed()),
             max_inflight = task_manager.max_inflight(),
             ttl_secs,
-            "xlayer-tee-enclave (dev build, async task model) listening; EIP712 domain set per-request",
+            "xlayer-tee-enclave (dev build, async task model) listening",
         );
 
         axum::serve(listener, app).await.expect("axum server failed");
