@@ -24,11 +24,6 @@
 /// malformed.
 pub const TASKS_RANGE: &str = "/tasks/range";
 
-/// `POST` — Aggregate N range proofs into a single signed AggregationJournal.
-/// Request body: `rkyv(Vec<RangeTaskResponse>)`.
-/// Response body: `rkyv(AggregationTaskResponse)`.
-pub const TASKS_AGGREGATION: &str = "/tasks/aggregation";
-
 /// `GET` — Snapshot the state of a previously submitted task.
 /// Path param: `task_id`. Response body: `rkyv(TaskStateView)`.
 /// Status: `200 OK` / `404 Not Found` (unknown task — never created or
