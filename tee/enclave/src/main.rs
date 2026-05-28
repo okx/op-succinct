@@ -11,9 +11,6 @@
 //! Task-manager environment variables:
 //! - `MAX_INFLIGHT_TASKS`: 0 (auto = num_cpus / 2) or a positive integer
 //! - `TERMINAL_TTL_SECS`: how long terminal task state persists (default 3600s)
-//!
-//! **`chainId` is per-request** via the `x-chain-id` header on
-//! `POST /tasks/range`. One EIF therefore serves any number of L1 chains.
 
 use std::sync::Arc;
 
@@ -147,7 +144,7 @@ async fn main() {
             pcr0 = %hex::encode(pcr0),
             max_inflight = task_manager.max_inflight(),
             ttl_secs,
-            "xlayer-tee-enclave (vsock build, real NSM) listening; chain id set per-request",
+            "xlayer-tee-enclave (vsock build, real NSM) listening",
         );
 
         axum::serve(VsockListenerAdapter::new(listener), app)
@@ -170,7 +167,7 @@ async fn main() {
             signer_pubkey = %hex::encode(enclave_pubkey_uncompressed()),
             max_inflight = task_manager.max_inflight(),
             ttl_secs,
-            "xlayer-tee-enclave (dev build, async task model) listening; chain id set per-request",
+            "xlayer-tee-enclave (dev build, async task model) listening",
         );
 
         axum::serve(listener, app).await.expect("axum server failed");
