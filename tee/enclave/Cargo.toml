@@ -3,7 +3,7 @@ name = "xlayer-tee-enclave"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "xlayer-tee-prover ELF — axum HTTP server that runs kona range proof and signs an EIP712 Range journal. Production builds add `--features vsock` to switch to NSM + vsock; default build uses a hardcoded dev key + placeholder attestation for local dev / CI."
+description = "xlayer-tee-enclave ELF — axum HTTP server that runs the kona range program and signs a packed RangeJournal (keccak256 over 168 packed bytes + secp256k1 ECDSA). Production builds add `--features vsock` to switch to NSM + vsock; default build uses a hardcoded dev key + placeholder attestation for local dev / CI."
 
 [lib]
 name = "xlayer_tee_enclave"

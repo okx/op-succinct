@@ -14,7 +14,7 @@ mod common;
 
 use rkyv::rancor::Error as RkyvError;
 use xlayer_tee_enclave::keys::init_dev_keys;
-use xlayer_tee_types::paths;
+use xlayer_tee_types::wire;
 
 use common::witness_fixture::{synth_boot, synthetic_witness};
 
@@ -31,7 +31,7 @@ async fn synthetic_witness_triggers_invalid_witness() {
     let body = rkyv::to_bytes::<RkyvError>(&witness).expect("encode witness");
 
     let (status, resp_bytes) =
-        common::call(&app, common::post(paths::TASKS_RANGE, body.to_vec())).await;
+        common::call(&app, common::post(wire::TASKS_RANGE, body.to_vec())).await;
     assert_eq!(status, 400, "expected 400, body={:?}", resp_bytes);
     let json: serde_json::Value = serde_json::from_slice(&resp_bytes).expect("err is json");
     assert_eq!(json["error_kind"], "InvalidWitness");
@@ -49,7 +49,7 @@ async fn post_range_rejects_zero_claimed_block() {
     let body = rkyv::to_bytes::<RkyvError>(&witness).expect("encode");
 
     let (status, resp_bytes) =
-        common::call(&app, common::post(paths::TASKS_RANGE, body.to_vec())).await;
+        common::call(&app, common::post(wire::TASKS_RANGE, body.to_vec())).await;
     assert_eq!(status, 400, "expected 400, body={:?}", resp_bytes);
     let json: serde_json::Value = serde_json::from_slice(&resp_bytes).expect("err is json");
     assert_eq!(json["error_kind"], "InvalidWitness");
@@ -60,7 +60,7 @@ async fn post_range_rejects_garbage_body() {
     init_dev_keys();
     let app = common::app();
     let (status, resp_bytes) =
-        common::call(&app, common::post(paths::TASKS_RANGE, b"not-rkyv-at-all".to_vec())).await;
+        common::call(&app, common::post(wire::TASKS_RANGE, b"not-rkyv-at-all".to_vec())).await;
     assert_eq!(status, 500);
     let json: serde_json::Value = serde_json::from_slice(&resp_bytes).expect("err is json");
     assert_eq!(json["error_kind"], "DeserializeRkyv");

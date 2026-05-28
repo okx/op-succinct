@@ -99,8 +99,6 @@ pub enum RegisterOutcome {
     /// Same witness was submitted recently; existing task_id is returned and
     /// no new work is started.
     Duplicate(String),
-    /// A different task is currently in flight; reject (host single-task policy).
-    Busy { running_task_id: String },
 }
 
 impl TaskManager {
@@ -128,8 +126,7 @@ impl TaskManager {
         // up to the enclave's own `max_inflight`; if the enclave responds
         // with `TooManyTasks`, `spawn_task_monitor` keeps retrying the POST
         // (the task stays Running ("queued; enclave at capacity") until a
-        // slot opens). `RegisterOutcome::Busy` is retained for SPEC/ABI
-        // backward compatibility but is no longer produced here.
+        // slot opens).
         let task_id = Uuid::new_v4().to_string();
         let (abort_tx, abort_rx) = oneshot::channel::<()>();
         let state = TaskState {
@@ -306,7 +303,6 @@ mod tests {
         match o {
             RegisterOutcome::Created { .. } => "Created",
             RegisterOutcome::Duplicate(_) => "Duplicate",
-            RegisterOutcome::Busy { .. } => "Busy",
         }
     }
 

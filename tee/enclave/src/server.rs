@@ -24,9 +24,7 @@ use axum::{
 use rkyv::rancor::Error as RkyvError;
 use tracing::{info, warn};
 
-use xlayer_tee_types::{
-    ErrorResponse, TaskListResponse, content_type, limits, paths,
-};
+use xlayer_tee_types::{wire, ErrorResponse, TaskListResponse};
 
 use crate::{
     attestation::generate_attestation_doc,
@@ -54,11 +52,11 @@ impl AppState {
 /// same `/tasks/:task_id` path serves both GET and DELETE.
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route(paths::TASKS_RANGE, post(tasks_range_post))
-        .route(paths::TASKS_LIST, get(tasks_list))
-        .route(paths::TASKS_BY_ID, get(tasks_get).delete(tasks_delete))
-        .route(paths::ATTESTATION, get(attestation))
-        .layer(DefaultBodyLimit::max(limits::MAX_RANGE_BODY_BYTES))
+        .route(wire::TASKS_RANGE, post(tasks_range_post))
+        .route(wire::TASKS_LIST, get(tasks_list))
+        .route(wire::TASKS_BY_ID, get(tasks_get).delete(tasks_delete))
+        .route(wire::ATTESTATION, get(attestation))
+        .layer(DefaultBodyLimit::max(wire::MAX_RANGE_BODY_BYTES))
         .with_state(state)
 }
 
@@ -86,8 +84,8 @@ async fn handle_tasks_range_post(
     // idempotent hit (existing task_id) or a malformed header can short-circuit
     // without paying for body parse.
     let task_id = headers
-        .get(paths::HEADER_TASK_ID)
-        .ok_or_else(|| Error::InvalidTaskId(format!("missing {} header", paths::HEADER_TASK_ID)))?
+        .get(wire::HEADER_TASK_ID)
+        .ok_or_else(|| Error::InvalidTaskId(format!("missing {} header", wire::HEADER_TASK_ID)))?
         .to_str()
         .map_err(|e| Error::InvalidTaskId(format!("non-ascii header: {e}")))?
         .to_string();
@@ -158,7 +156,7 @@ async fn attestation() -> Response {
     match generate_attestation_doc(b"xlayer-tee-prover", b"", &pubkey) {
         Ok(bytes) => (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, HeaderValue::from_static(content_type::OCTET_STREAM))],
+            [(header::CONTENT_TYPE, HeaderValue::from_static(wire::OCTET_STREAM))],
             bytes,
         )
             .into_response(),
@@ -184,7 +182,7 @@ where
     let bytes = rkyv::to_bytes::<RkyvError>(value)?;
     Ok((
         status,
-        [(header::CONTENT_TYPE, HeaderValue::from_static(content_type::OCTET_STREAM))],
+        [(header::CONTENT_TYPE, HeaderValue::from_static(wire::OCTET_STREAM))],
         bytes.to_vec(),
     )
         .into_response())
@@ -214,7 +212,7 @@ fn internal_error_response(err: Error) -> Response {
     warn!(?kind, message = %err, "request failed");
     (
         status,
-        [(header::CONTENT_TYPE, HeaderValue::from_static(content_type::JSON))],
+        [(header::CONTENT_TYPE, HeaderValue::from_static(wire::JSON))],
         json,
     )
         .into_response()

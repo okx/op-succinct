@@ -21,13 +21,13 @@ like production by accident).
 ## Endpoints
 
 All bodies are rkyv (octet-stream); error responses are JSON
-`{ error_kind, message }`. Paths come from `xlayer_tee_types::paths`.
+`{ error_kind, message }`. Paths come from `xlayer_tee_types::wire`.
 
 | Route | Method | Body | Response |
 |---|---|---|---|
 | `/tasks/range` | POST | `rkyv(DefaultWitnessData)` | `rkyv(CreateTaskResponse)` |
 | `/tasks/{task_id}` | GET | — | `rkyv(TaskStateView)` |
-| `/tasks/{task_id}` | DELETE | — | `rkyv(CancelResponse)` |
+| `/tasks/{task_id}` | DELETE | — | `rkyv(DeleteTaskResponse)` |
 | `/tasks` | GET | — | `rkyv(TaskListResponse)` (diagnostics) |
 | `/attestation` | GET | — | raw COSE_Sign1 NSM doc |
 

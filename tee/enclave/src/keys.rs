@@ -2,16 +2,16 @@
 //!
 //! Two modes selected at compile time:
 //! - **Default (dev)**: hardcoded `DEV_KEY_HEX` is loaded into `ENCLAVE_KEY`
-//!   at startup. Predictable, no NSM required, suitable for unit tests,
-//!   local smoke tests, and the alignment phase with the proposer team.
+//!   at startup. Predictable, no NSM required, suitable for unit tests and
+//!   local smoke tests.
 //! - **`vsock` feature (production, linux only)**: fresh per-instance key
 //!   generated via `k256::SecretKey::random(&mut rand::rngs::OsRng)`. Inside
 //!   a Nitro Enclave the Linux kernel CSPRNG (`/dev/urandom`) is seeded from
 //!   NSM hardware entropy, so `OsRng` here is effectively NSM-backed without
-//!   needing a separate `NsmRng` wrapper. See design doc §4.2.2.
+//!   needing a separate `NsmRng` wrapper.
 //!
-//! The dev key is intentionally checked into source. Anyone reading this
-//! repository can sign as the dev enclave; that is the whole point of dev
+//! The dev key is intentionally checked into source — anyone reading this
+//! repository can sign as the dev enclave, which is the whole point of dev
 //! mode. **Do not enable production deployment paths from a default build.**
 
 use std::sync::OnceLock;

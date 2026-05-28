@@ -1,30 +1,27 @@
-//! Shared interface types between `xlayer-tee-prover` (enclave) and the proposer.
+//! Shared interface types between enclave, host, proposer, and on-chain verifier.
 //!
-//! This crate is the **interface contract** between three teams:
-//! - Enclave team: implements the `xlayer-tee-prover` ELF (HTTP server inside Nitro Enclave)
-//! - Host/proposer team: implements the proposer (forked op-succinct validity)
-//! - Contract team: implements `KonaTeeVerifier.sol` on L1
+//! Three consumers depend on this crate at the same git commit:
+//! - Enclave: signs `RangeJournal` with `secp256k1` over `keccak256(packed)`.
+//! - Host / proposer: encodes `RangeJournal + signature` into the `prove(bytes)`
+//!   payload via `abi_encode_params`.
+//! - On-chain verifier: ABI-decodes `proofBytes` back into `(RangeJournal, bytes)`
+//!   and reconstructs the packed-bytes digest to recover the signer.
 //!
-//! All three depend on this crate at the same git commit. Any breaking change here
-//! requires synchronized updates across all three sides.
+//! Any breaking change requires synchronized updates on all sides.
 //!
 //! ## Stability
 //!
-//! Once tagged v0.1 and aligned, **do not change field orders, names, or types**
-//! without explicit cross-team review. The packed-bytes signing layout
-//! depends on field ordering; a silent reorder breaks signature compatibility.
+//! Field order and types in `RangeJournal` are part of the wire contract —
+//! the packed-bytes signing layout depends on them, so a silent reorder
+//! invalidates every existing signature.
 
-pub mod paths;
-pub mod limits;
-pub mod content_type;
+pub mod wire;
 pub mod journal;
-pub mod response;
 pub mod error;
 pub mod task;
 
 pub use error::{ErrorKind, ErrorResponse};
-pub use journal::{RangeJournal, RangeJournalWire};
-pub use response::RangeTaskResponse;
+pub use journal::{RangeJournal, RangeJournalWire, RangeTaskResponse};
 pub use task::{
     CreateTaskResponse, DeleteTaskResponse, TaskId, TaskListResponse, TaskPhase, TaskStateView,
     TaskStatusView, TaskSummary,

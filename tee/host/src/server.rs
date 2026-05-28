@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{info, warn};
 
-use xlayer_tee_types::{limits, TaskStateView, TaskStatusView};
+use xlayer_tee_types::{wire, TaskStateView, TaskStatusView};
 
 use crate::api::{
     ApiResponse, CreateTaskData, DeleteTaskData, EnclaveInfoData, TaskStatusData,
@@ -45,7 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tee/task", post(create_task))
         .route("/tee/task/{task_id}", get(get_task).delete(delete_task))
         .route("/tee/info", get(get_info))
-        .layer(DefaultBodyLimit::max(limits::MAX_RANGE_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(wire::MAX_RANGE_BODY_BYTES))
         .with_state(state)
 }
 
@@ -61,10 +61,10 @@ async fn create_task(
     if body.is_empty() {
         return Json(ApiResponse::err(CODE_INVALID_ARGUMENT, "empty witness body"));
     }
-    if body.len() > limits::MAX_RANGE_BODY_BYTES {
+    if body.len() > wire::MAX_RANGE_BODY_BYTES {
         return Json(ApiResponse::err(
             CODE_INVALID_ARGUMENT,
-            format!("body {} bytes > limit {}", body.len(), limits::MAX_RANGE_BODY_BYTES),
+            format!("body {} bytes > limit {}", body.len(), wire::MAX_RANGE_BODY_BYTES),
         ));
     }
 
@@ -75,15 +75,6 @@ async fn create_task(
         RegisterOutcome::Duplicate(task_id) => {
             info!(%task_id, "duplicate witness; returning existing task_id");
             return Json(ApiResponse::ok(CreateTaskData { task_id }));
-        }
-        RegisterOutcome::Busy { running_task_id } => {
-            return Json(ApiResponse::err(
-                CODE_INVALID_ARGUMENT,
-                format!(
-                    "another task is in flight: {running_task_id}; \
-                     wait for it to finish or DELETE it first"
-                ),
-            ));
         }
     };
 

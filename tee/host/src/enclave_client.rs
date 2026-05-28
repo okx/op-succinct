@@ -15,7 +15,7 @@ use hyper_util::rt::TokioIo;
 use tokio::sync::Mutex;
 
 use rkyv::rancor::Error as RkyvError;
-use xlayer_tee_types::{content_type, paths, ErrorResponse, TaskStateView};
+use xlayer_tee_types::{wire, ErrorResponse, TaskStateView};
 
 use crate::config::EnclaveConfig;
 use crate::error::{Error, Result};
@@ -38,10 +38,10 @@ impl EnclaveClient {
             .send_with_retry(|| {
                 Request::builder()
                     .method("POST")
-                    .uri(paths::TASKS_RANGE)
+                    .uri(wire::TASKS_RANGE)
                     .header("host", "enclave")
-                    .header(paths::HEADER_TASK_ID, &task_id)
-                    .header("content-type", content_type::OCTET_STREAM)
+                    .header(wire::HEADER_TASK_ID, &task_id)
+                    .header("content-type", wire::OCTET_STREAM)
                     .body(Full::new(body.clone()))
             })
             .await?;

@@ -2,7 +2,7 @@
 //! `TeeDisputeGame.prove(bytes)`.
 
 use alloy_sol_types::SolValue;
-use xlayer_tee_types::{RangeJournal, RangeJournalWire, response::SIGNATURE_LEN, RangeTaskResponse};
+use xlayer_tee_types::{journal::SIGNATURE_LEN, RangeJournal, RangeJournalWire, RangeTaskResponse};
 
 use crate::error::Result;
 

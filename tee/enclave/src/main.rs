@@ -1,8 +1,7 @@
 //! xlayer-tee-enclave binary entry.
 //!
 //! Default build (no features): TCP `127.0.0.1:7878` with hardcoded dev key,
-//! placeholder attestation, and PCR0 = `[0u8; 32]`. Run via
-//! `cargo run -p xlayer-tee-enclave`.
+//! placeholder attestation, and PCR0 = `[0u8; 32]`.
 //!
 //! `--features vsock` (linux only, real Nitro): vsock listener on
 //! `(VMADDR_CID_ANY, VSOCK_PORT)`, fresh `OsRng` ENCLAVE_KEY, NSM-produced
@@ -11,9 +10,11 @@
 //! Task-manager environment variables:
 //! - `MAX_INFLIGHT_TASKS`: 0 (auto = num_cpus / 2) or a positive integer
 //! - `TERMINAL_TTL_SECS`: how long terminal task state persists (default 3600s)
+//! - `LISTEN`: TCP bind address in dev build (default `127.0.0.1:7878`)
 //!
-//! **`chainId` is per-request** via the `x-chain-id` header on
-//! `POST /tasks/range`. One EIF therefore serves any number of L1 chains.
+//! Chain identity is supplied via the witness's `rollup_config`; the enclave
+//! derives `configHash = keccak256(serde_json(rollup_config))` and signs it
+//! into the journal. The same EIF therefore serves any L2.
 
 use std::sync::Arc;
 
@@ -104,12 +105,9 @@ async fn main() {
     init_dev_keys();
 
     // dev build: PCR0 is a mock all-zero measurement.
-    // vsock build: read real PCR0 via NSM and compress 48-byte SHA-384 into
-    //   the `bytes32` slot used by the on-chain `approvedEnclaves` schema.
-    //   Compression = keccak256(full_pcr0) — preserves collision resistance
-    //   and matches the Solidity convention for "fingerprinting" longer hashes.
-    //   TODO(contract-team): confirm this matches the expected on-chain encoding
-    //   before going to mainnet.
+    // vsock build: NSM returns the raw 48-byte SHA-384 measurement; we compress
+    // it to 32 bytes via `keccak256` so it fits the journal's `bytes32 pcr0`
+    // slot and the aggregation guest's `EXPECTED_PCR0_HASH` constant.
     #[cfg(not(all(target_os = "linux", feature = "vsock")))]
     let pcr0: [u8; 32] = [0u8; 32];
     #[cfg(all(target_os = "linux", feature = "vsock"))]
@@ -149,7 +147,7 @@ async fn main() {
             pcr0 = %hex::encode(pcr0),
             max_inflight = task_manager.max_inflight(),
             ttl_secs,
-            "xlayer-tee-enclave (vsock build, real NSM) listening; chain id set per-request",
+            "xlayer-tee-enclave (vsock build, real NSM) listening",
         );
 
         axum::serve(VsockListenerAdapter::new(listener), app)
@@ -172,7 +170,7 @@ async fn main() {
             signer_pubkey = %hex::encode(enclave_pubkey_uncompressed()),
             max_inflight = task_manager.max_inflight(),
             ttl_secs,
-            "xlayer-tee-enclave (dev build, async task model) listening; chain id set per-request",
+            "xlayer-tee-enclave (dev build, async task model) listening",
         );
 
         axum::serve(listener, app).await.expect("axum server failed");

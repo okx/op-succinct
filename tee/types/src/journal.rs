@@ -1,4 +1,6 @@
-//! `RangeJournal` — packed-bytes journal signed by the enclave per Range proof.
+//! `RangeJournal` — packed-bytes journal signed by the enclave per Range proof,
+//! plus its rkyv-wire mirror and the `RangeTaskResponse` envelope returned by
+//! `POST /tasks/range`.
 
 use alloy_primitives::FixedBytes;
 use alloy_sol_types::sol;
@@ -6,6 +8,10 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// Byte length of the packed journal: 32 + 32 + 32 + 8 + 32 + 32.
 pub const PACKED_JOURNAL_LEN: usize = 168;
+
+/// Signature length in bytes: r(32) || s(32) || v(1).
+/// `v` is normalized to 27 / 28.
+pub const SIGNATURE_LEN: usize = 65;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -68,4 +74,11 @@ impl From<&RangeJournalWire> for RangeJournal {
             outputRoot: FixedBytes(w.output_root),
         }
     }
+}
+
+/// Body of a successful `POST /tasks/range` response: signed journal + sig.
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+pub struct RangeTaskResponse {
+    pub journal: RangeJournalWire,
+    pub signature: [u8; SIGNATURE_LEN],
 }

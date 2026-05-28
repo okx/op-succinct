@@ -7,10 +7,7 @@ use crate::{
     error::{Error, Result},
     keys::enclave_signing_key,
 };
-use xlayer_tee_types::{
-    journal::{RangeJournal, RangeJournalWire},
-    response::SIGNATURE_LEN,
-};
+use xlayer_tee_types::journal::{RangeJournal, RangeJournalWire, SIGNATURE_LEN};
 
 /// secp256k1 v normalization: recovery id `0`/`1` → `27`/`28`.
 const V_OFFSET: u8 = 27;

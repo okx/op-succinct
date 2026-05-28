@@ -1,12 +1,12 @@
 mod common;
 
 use xlayer_tee_enclave::attestation::DEV_ATTESTATION_MARKER;
-use xlayer_tee_types::paths;
+use xlayer_tee_types::wire;
 
 #[tokio::test]
 async fn attestation_returns_dev_marker_blob() {
     let app = common::app();
-    let (status, body) = common::call(&app, common::get(paths::ATTESTATION)).await;
+    let (status, body) = common::call(&app, common::get(wire::ATTESTATION)).await;
     assert_eq!(status, 200);
     assert!(body.len() >= DEV_ATTESTATION_MARKER.len());
     assert!(

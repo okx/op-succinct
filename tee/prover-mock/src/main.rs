@@ -33,8 +33,7 @@ use rkyv::rancor::Error as RkyvError;
 use tracing::info;
 
 use xlayer_tee_types::{
-    ErrorKind, ErrorResponse, RangeTaskResponse, content_type, journal::RangeJournalWire, limits,
-    paths,
+    journal::RangeJournalWire, wire, ErrorKind, ErrorResponse, RangeTaskResponse,
 };
 
 #[tokio::main]
@@ -47,9 +46,9 @@ async fn main() {
         .init();
 
     let app = Router::new()
-        .route(paths::TASKS_RANGE, post(tasks_range))
-        .route(paths::ATTESTATION, get(attestation))
-        .layer(DefaultBodyLimit::max(limits::MAX_RANGE_BODY_BYTES));
+        .route(wire::TASKS_RANGE, post(tasks_range))
+        .route(wire::ATTESTATION, get(attestation))
+        .layer(DefaultBodyLimit::max(wire::MAX_RANGE_BODY_BYTES));
 
     let addr: SocketAddr = std::env::var("LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:7878".into())
@@ -98,7 +97,7 @@ async fn attestation() -> Response {
     let payload: [u8; 64] = [0u8; 64];
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, HeaderValue::from_static(content_type::OCTET_STREAM))],
+        [(header::CONTENT_TYPE, HeaderValue::from_static(wire::OCTET_STREAM))],
         payload.to_vec(),
     )
         .into_response()
@@ -117,7 +116,7 @@ where
     match rkyv::to_bytes::<RkyvError>(value) {
         Ok(bytes) => (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, HeaderValue::from_static(content_type::OCTET_STREAM))],
+            [(header::CONTENT_TYPE, HeaderValue::from_static(wire::OCTET_STREAM))],
             bytes.to_vec(),
         )
             .into_response(),
@@ -131,7 +130,7 @@ fn error(kind: ErrorKind, msg: impl Into<String>) -> Response {
     let status = StatusCode::from_u16(kind.status_code()).expect("valid status");
     (
         status,
-        [(header::CONTENT_TYPE, HeaderValue::from_static(content_type::JSON))],
+        [(header::CONTENT_TYPE, HeaderValue::from_static(wire::JSON))],
         json,
     )
         .into_response()
@@ -142,7 +141,7 @@ fn error(kind: ErrorKind, msg: impl Into<String>) -> Response {
 /// (400 JSON) on failure, mirroring the real wire contract.
 fn validate_required_headers(headers: &HeaderMap) -> Result<(), Response> {
     let task_id = headers
-        .get(paths::HEADER_TASK_ID)
+        .get(wire::HEADER_TASK_ID)
         .ok_or_else(|| error(ErrorKind::InvalidTaskId, "missing x-task-id header"))?;
     let task_id_str = task_id
         .to_str()

@@ -101,9 +101,9 @@ mod prod {
 
     /// Read PCR0 from NSM. NSM returns the raw SHA-384 measurement (48 bytes).
     ///
-    /// The on-chain `approvedEnclaves` schema stores PCR0 as `bytes32`, so the
-    /// caller (`main.rs`) compresses this to 32 bytes; see the call site for
-    /// the chosen compression and the open question for the contract team.
+    /// The journal's `bytes32 pcr0` field and the aggregation guest's
+    /// `EXPECTED_PCR0_HASH` constant are 32 bytes, so the caller (`main.rs`)
+    /// compresses this via `keccak256`.
     pub fn read_pcr0() -> Result<Vec<u8>> {
         let fd = nsm_init();
         if fd < 0 {
