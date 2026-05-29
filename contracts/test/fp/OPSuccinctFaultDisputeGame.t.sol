@@ -26,7 +26,7 @@ import {
     GameNotOver,
     IncorrectDisputeGameFactory
 } from "src/fp/lib/Errors.sol";
-import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
+import {AggregationOutputs} from "src/lib/Types.sol";
 
 // Contracts
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
@@ -47,6 +47,8 @@ import {MockOptimismPortal2} from "../../src/utils/MockOptimismPortal2.sol";
 import {MockSystemConfig} from "../../src/utils/MockSystemConfig.sol";
 
 contract OPSuccinctFaultDisputeGameTest is Test {
+    uint32 internal constant TEST_GAME_TYPE = 42;
+
     // Event definitions matching those in OPSuccinctFaultDisputeGame.
     event Challenged(address indexed challenger);
     event Proved(address indexed prover);
@@ -72,7 +74,7 @@ contract OPSuccinctFaultDisputeGameTest is Test {
     uint256 disputeGameFinalityDelaySeconds = 1000;
 
     // Fixed parameters.
-    GameType gameType = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
+    GameType gameType = GameType.wrap(TEST_GAME_TYPE);
     Duration maxChallengeDuration = Duration.wrap(12 hours);
     Duration maxProveDuration = Duration.wrap(3 days);
     Claim rootClaim = Claim.wrap(keccak256("rootClaim"));
@@ -131,7 +133,7 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         anchorStateRegistry = AnchorStateRegistry(address(registryProxy));
 
         // Create a new access manager with a 2 week permissionless timeout.
-        accessManager = new AccessManager(2 weeks, IDisputeGameFactory(address(factory)));
+        accessManager = new AccessManager(2 weeks, IDisputeGameFactory(address(factory)), gameType);
         accessManager.setProposer(proposer, true);
         accessManager.setChallenger(challenger, true);
 
@@ -145,6 +147,7 @@ contract OPSuccinctFaultDisputeGameTest is Test {
         gameImpl = new OPSuccinctFaultDisputeGame(
             maxChallengeDuration,
             maxProveDuration,
+            gameType,
             IDisputeGameFactory(address(factory)),
             ISP1Verifier(address(sp1Verifier)),
             rollupConfigHash,

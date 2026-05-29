@@ -106,7 +106,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
             deployAnchorStateRegistry(config, factory, startingAnchorRoot, gameType, proxyAdmin);
 
         // Deploy and configure access manager
-        AccessManager accessManager = deployAccessManager(config, address(factoryProxy));
+        AccessManager accessManager = deployAccessManager(config, address(factoryProxy), gameType);
 
         // Deploy SP1 verifier and get configuration
         SP1Config memory sp1Config = deploySP1Verifier(config);
@@ -142,6 +142,7 @@ contract DeployOPSuccinctFDG is Script, Utils {
         return new OPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(config.maxChallengeDuration)),
             Duration.wrap(uint64(config.maxProveDuration)),
+            GameType.wrap(config.gameType),
             IDisputeGameFactory(address(factory)),
             ISP1Verifier(sp1Config.verifierAddress),
             sp1Config.rollupConfigHash,
@@ -233,10 +234,13 @@ contract DeployOPSuccinctFDG is Script, Utils {
         return sp1Config;
     }
 
-    function deployAccessManager(FDGConfig memory config, address factoryAddress) internal returns (AccessManager) {
+    function deployAccessManager(FDGConfig memory config, address factoryAddress, GameType gameType)
+        internal
+        returns (AccessManager)
+    {
         // Deploy the access manager contract.
         AccessManager accessManager =
-            new AccessManager(config.fallbackTimeoutFpSecs, IDisputeGameFactory(factoryAddress));
+            new AccessManager(config.fallbackTimeoutFpSecs, IDisputeGameFactory(factoryAddress), gameType);
         console.log("Access manager:", address(accessManager));
         console.log("Permissionless fallback timeout (seconds):", config.fallbackTimeoutFpSecs);
 

@@ -5,7 +5,6 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {GameType} from "src/dispute/lib/Types.sol";
 import {Timestamp} from "src/dispute/lib/LibUDT.sol";
-import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 /// @title AccessManager
 /// @notice Manages permissions for dispute game proposers and challengers.
@@ -36,6 +35,9 @@ contract AccessManager is Ownable {
     /// @notice The dispute game factory address.
     IDisputeGameFactory public immutable DISPUTE_GAME_FACTORY;
 
+    /// @notice The dispute game type tracked for permissionless proposer fallback.
+    GameType public immutable GAME_TYPE;
+
     /// @notice The timestamp of this contract's creation. Used for permissionless fallback proposals.
     uint256 public immutable DEPLOYMENT_TIMESTAMP;
 
@@ -46,9 +48,11 @@ contract AccessManager is Ownable {
     /// @notice Constructor sets the fallback timeout and initializes timestamp.
     /// @param _fallbackTimeout The timeout in seconds after last proposal when permissionless mode activates.
     /// @param _disputeGameFactory The dispute game factory address.
-    constructor(uint256 _fallbackTimeout, IDisputeGameFactory _disputeGameFactory) {
+    /// @param _gameType The dispute game type to track for proposal fallback timing.
+    constructor(uint256 _fallbackTimeout, IDisputeGameFactory _disputeGameFactory, GameType _gameType) {
         FALLBACK_TIMEOUT = _fallbackTimeout;
         DISPUTE_GAME_FACTORY = _disputeGameFactory;
+        GAME_TYPE = _gameType;
         DEPLOYMENT_TIMESTAMP = block.timestamp;
     }
 
@@ -80,7 +84,6 @@ contract AccessManager is Ownable {
     /// @return The last proposal timestamp.
     function getLastProposalTimestamp() public view returns (uint256) {
         // Get the latest game to check its timestamp.
-        GameType gameType = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
         uint256 numGames = DISPUTE_GAME_FACTORY.gameCount();
 
         // Early return if no games exist.
@@ -101,7 +104,7 @@ contract AccessManager is Ownable {
             }
 
             // If we found a game of the correct type, return its timestamp.
-            if (gameTypeAtIndex.raw() == gameType.raw()) {
+            if (gameTypeAtIndex.raw() == GAME_TYPE.raw()) {
                 return gameTimestamp;
             }
 

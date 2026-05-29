@@ -4,7 +4,7 @@ pragma solidity ^0.8.15;
 // Libraries
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {Duration} from "src/dispute/lib/Types.sol";
+import {Duration, GameType} from "src/dispute/lib/Types.sol";
 
 // Interfaces
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
@@ -34,11 +34,13 @@ contract DeployXLayerOPSuccinctFDG is Script {
         return new XLayerOPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(vm.envUint("MAX_CHALLENGE_DURATION"))),
             Duration.wrap(uint64(vm.envUint("MAX_PROVE_DURATION"))),
+            GameType.wrap(uint32(vm.envUint("GAME_TYPE"))),
             IDisputeGameFactory(factoryAddress),
             ISP1Verifier(vm.envAddress("VERIFIER_ADDRESS")),
             vm.envBytes32("ROLLUP_CONFIG_HASH"),
             vm.envBytes32("AGGREGATION_VKEY"),
             vm.envBytes32("RANGE_VKEY_COMMITMENT"),
+            vm.envBytes32("TEE_PCR_COMMITMENT"),
             vm.envUint("CHALLENGER_BOND_WEI"),
             IAnchorStateRegistry(vm.envAddress("ANCHOR_STATE_REGISTRY")),
             AccessManager(vm.envAddress("ACCESS_MANAGER"))

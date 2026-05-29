@@ -30,7 +30,7 @@ import {
     UnexpectedRootClaim
 } from "src/dispute/lib/Errors.sol";
 import "src/fp/lib/Errors.sol";
-import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
+import {AggregationOutputs} from "src/lib/Types.sol";
 
 // Interfaces
 import {ISemver} from "interfaces/universal/ISemver.sol";
@@ -168,6 +168,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @param _maxChallengeDuration The maximum duration allowed for a challenger to challenge a game.
     /// @param _maxProveDuration The maximum duration allowed for a proposer to prove against a challenge.
+    /// @param _gameType The dispute game type handled by this implementation.
     /// @param _disputeGameFactory The factory that creates the dispute games.
     /// @param _sp1Verifier The address of the SP1 verifier that verifies the proof for the aggregation program.
     /// @param _rollupConfigHash The rollup config hash for the L2 network.
@@ -178,6 +179,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     constructor(
         Duration _maxChallengeDuration,
         Duration _maxProveDuration,
+        GameType _gameType,
         IDisputeGameFactory _disputeGameFactory,
         ISP1Verifier _sp1Verifier,
         bytes32 _rollupConfigHash,
@@ -188,7 +190,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         AccessManager _accessManager
     ) {
         // Set up initial game state.
-        GAME_TYPE = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
+        GAME_TYPE = _gameType;
         MAX_CHALLENGE_DURATION = _maxChallengeDuration;
         MAX_PROVE_DURATION = _maxProveDuration;
         DISPUTE_GAME_FACTORY = _disputeGameFactory;

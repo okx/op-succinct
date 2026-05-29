@@ -65,6 +65,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         OPSuccinctFaultDisputeGame gameImpl = deployGameImplementation(
             config.maxChallengeDuration,
             config.maxProveDuration,
+            GameType.wrap(config.gameType),
             DisputeGameFactory(factoryAddress),
             sp1Config,
             IAnchorStateRegistry(registryAddress),
@@ -140,15 +141,14 @@ contract DeployOPSuccinctLite is Script, Utils {
     function deployAccessManager(
         uint256 fallbackTimeoutFpSecs,
         address factoryAddress,
+        GameType gameType,
         bool permissionlessMode,
         address[] memory proposerAddresses,
         address[] memory challengerAddresses
     ) internal returns (AccessManager) {
         // Deploy the access manager contract
-        AccessManager accessManager = new AccessManager(
-            fallbackTimeoutFpSecs,
-            IDisputeGameFactory(factoryAddress)
-        );
+        AccessManager accessManager =
+            new AccessManager(fallbackTimeoutFpSecs, IDisputeGameFactory(factoryAddress), gameType);
         console.log("Access manager deployed at:", address(accessManager));
         console.log("Permissionless fallback timeout (seconds):", fallbackTimeoutFpSecs);
 
@@ -212,6 +212,7 @@ contract DeployOPSuccinctLite is Script, Utils {
     function deployGameImplementation(
         uint256 maxChallengeDuration,
         uint256 maxProveDuration,
+        GameType gameType,
         DisputeGameFactory factory,
         SP1Config memory sp1Config,
         IAnchorStateRegistry registry,
@@ -221,6 +222,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         return new OPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(maxChallengeDuration)),
             Duration.wrap(uint64(maxProveDuration)),
+            gameType,
             IDisputeGameFactory(address(factory)),
             ISP1Verifier(sp1Config.verifierAddress),
             sp1Config.rollupConfigHash,

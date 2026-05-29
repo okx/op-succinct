@@ -32,6 +32,7 @@ contract UpgradeOPSuccinctFDG is Script {
         OPSuccinctFaultDisputeGame newImpl = new OPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(vm.envUint("MAX_CHALLENGE_DURATION"))),
             Duration.wrap(uint64(vm.envUint("MAX_PROVE_DURATION"))),
+            gameType,
             IDisputeGameFactory(factoryAddress),
             ISP1Verifier(vm.envAddress("VERIFIER_ADDRESS")),
             vm.envBytes32("ROLLUP_CONFIG_HASH"),
@@ -63,6 +64,7 @@ contract UpgradeOPSuccinctFDG is Script {
         OPSuccinctFaultDisputeGame newImpl = new OPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(vm.envUint("MAX_CHALLENGE_DURATION"))),
             Duration.wrap(uint64(vm.envUint("MAX_PROVE_DURATION"))),
+            gameType,
             IDisputeGameFactory(factoryAddress),
             ISP1Verifier(vm.envAddress("VERIFIER_ADDRESS")),
             vm.envBytes32("ROLLUP_CONFIG_HASH"),

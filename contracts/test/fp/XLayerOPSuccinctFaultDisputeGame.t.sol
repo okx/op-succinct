@@ -10,7 +10,6 @@ import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 import {Claim, Duration, GameStatus, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
 import {BadAuth, IncorrectBondAmount} from "src/dispute/lib/Errors.sol";
 import {ClaimAlreadyChallenged} from "src/fp/lib/Errors.sol";
-import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 // Contracts
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
@@ -29,25 +28,37 @@ import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol"
 import {MockOptimismPortal2} from "../../src/utils/MockOptimismPortal2.sol";
 import {MockSystemConfig} from "../../src/utils/MockSystemConfig.sol";
 
+struct XLayerAggregationOutputs {
+    bytes32 l1Head;
+    bytes32 l2PreRoot;
+    bytes32 claimRoot;
+    uint256 claimBlockNum;
+    bytes32 rollupConfigHash;
+    bytes32 rangeProgramCommitment;
+    address proverAddress;
+}
+
 contract XLayerExpectedVerifier is ISP1Verifier {
     bytes32 public immutable teeProofHash;
     bytes32 public immutable zkProofHash;
     bytes32 public immutable expectedRangeVkeyCommitment;
+    bytes32 public immutable expectedTeePcrCommitment;
 
-    constructor(bytes memory teeProof, bytes memory zkProof, bytes32 rangeVkeyCommitment) {
+    constructor(bytes memory teeProof, bytes memory zkProof, bytes32 rangeVkeyCommitment, bytes32 teePcrCommitment) {
         teeProofHash = keccak256(teeProof);
         zkProofHash = keccak256(zkProof);
         expectedRangeVkeyCommitment = rangeVkeyCommitment;
+        expectedTeePcrCommitment = teePcrCommitment;
     }
 
     function verifyProof(bytes32, bytes calldata publicValues, bytes calldata proofBytes) external view {
-        AggregationOutputs memory outputs = abi.decode(publicValues, (AggregationOutputs));
+        XLayerAggregationOutputs memory outputs = abi.decode(publicValues, (XLayerAggregationOutputs));
         bytes32 proofHash = keccak256(proofBytes);
 
         if (proofHash == teeProofHash) {
-            require(outputs.rangeVkeyCommitment == bytes32(0), "unexpected tee range vkey");
+            require(outputs.rangeProgramCommitment == expectedTeePcrCommitment, "unexpected tee pcr");
         } else if (proofHash == zkProofHash) {
-            require(outputs.rangeVkeyCommitment == expectedRangeVkeyCommitment, "unexpected zk range vkey");
+            require(outputs.rangeProgramCommitment == expectedRangeVkeyCommitment, "unexpected zk range vkey");
         } else {
             revert("unexpected proof bytes");
         }
@@ -76,11 +87,14 @@ contract XLayerOPSuccinctFaultDisputeGameTest is Test {
 
     bytes internal teeProof = hex"c0ffee";
     bytes internal zkProof = hex"deadbeef";
+    bytes32 internal rollupConfigHash = keccak256("rollup-config");
+    bytes32 internal aggregationVkey = keccak256("aggregation-vkey");
     bytes32 internal rangeVkeyCommitment = keccak256("range-vkey");
+    bytes32 internal teePcrCommitment = keccak256("tee-pcr");
 
     uint256 disputeGameFinalityDelaySeconds = 1000;
 
-    GameType gameType = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
+    GameType gameType = GameType.wrap(42);
     Duration maxChallengeDuration = Duration.wrap(12 hours);
     Duration maxProveDuration = Duration.wrap(3 days);
     Claim rootClaim = Claim.wrap(keccak256("rootClaim"));
@@ -102,7 +116,8 @@ contract XLayerOPSuccinctFaultDisputeGameTest is Test {
 
         factory = DisputeGameFactory(address(factoryProxy));
 
-        XLayerExpectedVerifier sp1Verifier = new XLayerExpectedVerifier(teeProof, zkProof, rangeVkeyCommitment);
+        XLayerExpectedVerifier sp1Verifier =
+            new XLayerExpectedVerifier(teeProof, zkProof, rangeVkeyCommitment, teePcrCommitment);
         MockSystemConfig mockSystemConfig = new MockSystemConfig(address(this));
         portal = new MockOptimismPortal2(gameType, disputeGameFinalityDelaySeconds);
         Proposal memory startingAnchorRoot = Proposal({root: Hash.wrap(keccak256("genesis")), l2SequenceNumber: 0});
@@ -124,18 +139,20 @@ contract XLayerOPSuccinctFaultDisputeGameTest is Test {
         );
         anchorStateRegistry = AnchorStateRegistry(address(registryProxy));
 
-        accessManager = new AccessManager(2 weeks, IDisputeGameFactory(address(factory)));
+        accessManager = new AccessManager(2 weeks, IDisputeGameFactory(address(factory)), gameType);
         accessManager.setProposer(proposer, true);
         accessManager.setChallenger(challenger, true);
 
         gameImpl = new XLayerOPSuccinctFaultDisputeGame(
             maxChallengeDuration,
             maxProveDuration,
+            gameType,
             IDisputeGameFactory(address(factory)),
             ISP1Verifier(address(sp1Verifier)),
+            rollupConfigHash,
+            aggregationVkey,
             rangeVkeyCommitment,
-            bytes32(0),
-            bytes32(0),
+            teePcrCommitment,
             1 ether,
             IAnchorStateRegistry(address(anchorStateRegistry)),
             accessManager

@@ -30,7 +30,6 @@ import {
     UnexpectedRootClaim
 } from "src/dispute/lib/Errors.sol";
 import "src/fp/lib/Errors.sol";
-import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 // Interfaces
 import {ISemver} from "interfaces/universal/ISemver.sol";
@@ -79,6 +78,17 @@ contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         Claim claim;
         ProposalStatus status;
         Timestamp deadline;
+    }
+
+    /// @notice The public values committed to by the XLayer aggregation program.
+    struct XLayerAggregationOutputs {
+        bytes32 l1Head;
+        bytes32 l2PreRoot;
+        bytes32 claimRoot;
+        uint256 claimBlockNum;
+        bytes32 rollupConfigHash;
+        bytes32 rangeProgramCommitment;
+        address proverAddress;
     }
 
     ////////////////////////////////////////////////////////////////
@@ -139,6 +149,9 @@ contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// this verification is the output of converting the [u32; 8] range BabyBear verification key to a [u8; 32] array.
     bytes32 internal immutable RANGE_VKEY_COMMITMENT;
 
+    /// @notice The PCR / measurement commitment expected for TEE proofs.
+    bytes32 internal immutable TEE_PCR_COMMITMENT;
+
     /// @notice The challenger bond for the game. This is the amount of the bond that the
     ///         challenger has to bond to challenge. The prover will receive this bond if they
     ///         provide a valid proof in response to a challenge.
@@ -190,27 +203,31 @@ contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @param _maxChallengeDuration The maximum duration allowed for a challenger to challenge a game.
     /// @param _maxProveDuration The maximum duration allowed for a proposer to prove against a challenge.
+    /// @param _gameType The dispute game type handled by this implementation.
     /// @param _disputeGameFactory The factory that creates the dispute games.
     /// @param _sp1Verifier The address of the SP1 verifier that verifies the proof for the aggregation program.
     /// @param _rollupConfigHash The rollup config hash for the L2 network.
     /// @param _aggregationVkey The vkey for the aggregation program.
     /// @param _rangeVkeyCommitment The commitment to the range vkey.
+    /// @param _teePcrCommitment The PCR / measurement commitment expected for TEE proofs.
     /// @param _challengerBond The bond amount that must be submitted by the challenger.
     /// @param _anchorStateRegistry The anchor state registry for the L2 network.
     constructor(
         Duration _maxChallengeDuration,
         Duration _maxProveDuration,
+        GameType _gameType,
         IDisputeGameFactory _disputeGameFactory,
         ISP1Verifier _sp1Verifier,
         bytes32 _rollupConfigHash,
         bytes32 _aggregationVkey,
         bytes32 _rangeVkeyCommitment,
+        bytes32 _teePcrCommitment,
         uint256 _challengerBond,
         IAnchorStateRegistry _anchorStateRegistry,
         AccessManager _accessManager
     ) {
         // Set up initial game state.
-        GAME_TYPE = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
+        GAME_TYPE = _gameType;
         MAX_CHALLENGE_DURATION = _maxChallengeDuration;
         MAX_PROVE_DURATION = _maxProveDuration;
         DISPUTE_GAME_FACTORY = _disputeGameFactory;
@@ -218,6 +235,7 @@ contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         ROLLUP_CONFIG_HASH = _rollupConfigHash;
         AGGREGATION_VKEY = _aggregationVkey;
         RANGE_VKEY_COMMITMENT = _rangeVkeyCommitment;
+        TEE_PCR_COMMITMENT = _teePcrCommitment;
         CHALLENGER_BOND = _challengerBond;
         ANCHOR_STATE_REGISTRY = _anchorStateRegistry;
         ACCESS_MANAGER = _accessManager;
@@ -417,13 +435,13 @@ contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         }
 
         // Decode the public values to check the claim root
-        AggregationOutputs memory publicValues = AggregationOutputs({
+        XLayerAggregationOutputs memory publicValues = XLayerAggregationOutputs({
             l1Head: Hash.unwrap(l1Head()),
             l2PreRoot: Hash.unwrap(startingOutputRoot.root),
             claimRoot: rootClaim().raw(),
             claimBlockNum: l2SequenceNumber(),
             rollupConfigHash: ROLLUP_CONFIG_HASH,
-            rangeVkeyCommitment: proofType == ProofType.TEE ? bytes32(0) : RANGE_VKEY_COMMITMENT,
+            rangeProgramCommitment: proofType == ProofType.TEE ? TEE_PCR_COMMITMENT : RANGE_VKEY_COMMITMENT,
             proverAddress: msg.sender
         });
 
@@ -714,6 +732,11 @@ contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice Returns the range vkey commitment.
     function rangeVkeyCommitment() external view returns (bytes32 rangeVkeyCommitment_) {
         rangeVkeyCommitment_ = RANGE_VKEY_COMMITMENT;
+    }
+
+    /// @notice Returns the TEE PCR / measurement commitment.
+    function teePcrCommitment() external view returns (bytes32 teePcrCommitment_) {
+        teePcrCommitment_ = TEE_PCR_COMMITMENT;
     }
 
     /// @notice Returns the challenger bond amount.
