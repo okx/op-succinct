@@ -2,9 +2,14 @@
 //!
 //! Per-leaf dispatch:
 //! - `RangeProof::Sp1` → `sp1_lib::verify::verify_sp1_proof` recursion.
-//! - `RangeProof::Tee` → in-zkVM ECDSA ecrecover over `keccak256` of the
-//!   packed range journal; signer pinned by the per-cycle AWS Nitro
-//!   attestation document.
+//! - `RangeProof::Tee` → in-zkVM ECDSA ecrecover over `keccak256(packed
+//!   RangeJournal)`; signer + PCR0 come from the per-cycle attestation.
+//!
+//! Only `AWS_NITRO_ROOT_G1_PUBKEY` is vkey-baked. The approved PCR0 lives
+//! on-chain as the dispute game's `RANGE_VKEY_COMMITMENT` immutable; we
+//! commit the attested PCR0 into `AggregationOutputs.multiBlockVKey` so the
+//! SP1 verifier rejects any proof whose PCR0 doesn't match the contract's
+//! constant. SP1 leaves use the same slot for the range program vkey.
 
 #![cfg_attr(target_os = "zkvm", no_main)]
 #[cfg(target_os = "zkvm")]
@@ -13,7 +18,7 @@ sp1_zkvm::entrypoint!(main);
 mod tee_attestation;
 
 use alloy_consensus::Header;
-use alloy_primitives::{b256, hex, keccak256, Address, B256};
+use alloy_primitives::{hex, keccak256, Address, B256};
 use alloy_sol_types::SolValue;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use op_succinct_client_utils::{
@@ -25,11 +30,6 @@ use std::collections::HashMap;
 
 use tee_attestation::{verify_attestation, TrustAnchors, VerifiedSession};
 
-/// `keccak256(raw 48-byte NSM PCR0)` — same 32-byte form the enclave packs
-/// into the journal. Replace before any deployment that accepts TEE leaves.
-const EXPECTED_PCR0_HASH: B256 =
-    b256!("c980e59163ce244bb4bb6211f48c7b46f88a4f40943e84eb99bdc41e129bd293");
-
 /// AWS Nitro Enclaves Root-G1 P-384 public key, SEC1 uncompressed X ‖ Y
 /// (no `0x04` prefix; 96 bytes). Valid until 2049-10-28.
 const AWS_NITRO_ROOT_G1_PUBKEY: [u8; 96] = hex!(
@@ -38,10 +38,7 @@ const AWS_NITRO_ROOT_G1_PUBKEY: [u8; 96] = hex!(
     "095f6f1370f4170843d9dc100121e4cf63012809664487c9796284304dc53ff4"
 );
 
-const TRUST_ANCHORS: TrustAnchors = TrustAnchors {
-    expected_pcr0_hash: EXPECTED_PCR0_HASH,
-    aws_root_pubkey: AWS_NITRO_ROOT_G1_PUBKEY,
-};
+const TRUST_ANCHORS: TrustAnchors = TrustAnchors { aws_root_pubkey: AWS_NITRO_ROOT_G1_PUBKEY };
 
 /// Byte length of the packed range journal — must match
 /// `xlayer-tee-types::journal::PACKED_JOURNAL_LEN`.
@@ -64,12 +61,12 @@ pub fn main() {
         assert_eq!(prev.rollupConfigHash, curr.rollupConfigHash);
     });
 
+    // One attestation per cycle covers signer + PCR0 for all TEE leaves.
     let has_tee_leaf =
         agg_inputs.range_proofs.iter().any(|rp| matches!(rp, RangeProof::Tee { .. }));
-    let session_signer: Option<Address> = if has_tee_leaf {
+    let session: Option<VerifiedSession> = if has_tee_leaf {
         let attestation_bytes = sp1_zkvm::io::read_vec();
-        let VerifiedSession { signer } = verify_attestation(&attestation_bytes, &TRUST_ANCHORS);
-        Some(signer)
+        Some(verify_attestation(&attestation_bytes, &TRUST_ANCHORS))
     } else {
         None
     };
@@ -86,8 +83,8 @@ pub fn main() {
                 );
             }
             RangeProof::Tee { signature } => {
-                let signer = session_signer.expect("Tee leaf without attestation (unreachable)");
-                verify_tee_range_proof(boot_info, signature, signer);
+                let s = session.as_ref().expect("Tee leaf without attestation (unreachable)");
+                verify_tee_range_proof(boot_info, signature, s.pcr0_hash, s.signer);
             }
         }
     }
@@ -116,7 +113,13 @@ pub fn main() {
         rollupConfigHash: last_boot_info.rollupConfigHash,
     };
 
-    let multi_block_vkey_b256 = B256::from(u32_to_u8(agg_inputs.multi_block_vkey));
+    // SP1 leaves: range program vkey. TEE leaves: attested PCR0. Both ride
+    // the same on-chain `RANGE_VKEY_COMMITMENT` immutable; the SP1 verifier
+    // enforces equality when the contract reconstructs the public values.
+    let multi_block_vkey_b256 = match session.as_ref() {
+        Some(s) => s.pcr0_hash,
+        None => B256::from(u32_to_u8(agg_inputs.multi_block_vkey)),
+    };
 
     let agg_outputs = AggregationOutputs {
         l1Head: final_boot_info.l1Head,
@@ -154,6 +157,7 @@ fn pack_range_journal(
 fn verify_tee_range_proof(
     boot_info: &BootInfoStruct,
     signature: &[u8],
+    attested_pcr0: B256,
     attested_signer: Address,
 ) {
     assert_eq!(
@@ -163,7 +167,7 @@ fn verify_tee_range_proof(
         signature.len()
     );
     let packed = pack_range_journal(
-        EXPECTED_PCR0_HASH,
+        attested_pcr0,
         boot_info.rollupConfigHash,
         boot_info.l1Head,
         boot_info.l2BlockNumber,

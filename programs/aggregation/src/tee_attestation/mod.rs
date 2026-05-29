@@ -1,8 +1,6 @@
 //! AWS Nitro Enclave attestation verification, in-zkVM.
 //!
-//! Single entry: [`verify_attestation`]. Pass raw `COSE_Sign1` bytes plus
-//! the trust anchors (PCR0 hash + AWS Nitro Root-G1 pubkey); panics on any
-//! failure (SP1 turns this into proof-generation failure).
+//! Single entry: [`verify_attestation`]; panics on failure.
 
 mod cose;
 mod doc;
@@ -11,35 +9,27 @@ mod x509;
 use alloy_primitives::{keccak256, Address, B256};
 use p384::ecdsa::{signature::Verifier, Signature, VerifyingKey};
 
-/// Trust anchors baked into the guest's vkey. Changing either rebuilds the
-/// ELF and forces an on-chain vkey upgrade — by design.
+/// Trust anchors baked into the guest's vkey. PCR0 is *not* anchored here —
+/// it is surfaced through [`VerifiedSession::pcr0_hash`] for the on-chain
+/// approved-PCR0 check, so rotating the image doesn't need a vkey upgrade.
 pub struct TrustAnchors {
-    /// `keccak256(raw 48-byte NSM PCR0)` — same 32-byte form the enclave
-    /// signs into `RangeJournal.pcr0`.
-    pub expected_pcr0_hash: B256,
-    /// AWS Nitro Root-G1 P-384 public key, SEC1 uncompressed X ‖ Y (no `0x04`
-    /// prefix). Public information; safe to commit.
+    /// AWS Nitro Root-G1 P-384 pubkey, SEC1 X ‖ Y (96 bytes, no prefix).
     pub aws_root_pubkey: [u8; 96],
 }
 
-/// Minimum the aggregation guest needs to bind subsequent `RangeProof::Tee`
-/// leaves to this attestation.
 pub struct VerifiedSession {
-    /// Ethereum-style address from the attestation's `public_key` field
-    /// (`keccak256(SEC1_uncompressed[1..])[12..]`).
+    /// TEE leaves must ecrecover to this signer.
     pub signer: Address,
+    /// `keccak256(raw 48-byte NSM PCR0)` — same form the enclave signs into
+    /// `RangeJournal.pcr0` and that gets committed publicly.
+    pub pcr0_hash: B256,
 }
 
-/// Verify one AWS Nitro Enclave attestation document end-to-end. Panics on
-/// any failure; deterministic and side-effect-free.
+/// Verify one AWS Nitro attestation end-to-end and extract signer + PCR0.
 ///
-/// 1. Parse COSE_Sign1 + attestation document payload.
-/// 2. AttestationDoc field sanity (timestamp / digest / cabundle / PCR0 / public_key).
-/// 3. Parse cert chain + per-cert content checks + expiry + per-cert P-384 sigs.
-/// 4. Root SPKI == `anchors.aws_root_pubkey`.
-/// 5. COSE_Sign1 signature verified by leaf cert pubkey.
-/// 6. `keccak256(attestation.pcrs[0]) == anchors.expected_pcr0_hash`.
-/// 7. Signer address derived from attestation's `public_key`.
+/// Checks: COSE_Sign1 envelope, AttestationDoc field sanity, cert chain
+/// (per-cert content + expiry + P-384 sigs + root SPKI ==
+/// `anchors.aws_root_pubkey`), and the COSE signature with the leaf cert.
 pub fn verify_attestation(bytes: &[u8], anchors: &TrustAnchors) -> VerifiedSession {
     let envelope = cose::CoseSign1::parse(bytes);
     let document = doc::AttestationDoc::parse(&envelope.payload);
@@ -56,18 +46,14 @@ pub fn verify_attestation(bytes: &[u8], anchors: &TrustAnchors) -> VerifiedSessi
 
     verify_cose_signature(chain.leaf_public_key(), &envelope);
 
-    // PCR0 check: enclave stores `keccak256(raw 48-byte NSM PCR0)` in the
-    // RangeJournal, so we anchor against that 32-byte form directly.
+    // PCR0 returned to the caller; the on-chain verifier decides whether
+    // this measurement is approved.
     let pcr0_hash = keccak256(document.pcr0());
-    assert_eq!(
-        pcr0_hash, anchors.expected_pcr0_hash,
-        "attestation: PCR0 hash mismatch"
-    );
 
     let pk = document.public_key.as_ref().expect("attestation: public_key missing");
     let signer = address_from_pubkey(pk.as_ref());
 
-    VerifiedSession { signer }
+    VerifiedSession { signer, pcr0_hash }
 }
 
 /// Verify the COSE_Sign1 signature using the leaf cert's P-384 public key.
