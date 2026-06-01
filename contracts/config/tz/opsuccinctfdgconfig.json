@@ -21,7 +21,7 @@
   "systemConfigAddress": "0x06be4b4a9a28ff8eed6da09447bc5daa676efac3",
   "optimismPortal2Address": "0x1529a34331d7d85c8868fc88ec730ae56d3ec9c0",
   "useSp1MockVerifier": false,
-  "rangeVkeyCommitment": "0x5ad47add701eb75c3755cf311766cf4542b0c960688233c20f88178d3597b9df",
+  "rangeVkeyCommitment": "0x1049cd364fe1a5ba0e3ca5c54c15b6d712009baa7a4ec24c2b48d35f6e2b10d8",
   "aggregationVkey": "0x00c6148f66365ea4529e492dca949f5bcadf4235f2382e47164ebafc83eacb66",
   "verifierAddress": "0x397A5f7f3dBd538f23DE225B51f532c34448dA9B"
 }
