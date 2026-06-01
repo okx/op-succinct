@@ -32,8 +32,9 @@ description: "Fault-proof proposer flow — game creation, defense (prove), reso
 | 2 | `sync_state()` — `sync_games` (backward walk from latest_index), `sync_anchor_game`, `compute_canonical_head` | `proposer.rs` |
 | 3 | Periodic `backup()` — serialize `ProposerState` to JSON file (semaphore-gated) | `backup.rs` |
 | 4 | `handle_completed_tasks()` — poll finished `JoinHandle`s, update cache + metrics | `proposer.rs` |
-| 5 | `spawn_pending_operations()` — evaluate 4 task types and spawn (game creation / defense / resolution / bond claim) | `proposer.rs` |
-| 6 | `spawn_game_creation_task()` — check capacity, vkey match, finalized L2 block; `handle_game_creation` → `generate_range_proofs` → `generate_agg_proof` → factory.create() | `proposer.rs` |
+| 5 | `spawn_pending_operations()` — evaluate 5 task types and spawn (host verification / game creation / defense / resolution / bond claim) | `proposer.rs` |
+| 5a | `spawn_host_verification_task()` (opt-in, `ENABLE_HOST_VERIFICATION=true`) — snap baseline to `canonical_head` on startup, fetch `get_finalized_l2_block_number` as ceiling, split `[last_verified+1, ceiling]` into chunks of `host_verification_chunk_size`, per-chunk: `host.fetch()` + `host.run()` (native kona), update `last_verified_l2_block` atomically on success, increment `HostVerificationErrors` gauge on failure | `proposer.rs`, `host_verification.rs` |
+| 6 | `spawn_game_creation_task()` — check capacity, vkey match, finalized L2 block; **when `enable_host_verification=true`, gate on `last_verified_l2_block >= target`** instead of `get_finalized_l2_block_number`; `handle_game_creation` → `generate_range_proofs` → `generate_agg_proof` → factory.create() | `proposer.rs` |
 | 7 | (fast finality) `spawn_game_proving_task()` — generate proof and submit `prove()`; updates `ProposalStatus` to `*ValidProofProvided` | `proposer.rs` |
 | 8 | `spawn_game_defense_tasks()` — prove defense for IN_PROGRESS + Challenged games, prioritized by deadline | `proposer.rs` |
 | 9 | `handle_game_resolution()` — find `should_attempt_to_resolve` games (owned, parent resolved, game over); submit `resolve()` | `proposer.rs` |

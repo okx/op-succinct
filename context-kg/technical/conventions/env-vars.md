@@ -41,6 +41,8 @@ All secrets must be read from environment variables — never hardcode (see `kno
 | `TX_CONFIRMATION_TIMEOUT` | No | 60 | L1 tx confirmation timeout (seconds) |
 | `FAST_FINALITY_PROVING_LIMIT` | No | 1 | Max fast finality proofs in parallel |
 | `MALICIOUS_CHALLENGE_PERCENTAGE` | No | 0 | Testing: % of valid games to challenge |
+| `ENABLE_HOST_VERIFICATION` | No | false | Opt-in pre-proposal native host verification gate |
+| `HOST_VERIFICATION_CHUNK_SIZE` | No | 300 | L2 blocks per verification chunk (must be > 0) |
 | `PROPOSER_METRICS_PORT` | No | — | Prometheus metrics port for proposer |
 
 ## Signer (`utils/signer/src/lib.rs` — `Signer::from_env()`)

@@ -83,6 +83,7 @@ pub enum TaskInfo {
     GameProving { game_address: Address, is_defense: bool },
     GameResolution,
     BondClaim,
+    HostVerification,
 }
 
 /// Proposer identity information for version tracking and monitoring.
@@ -270,6 +271,9 @@ where
     /// Proposer identity with version and vkey information for monitoring and compatibility
     /// checks.
     pub identity: ProposerIdentity,
+    /// Highest L2 block number that passed native host verification.
+    /// Only written by the HostVerification task; read atomically by should_create_game.
+    last_verified_l2_block: Arc<AtomicU64>,
 }
 
 impl<P, H> OPSuccinctProposer<P, H>
@@ -377,6 +381,7 @@ where
             state: Arc::new(RwLock::new(initial_state)),
             backup_semaphore: Arc::new(Semaphore::new(1)),
             identity,
+            last_verified_l2_block: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1682,12 +1687,115 @@ where
             TaskInfo::BondClaim => {
                 ProposerGauge::BondClaimingError.increment(1.0);
             }
+            TaskInfo::HostVerification => {
+                ProposerGauge::HostVerificationErrors.increment(1.0);
+            }
         }
         Ok(())
     }
 
+    /// Spawn a background task that verifies new L2 blocks via native kona execution.
+    ///
+    /// Returns Ok(true) if a task was spawned, Ok(false) if nothing to verify.
+    async fn spawn_host_verification_task(&self) -> Result<bool> {
+        let state = self.state.read().await;
+        let Some(canonical_head_l2_block) = state.canonical_head_l2_block else {
+            tracing::debug!("Host verification: canonical head not available, skipping");
+            return Ok(false);
+        };
+        let canonical_head = canonical_head_l2_block.to::<u64>();
+        drop(state);
+
+        let current = self.last_verified_l2_block.load(Ordering::Relaxed);
+        if current < canonical_head {
+            tracing::info!(
+                old = current,
+                canonical_head,
+                "Host verification: snapping baseline to canonical head"
+            );
+            self.last_verified_l2_block.store(canonical_head, Ordering::Relaxed);
+        }
+
+        let start = self.last_verified_l2_block.load(Ordering::Relaxed);
+
+        let finalized =
+            self.host.get_finalized_l2_block_number(&self.fetcher, canonical_head).await?;
+        let Some(end) = finalized else {
+            tracing::debug!("Host verification: finalized L2 block not available");
+            return Ok(false);
+        };
+
+        if start >= end {
+            tracing::debug!(start, end, "Host verification: nothing to verify");
+            return Ok(false);
+        }
+
+        let host = self.host.clone();
+        let chunk_size = self.config.host_verification_chunk_size;
+        let safe_db_fallback = self.safe_db_fallback;
+        let last_verified = self.last_verified_l2_block.clone();
+
+        tracing::info!(start, end, chunk_size, "Spawning host verification task");
+
+        let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+        let handle = tokio::spawn(async move {
+            let mut cursor = start;
+            while cursor < end {
+                let chunk_end = (cursor + chunk_size).min(end);
+                tracing::info!(chunk_start = cursor, chunk_end, "Verifying chunk");
+
+                let args = match host.fetch(cursor, chunk_end, None, safe_db_fallback).await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::error!(
+                            chunk_start = cursor,
+                            chunk_end,
+                            error = %e,
+                            "Host verification chunk fetch failed"
+                        );
+                        ProposerGauge::HostVerificationErrors.increment(1.0);
+                        return Err(e.context("host verification fetch failed"));
+                    }
+                };
+
+                if let Err(e) = host.run(&args).await {
+                    tracing::error!(
+                        chunk_start = cursor,
+                        chunk_end,
+                        error = %e,
+                        "Host verification chunk execution failed"
+                    );
+                    ProposerGauge::HostVerificationErrors.increment(1.0);
+                    return Err(e.context("host verification execution failed"));
+                }
+
+                last_verified.store(chunk_end, Ordering::Relaxed);
+                ProposerGauge::LastVerifiedL2Block.set(chunk_end as f64);
+                tracing::info!(chunk_start = cursor, chunk_end, "Chunk verified successfully");
+                cursor = chunk_end;
+            }
+
+            tracing::info!(start, end, "All blocks in range verified successfully");
+            Ok(())
+        });
+
+        self.tasks.lock().await.insert(task_id, (handle, TaskInfo::HostVerification));
+        Ok(true)
+    }
+
     /// Spawn pending operations if not already running
     async fn spawn_pending_operations(&self) -> Result<()> {
+        // Host verification task (opt-in gate for game creation)
+        if self.config.enable_host_verification &&
+            !self.has_active_task_of_type(&TaskInfo::HostVerification).await
+        {
+            match self.spawn_host_verification_task().await {
+                Ok(true) => tracing::info!("Spawned host verification task"),
+                Ok(false) => tracing::debug!("No new blocks to verify"),
+                Err(e) => tracing::warn!("Failed to spawn host verification task: {:?}", e),
+            }
+        }
+
         // Check if we should create a game and spawn task if needed
         if !self.has_active_task_of_type(&TaskInfo::GameCreation { block_number: U256::ZERO }).await
         {
@@ -1757,6 +1865,7 @@ where
                     }
                     TaskInfo::GameResolution => "GameResolution",
                     TaskInfo::BondClaim => "BondClaim",
+                    TaskInfo::HostVerification => "HostVerification",
                 };
                 *task_counts.entry(task_type).or_insert(0) += 1;
             }
@@ -1982,20 +2091,27 @@ where
         let next_l2_block_number_for_proposal =
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
-        let finalized_l2_head_block_number = self
-            .host
-            .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
-            .await?;
-
-        Ok((
+        let can_propose = if self.config.enable_host_verification {
+            let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
+            tracing::debug!(
+                last_verified,
+                target = %next_l2_block_number_for_proposal,
+                "Host verification gate check"
+            );
+            U256::from(last_verified) >= next_l2_block_number_for_proposal
+        } else {
+            let finalized_l2_head_block_number = self
+                .host
+                .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+                .await?;
             finalized_l2_head_block_number
                 .map(|finalized_block| {
                     U256::from(finalized_block) >= next_l2_block_number_for_proposal
                 })
-                .unwrap_or(false),
-            next_l2_block_number_for_proposal,
-            parent_game_index,
-        ))
+                .unwrap_or(false)
+        };
+
+        Ok((can_propose, next_l2_block_number_for_proposal, parent_game_index))
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.

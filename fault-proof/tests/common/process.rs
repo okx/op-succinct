@@ -50,6 +50,8 @@ pub async fn new_proposer(
         max_concurrent_range_proofs: NonZero::<usize>::MIN,
         backup_path,
         tx_confirmation_timeout: 60,
+        enable_host_verification: false,
+        host_verification_chunk_size: 300,
         proof_provider: ProofProviderConfig {
             timeout: 14400, // 4 hours
             network_calls_timeout: 15,
