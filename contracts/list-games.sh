@@ -9,11 +9,14 @@
 #   L1_RPC           RPC endpoint of the L1 hosting the factory
 #                    (default: http://127.0.0.1:8545)
 #   GAME_TYPE        if set, only list games of this type (e.g. 1961 for tz)
+#   LIMIT            number of most-recent games to print (default: 100,
+#                    use 0 or "all" to print every game)
 #   ENV_FILE         env file to source (default: .env.tz if present, else .env)
 #
 # Usage:
 #   ./list-games.sh
 #   GAME_TYPE=1961 ./list-games.sh
+#   LIMIT=all ./list-games.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +38,15 @@ fi
 L1_RPC="${L1_RPC:-http://127.0.0.1:8545}"
 : "${FACTORY_ADDRESS:?FACTORY_ADDRESS must be set}"
 GAME_TYPE_FILTER="${GAME_TYPE:-}"
+LIMIT_INPUT="${LIMIT:-100}"
+if [[ "$LIMIT_INPUT" == "all" || "$LIMIT_INPUT" == "0" ]]; then
+    LIMIT=0
+elif [[ "$LIMIT_INPUT" =~ ^[0-9]+$ ]]; then
+    LIMIT="$LIMIT_INPUT"
+else
+    echo "LIMIT must be a non-negative integer or 'all' (got: $LIMIT_INPUT)" >&2
+    exit 1
+fi
 
 # OPSuccinctFaultDisputeGame.sol enum GameStatus (uint8)
 GAME_STATUS=(IN_PROGRESS CHALLENGER_WINS DEFENDER_WINS)
@@ -53,16 +65,26 @@ label() {
 }
 
 GAME_COUNT=$(cast call --rpc-url "$L1_RPC" "$FACTORY_ADDRESS" "gameCount()(uint256)")
+
+if (( LIMIT == 0 || LIMIT >= GAME_COUNT )); then
+    START_INDEX=0
+    RANGE_DESC="all $GAME_COUNT games"
+else
+    START_INDEX=$(( GAME_COUNT - LIMIT ))
+    RANGE_DESC="last $LIMIT games (idx $START_INDEX .. $((GAME_COUNT - 1)))"
+fi
+
 echo "L1_RPC    : $L1_RPC"
 echo "Factory   : $FACTORY_ADDRESS"
 echo "gameCount : $GAME_COUNT"
+echo "Showing   : $RANGE_DESC"
 [[ -n "$GAME_TYPE_FILTER" ]] && echo "Filter    : gameType == $GAME_TYPE_FILTER"
 echo
 
 printf '%5s  %-42s  %9s  %-18s  %s\n' idx proxy gameType GameStatus ProposalStatus
 printf -- '%.0s-' {1..120}; echo
 
-for (( i = 0; i < GAME_COUNT; i++ )); do
+for (( i = START_INDEX; i < GAME_COUNT; i++ )); do
     # gameAtIndex(uint256) returns (GameType uint32, Timestamp uint64, IDisputeGame address)
     mapfile -t entry < <(cast call --rpc-url "$L1_RPC" "$FACTORY_ADDRESS" \
         "gameAtIndex(uint256)(uint32,uint64,address)" "$i")
