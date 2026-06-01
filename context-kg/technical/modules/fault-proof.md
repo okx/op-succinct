@@ -26,12 +26,14 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 | `ProposerIdentity` | `range_vkey`, `agg_vkey`, `rollup_config_hash` | Hardfork compatibility identity |
 | `Anchor Game` | Latest finalized game | Read from `AnchorStateRegistry` |
 | `Canonical Head` | Proposer's best-known parent for the next game | Recomputed each `sync_state()` |
+| `TaskInfo` | `GameCreation`, `GameProving`, `GameResolution`, `BondClaim`, `HostVerification` | Task type enum for `TaskMap`; each variant maps to spawn/completion/failure handlers |
+| `last_verified_l2_block` | `Arc<AtomicU64>` on `OPSuccinctProposer` | Highest L2 block that passed native host verification; written by HostVerification task, read atomically by `should_create_game` |
 
 ## Dependencies
 - Refer to `arch/dependency.md` for full dependency details.
 
 ## Relevant Flows
-- See `core-flows/fault-proof-proposer.md` for game creation, defense (prove), resolution, and bond claiming.
+- See `core-flows/fault-proof-proposer.md` for host verification, game creation, defense (prove), resolution, and bond claiming.
 - See `core-flows/fault-proof-challenger.md` for game monitoring, challenge, resolve, and claim.
 
 ## Module-Specific Pitfalls
@@ -49,6 +51,8 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 [Pitfall] `fault-proof/src/proposer.rs:1637-1680, 2087-2190`: proving task hangs forever if the prover process is killed; `JoinHandle` never completes. Correct approach: add prover-side timeout and explicit `tokio::time::timeout` wrapper.
 
 [Pitfall] `fault-proof/src/backup.rs:136-137`: `serde_json::to_value().unwrap()` + `.as_object().unwrap()` panics the proposer on serialization failure. Correct approach: graceful skip with warn log.
+
+[Pitfall] `fault-proof/src/proposer.rs:1744`: zero `HOST_VERIFICATION_CHUNK_SIZE` causes infinite loop in `spawn_host_verification_task` inline chunk iteration. Correct approach: validate chunk_size > 0 at config parse or clamp before loop.
 
 [Warning] `fault-proof/src/challenger.rs:357-359, 375`: `sync_state()` recomputes `output_root` for every cached game every interval — O(n) L2 RPC calls. Scale issue on large game DAGs; consider lazy evaluation.
 

@@ -2,6 +2,7 @@ pub mod backup;
 pub mod challenger;
 pub mod config;
 pub mod contract;
+pub mod host_verification;
 pub mod prometheus;
 pub mod proposer;
 pub mod prover;

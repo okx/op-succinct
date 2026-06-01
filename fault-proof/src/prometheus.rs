@@ -133,6 +133,16 @@ pub enum ProposerGauge {
         message = "Total number of backup restore errors"
     )]
     BackupRestoreError,
+    #[strum(
+        serialize = "op_succinct_fp_last_verified_l2_block",
+        message = "Highest L2 block number that passed native host verification"
+    )]
+    LastVerifiedL2Block,
+    #[strum(
+        serialize = "op_succinct_fp_host_verification_errors_total",
+        message = "Cumulative count of host verification chunk failures"
+    )]
+    HostVerificationErrors,
 }
 
 impl MetricsGauge for ProposerGauge {}
