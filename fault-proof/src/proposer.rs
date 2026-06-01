@@ -532,6 +532,7 @@ where
         contract_params: ContractParams,
     ) -> Result<()> {
         self.state.write().await.canonical_head_l2_block = Some(anchor_l2_block);
+        self.last_verified_l2_block.store(anchor_l2_block.to::<u64>(), Ordering::Relaxed);
         self.init_bond
             .set(init_bond)
             .map_err(|_| anyhow::anyhow!("init_bond must not already be set"))?;
@@ -1706,14 +1707,20 @@ where
         let canonical_head = canonical_head_l2_block.to::<u64>();
         drop(state);
 
-        let current = self.last_verified_l2_block.load(Ordering::Relaxed);
-        if current < canonical_head {
+        let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
+
+        // Snap the verification baseline to canonical_head on startup/restart.
+        // Blocks up to canonical_head are already covered by existing on-chain games and
+        // do not need re-verification. This avoids a potentially huge re-check after restart.
+        let effective_start = last_verified.max(canonical_head);
+        if effective_start > last_verified {
             tracing::info!(
-                old = current,
+                last_verified,
                 canonical_head,
-                "Host verification: snapping baseline to canonical head"
+                effective_start,
+                "Snapping verification baseline to canonical head"
             );
-            self.last_verified_l2_block.store(canonical_head, Ordering::Relaxed);
+            self.last_verified_l2_block.store(effective_start, Ordering::Relaxed);
         }
 
         let start = self.last_verified_l2_block.load(Ordering::Relaxed);
@@ -1739,43 +1746,68 @@ where
 
         let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
         let handle = tokio::spawn(async move {
-            let mut cursor = start;
-            while cursor < end {
-                let chunk_end = (cursor + chunk_size).min(end);
-                tracing::info!(chunk_start = cursor, chunk_end, "Verifying chunk");
+            let total_blocks = end.saturating_sub(start);
+            tracing::info!(
+                start,
+                end,
+                total_blocks,
+                chunk_size,
+                "Host verification started — verifying L2 [{start}, {end}] in chunks of {chunk_size}"
+            );
 
-                let args = match host.fetch(cursor, chunk_end, None, safe_db_fallback).await {
-                    Ok(a) => a,
-                    Err(e) => {
-                        tracing::error!(
-                            chunk_start = cursor,
-                            chunk_end,
-                            error = %e,
-                            "Host verification chunk fetch failed"
-                        );
-                        ProposerGauge::HostVerificationErrors.increment(1.0);
-                        return Err(e.context("host verification fetch failed"));
-                    }
-                };
+            let mut chunk_start = start;
+            while chunk_start < end {
+                let chunk_end = (chunk_start + chunk_size).min(end);
 
-                if let Err(e) = host.run(&args).await {
-                    tracing::error!(
-                        chunk_start = cursor,
-                        chunk_end,
-                        error = %e,
-                        "Host verification chunk execution failed"
-                    );
-                    ProposerGauge::HostVerificationErrors.increment(1.0);
-                    return Err(e.context("host verification execution failed"));
+                tracing::info!(
+                    chunk_start,
+                    chunk_end,
+                    total_start = start,
+                    total_end = end,
+                    "Host verification: verifying chunk [{chunk_start}, {chunk_end}]"
+                );
+
+                let chunk_result: Result<()> = async {
+                    let args = host
+                        .fetch(chunk_start, chunk_end, None, safe_db_fallback)
+                        .await
+                        .context("host.fetch failed during verification")?;
+                    host.run(&args).await.context("host.run failed during verification")?;
+                    Ok(())
                 }
+                .await;
 
-                last_verified.store(chunk_end, Ordering::Relaxed);
-                ProposerGauge::LastVerifiedL2Block.set(chunk_end as f64);
-                tracing::info!(chunk_start = cursor, chunk_end, "Chunk verified successfully");
-                cursor = chunk_end;
+                match chunk_result {
+                    Ok(()) => {
+                        last_verified.store(chunk_end, Ordering::Relaxed);
+                        ProposerGauge::LastVerifiedL2Block.set(chunk_end as f64);
+                        chunk_start = chunk_end;
+                    }
+                    Err(e) => {
+                        ProposerGauge::HostVerificationErrors.increment(1.0);
+                        tracing::error!(
+                            chunk_start,
+                            chunk_end,
+                            total_start = start,
+                            total_end = end,
+                            error = ?e,
+                            "Host verification FAILED on chunk [{chunk_start}, {chunk_end}] — \
+                             these L2 blocks may not be provable. Game creation is now blocked. \
+                             Check L2/CL node consistency."
+                        );
+                        // last_verified_l2_block stays at the last successful chunk boundary.
+                        // Next cycle will retry from that boundary.
+                        return Ok(());
+                    }
+                }
             }
 
-            tracing::info!(start, end, "All blocks in range verified successfully");
+            tracing::info!(
+                start,
+                end,
+                total_blocks,
+                "Host verification passed — all L2 blocks [{start}, {end}] are derivable from L1"
+            );
             Ok(())
         });
 
@@ -2092,11 +2124,13 @@ where
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
         let can_propose = if self.config.enable_host_verification {
+            // Gate on last_verified_l2_block: the background verification task advances this
+            // as new blocks pass native kona execution, preventing un-provable games.
             let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
             tracing::debug!(
                 last_verified,
-                target = %next_l2_block_number_for_proposal,
-                "Host verification gate check"
+                next_l2_block = %next_l2_block_number_for_proposal,
+                "Checking if target block has been host-verified"
             );
             U256::from(last_verified) >= next_l2_block_number_for_proposal
         } else {

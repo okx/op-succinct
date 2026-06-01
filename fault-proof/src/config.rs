@@ -87,11 +87,22 @@ pub struct ProposerConfig {
     /// plus the configured confirmation depth needs more headroom.
     pub tx_confirmation_timeout: u64,
 
-    /// Whether to enable host verification before game creation.
-    /// When true, game creation is gated on successful native kona derivation.
+    /// Whether to enable pre-proposal host verification.
+    ///
+    /// When enabled, the proposer runs kona natively against each new batcher cycle before
+    /// submitting a game, confirming the range is derivable from L1. Game creation is blocked
+    /// until the target block passes verification.
+    ///
+    /// Defaults to false. Set ENABLE_HOST_VERIFICATION=true to opt in.
     pub enable_host_verification: bool,
 
-    /// Number of L2 blocks per verification chunk (default: 300).
+    /// Number of L2 blocks per verification chunk when host verification is enabled.
+    ///
+    /// The verification range is split into consecutive chunks of this size; each chunk is
+    /// independently fetched and executed, with one log line emitted per chunk. Smaller values
+    /// give finer-grained progress visibility; larger values reduce fetch overhead.
+    ///
+    /// Default: 300 (~2-3 batcher cycles at 120 blocks/cycle).
     pub host_verification_chunk_size: u64,
 }
 

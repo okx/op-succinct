@@ -112,6 +112,19 @@ pub enum ProposerGauge {
         message = "Total number of network call timeouts"
     )]
     NetworkCallTimeout,
+    // Host verification metrics
+    #[strum(
+        serialize = "op_succinct_fp_last_verified_l2_block",
+        message = "Highest L2 block that has passed incremental host verification (native kona \
+                   execution). Game creation is blocked until this value reaches the proposal target."
+    )]
+    LastVerifiedL2Block,
+    #[strum(
+        serialize = "op_succinct_fp_host_verification_errors_total",
+        message = "Total number of incremental host verification failures. A non-zero value means \
+                   the proposer detected un-provable L2 blocks and is blocking new game creation."
+    )]
+    HostVerificationErrors,
     // Backup metrics
     #[strum(
         serialize = "op_succinct_fp_backup_save_success",
@@ -133,16 +146,6 @@ pub enum ProposerGauge {
         message = "Total number of backup restore errors"
     )]
     BackupRestoreError,
-    #[strum(
-        serialize = "op_succinct_fp_last_verified_l2_block",
-        message = "Highest L2 block number that passed native host verification"
-    )]
-    LastVerifiedL2Block,
-    #[strum(
-        serialize = "op_succinct_fp_host_verification_errors_total",
-        message = "Cumulative count of host verification chunk failures"
-    )]
-    HostVerificationErrors,
 }
 
 impl MetricsGauge for ProposerGauge {}
