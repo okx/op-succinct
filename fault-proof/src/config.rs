@@ -86,6 +86,13 @@ pub struct ProposerConfig {
     /// the historical signer behavior; raise it (e.g. 180) on networks where mempool inclusion
     /// plus the configured confirmation depth needs more headroom.
     pub tx_confirmation_timeout: u64,
+
+    /// Whether to enable host verification before game creation.
+    /// When true, game creation is gated on successful native kona derivation.
+    pub enable_host_verification: bool,
+
+    /// Number of L2 blocks per verification chunk (default: 300).
+    pub host_verification_chunk_size: u64,
 }
 
 /// Helper function to parse a comma-separated list of addresses
@@ -150,6 +157,12 @@ impl ProposerConfig {
             tx_confirmation_timeout: env::var("TX_CONFIRMATION_TIMEOUT")
                 .unwrap_or("60".to_string())
                 .parse()?,
+            enable_host_verification: env::var("ENABLE_HOST_VERIFICATION")
+                .unwrap_or("false".to_string())
+                .parse()?,
+            host_verification_chunk_size: env::var("HOST_VERIFICATION_CHUNK_SIZE")
+                .unwrap_or("300".to_string())
+                .parse()?,
         })
     }
 
@@ -187,6 +200,8 @@ impl ProposerConfig {
             whitelist = ?self.proof_provider.whitelist,
             backup_path = ?self.backup_path,
             tx_confirmation_timeout = self.tx_confirmation_timeout,
+            enable_host_verification = self.enable_host_verification,
+            host_verification_chunk_size = self.host_verification_chunk_size,
             "Proposer configuration loaded"
         );
     }
@@ -592,5 +607,52 @@ mod split_range_tests {
     fn test_rejects_above_max_from_str() {
         let err = "17".parse::<RangeSplitCount>().unwrap_err();
         assert!(err.to_string().contains("between 1 and 16"), "unexpected error: {err}");
+    }
+}
+
+#[cfg(test)]
+mod host_verification_config_tests {
+    use super::*;
+    use std::{env, sync::Mutex};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_required_env_vars() {
+        env::set_var("L1_RPC", "http://localhost:8545");
+        env::set_var("L2_RPC", "http://localhost:9545");
+        env::set_var("ANCHOR_STATE_REGISTRY_ADDRESS", "0x0000000000000000000000000000000000000001");
+        env::set_var("FACTORY_ADDRESS", "0x0000000000000000000000000000000000000002");
+        env::set_var("GAME_TYPE", "1");
+    }
+
+    fn clear_host_verification_env_vars() {
+        env::remove_var("ENABLE_HOST_VERIFICATION");
+        env::remove_var("HOST_VERIFICATION_CHUNK_SIZE");
+    }
+
+    #[test]
+    fn host_verification_config_parsing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        set_required_env_vars();
+
+        // Test 1: defaults when env vars not set
+        clear_host_verification_env_vars();
+        let config = ProposerConfig::from_env().unwrap();
+        assert!(!config.enable_host_verification, "default should be false");
+        assert_eq!(config.host_verification_chunk_size, 300, "default chunk size should be 300");
+
+        // Test 2: explicit true with custom chunk size
+        env::set_var("ENABLE_HOST_VERIFICATION", "true");
+        env::set_var("HOST_VERIFICATION_CHUNK_SIZE", "500");
+        let config = ProposerConfig::from_env().unwrap();
+        assert!(config.enable_host_verification, "should parse true");
+        assert_eq!(config.host_verification_chunk_size, 500, "should parse custom chunk size");
+
+        // Test 3: explicit false
+        env::set_var("ENABLE_HOST_VERIFICATION", "false");
+        let config = ProposerConfig::from_env().unwrap();
+        assert!(!config.enable_host_verification, "should parse explicit false");
+
+        clear_host_verification_env_vars();
     }
 }
