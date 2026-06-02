@@ -33,9 +33,9 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 4. **Produce a constraint checklist** — explicitly declare if no relevant content was found.
 5. **Cross-validate during work** — correct violations immediately.
 
-## Workspace Members (22)
+## Workspace Members (23)
 
 `utils/{client,host,build,proof,signer,elfs}`,
 `utils/celestia/{client,host}`, `utils/eigenda/{client,host}`, `utils/ethereum/{client,host}`,
 `programs/range/{celestia,eigenda,ethereum,utils}`, `programs/aggregation`,
-`scripts/{prove,utils}`, `validity`, `fault-proof`, `bindings`.
+`scripts/{prove,utils}`, `validity`, `fault-proof`, `fault-proof/tee/types`, `bindings`.

@@ -1,0 +1,19 @@
+[package]
+name = "xlayer-tee-types"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared contract types for enclave/host/proposer TEE proof path"
+
+[dependencies]
+alloy-primitives = { workspace = true, features = ["sha3-keccak"] }
+alloy-sol-types.workspace = true
+rkyv = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+rkyv = { workspace = true }

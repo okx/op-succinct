@@ -16,6 +16,7 @@ members = [
     "scripts/*",
     "validity",
     "fault-proof",
+    "fault-proof/tee/types",
     "bindings",
 ]
 resolver = "2"

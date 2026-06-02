@@ -37,3 +37,4 @@ description: "Layer definitions, allowed/prohibited call directions, service res
 | `scripts/prove` | CLI wrapper for manual/batch proof generation | Long-running services |
 | `scripts/utils` | CLI tools for config generation, cost estimation, preflight checks | Runtime proof submission |
 | `bindings` | alloy contract bindings (L2OO, DGF, FDG, AccessManager, AnchorStateRegistry) | Runtime logic |
+| `xlayer-tee-types` (`fault-proof/tee/types`) | Shared TEE contract types: RangeJournal (sol! + 168-byte pack), wire protocol constants, task state machine, error classification. Leaf crate — no upstream imports | Business logic; signing; witness handling; network stack |

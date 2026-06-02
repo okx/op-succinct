@@ -44,6 +44,7 @@ description: "Crate dependency map, storage, and external services for op-succin
 | `programs/aggregation` → `client-utils` | rust-crate (guest) | Verifies range proofs via SP1 + reads BootInfo |
 | `scripts/prove` → `proof-utils`, `host-utils` | rust-crate | CLI orchestration |
 | `scripts/utils` → `host-utils`, `bindings` | rust-crate | Config-fetching CLI |
+| `fault-proof/tee/{enclave,host,proposer}` → `xlayer-tee-types` | rust-crate (path dep) | Shared TEE contract types (journal, wire, task, error) |
 
 ## Storage and Middleware
 

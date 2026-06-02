@@ -12,7 +12,7 @@ This directory is the context knowledge base for the op-succinct project — a R
 - `technical/knowledge-base.md`: Highest-authority rules and global constraints
 - `technical/terminology.md`: Domain term glossary and naming conventions
 - `technical/arch/`: Architecture design (layer definitions, crate dependency map)
-- `technical/modules/`: Per-crate design documentation (validity, fault-proof, utils-signer, utils-proof, DA adapters, programs, scripts, bindings — 22 crates)
+- `technical/modules/`: Per-crate design documentation (validity, fault-proof, fault-proof/tee/types, utils-signer, utils-proof, DA adapters, programs, scripts, bindings — 23 crates)
 - `technical/core-flows/`: End-to-end flow documentation (validity proposer loop, fault-proof proposer/challenger, aggregation proof, range program execution, witness generation, XLayer remote signing)
 - `technical/apis/`: API specifications (error codes, REST conventions, TradeZone RPC interface)
 - `technical/decisions/`: Architecture Decision Records (service separation, compile-time DA selection, SignerLock nonce safety, SP1 fork strategy, XLayer signer protocol, cluster/network dual modes, Postgres request lifecycle, ELF embedding, aggregation proof chaining)
