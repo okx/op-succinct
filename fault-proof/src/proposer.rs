@@ -594,9 +594,9 @@ where
         Ok(())
     }
 
-    // for tz: under feature=tz this method's only call site is cfg-skipped because tz nodes
-    // don't expose `eth_getBlockByNumber("finalized")`. Suppress dead_code there.
-    #[cfg_attr(feature = "tz", allow(dead_code))]
+    // for tz: tz nodes don't expose `eth_getBlockByNumber("finalized")`, so this xlayer-only
+    // validation is excluded from tz builds entirely (call site is also `cfg(not(feature="tz"))`).
+    #[cfg(not(feature = "tz"))]
     async fn validate_anchor_l2_block(
         anchor_l2_block: U256,
         config: &ProposerConfig,
@@ -1730,18 +1730,15 @@ where
     #[tracing::instrument(name = "[[Proposing]]", skip(self))]
     pub async fn handle_game_creation(
         &self,
-        #[cfg_attr(feature = "tz", allow(unused_mut))] mut next_l2_block_number_for_proposal: U256,
+        mut next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
-        #[cfg_attr(feature = "tz", allow(unused_mut))]
         let mut output_root = self
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
-        #[cfg_attr(feature = "tz", allow(unused_mut))]
         let mut extra_data =
             (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
-        #[cfg_attr(feature = "tz", allow(unused_assignments, unused_mut))]
         let mut maybe_existing_game = self
             .factory
             .games(self.config.game_type, output_root, extra_data.clone().into())
@@ -1749,23 +1746,8 @@ where
             .await?
             .proxy;
 
-        // for tz: tz only allows checkpoint heights — incrementing the L2 block number on UUID
-        // conflict would propose at a non-checkpoint height. Wait for the next loop tick instead.
-        #[cfg(feature = "tz")]
-        {
-            if maybe_existing_game != Address::ZERO {
-                tracing::info!(
-                    l2_block_number = %next_l2_block_number_for_proposal,
-                    existing = ?maybe_existing_game,
-                    "tz: game already exists at this checkpoint, skipping (will retry next loop)"
-                );
-                return Ok(());
-            }
-        }
-
         // If there already exists a game at the next L2 block number for proposal, increment the L2
-        // block number by 1.
-        #[cfg(not(feature = "tz"))]
+        // block number by 1
         while maybe_existing_game != Address::ZERO {
             next_l2_block_number_for_proposal += U256::from(1);
             output_root = self
@@ -2241,59 +2223,36 @@ where
             (canonical_head_l2_block, parent_game_index)
         };
 
-        // for tz: tz proposes only at checkpoint heights returned by /chain/confirmed_block_info,
-        // so the xlayer "canonical_head + interval finalized?" decision is replaced with a
-        // trait-level hook that consults the REST endpoint via `TzL2Provider`.
-        #[cfg(not(feature = "tz"))]
-        {
-            let next_l2_block_number_for_proposal =
-                canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
+        let next_l2_block_number_for_proposal =
+            canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
-            // Guard against duplicate creation when the pinned cache lags behind the tip.
-            // If we recently created a game at or beyond this L2 block, skip until the
-            // cache catches up and advances canonical_head_l2_block.
-            let last_created = self.last_created_game_l2_block.load(Ordering::Relaxed);
-            if last_created > 0 && next_l2_block_number_for_proposal.to::<u64>() <= last_created {
-                tracing::debug!(
-                    next_l2_block = %next_l2_block_number_for_proposal,
-                    last_created,
-                    "Skipping game creation: recently created game not yet visible in pinned cache"
-                );
-                return Ok((false, U256::ZERO, u32::MAX));
-            }
-
-            let max_provable_l2_block_number = self
-                .host
-                .get_max_provable_l2_block_number(
-                    &self.fetcher,
-                    canonical_head_l2_block.to::<u64>(),
-                )
-                .await?;
-
-            Ok((
-                max_provable_l2_block_number
-                    .map(|max_provable_block| {
-                        U256::from(max_provable_block) >= next_l2_block_number_for_proposal
-                    })
-                    .unwrap_or(false),
-                next_l2_block_number_for_proposal,
-                parent_game_index,
-            ))
+        // Guard against duplicate creation when the pinned cache lags behind the tip.
+        // If we recently created a game at or beyond this L2 block, skip until the
+        // cache catches up and advances canonical_head_l2_block.
+        let last_created = self.last_created_game_l2_block.load(Ordering::Relaxed);
+        if last_created > 0 && next_l2_block_number_for_proposal.to::<u64>() <= last_created {
+            tracing::debug!(
+                next_l2_block = %next_l2_block_number_for_proposal,
+                last_created,
+                "Skipping game creation: recently created game not yet visible in pinned cache"
+            );
+            return Ok((false, U256::ZERO, u32::MAX));
         }
-        #[cfg(feature = "tz")]
-        {
-            match self
-                .l2_provider
-                .get_next_proposal_block(
-                    canonical_head_l2_block,
-                    self.config.proposal_interval_in_blocks,
-                )
-                .await?
-            {
-                Some(target) => Ok((true, target, parent_game_index)),
-                None => Ok((false, U256::ZERO, u32::MAX)),
-            }
-        }
+
+        let max_provable_l2_block_number = self
+            .host
+            .get_max_provable_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+            .await?;
+
+        Ok((
+            max_provable_l2_block_number
+                .map(|max_provable_block| {
+                    U256::from(max_provable_block) >= next_l2_block_number_for_proposal
+                })
+                .unwrap_or(false),
+            next_l2_block_number_for_proposal,
+            parent_game_index,
+        ))
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.
