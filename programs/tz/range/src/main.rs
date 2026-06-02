@@ -18,8 +18,15 @@ pub fn main() {
 
     // Order-preserving decode so Slab free-list is recovered exactly; the
     // default rmp_serde path reshuffles slot indices.
-    let mut state: DexState = tz_dex::order_preserving_serde::from_msgpack(&snapshot_bytes)
-        .unwrap_or_else(|e| panic!("failed to deserialize DexState snapshot: {}", e));
+    //
+    // Bring our own `rmp_serde::Deserializer` so this guest doesn't depend on
+    // tz-dex shipping a `from_msgpack` convenience wrapper — the underlying
+    // `order_preserving_serde::deserialize` lives in tz-dex on every branch.
+    let mut state: DexState = {
+        let mut de = rmp_serde::Deserializer::new(&snapshot_bytes[..]);
+        tz_dex::order_preserving_serde::deserialize(&mut de)
+            .unwrap_or_else(|e| panic!("failed to deserialize DexState snapshot: {}", e))
+    };
 
     let start_block_hash = state.context.block_hash;
     let start_state_hash = blake3_hash_state(&state);
