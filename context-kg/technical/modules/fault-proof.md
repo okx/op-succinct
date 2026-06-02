@@ -46,6 +46,29 @@ Shared contract crate for the TEE fault-proof path. Contains only types, constan
 
 [Rule] Consumers reference via `path = "…/tee/types"` (not `workspace.dependencies`) — each caller declares its own dependency.
 
+### `tee/host` (`xlayer-tee-host`)
+
+TEE host coordination layer — sits between the proposer and Nitro Enclave. Northbound: 4 JSON REST endpoints via axum (POST/GET/DELETE /tee/task, GET /tee/info). Southbound: rkyv-over-HTTP to enclave via hyper HTTP/1.1 (vsock for production, TCP for dev, compile-time feature flag). First inbound HTTP service in op-succinct.
+
+| Module | Contents |
+|--------|----------|
+| `server.rs` | axum router, 4 handlers (create/query/delete task, attestation), delivery coroutine, monitor loop, sweeper loop |
+| `task_manager.rs` | `TaskManager` (in-memory registry), `TaskEntry`, `TaskStatus`, `DedupMap` (std::sync::Mutex), witness hash dedup, state transitions, sweep/retention |
+| `enclave_client.rs` | `EnclaveClient` (hyper HTTP/1.1), vsock/TCP compile-time switch, 3-attempt retry with backoff, rkyv decode (concrete per-type decoders) |
+| `packager.rs` | `pack_proof_bytes`: `RangeJournalWire` → `RangeJournal` → `(journal, sig).abi_encode_params()` |
+| `config.rs` | TOML + `TEE_HOST__<SECTION>__<FIELD>` env overlay, defaults, exit(2) on missing config |
+| `error.rs` | `HostError` enum, `code() -> i32` mapping to 4 bands (0/10001/10004/20001) |
+| `api.rs` | `ApiResponse<T>` JSON envelope with `IntoResponse` |
+| `main.rs` | Entry: CLI → config → `AppState` → spawn background tasks → axum serve |
+
+[Rule] `xlayer-tee-host` uses `abi_encode_params()` (NOT `abi_encode()`) for proofBytes — the extra 32-byte offset prefix from `abi_encode()` breaks on-chain `abi.decode(proofBytes, (RangeJournal, bytes))`.
+
+[Rule] `std::sync::Mutex` for dedup map (NOT `tokio::sync::Mutex`) — critical section contains only HashMap operations, no `.await`.
+
+[Rule] Host uses 4 numeric error codes (0/10001/10004/20001) as an intentional deviation from the "no centralized error codes" convention — this is a proposer contract requirement.
+
+[Rule] Task removal must always clear the associated dedup entry — see `pitfalls/tee-host.md`.
+
 ## Dependencies
 - Refer to `arch/dependency.md` for full dependency details.
 

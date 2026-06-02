@@ -74,6 +74,23 @@ CloudHSM and Web3Signer are not auto-detected from env — they must be configur
 |----------|---------|---------|
 | `SP1_PROVER` | network | Proving backend: `network` or `cluster` |
 
+## TEE Host (`fault-proof/tee/host/src/config.rs`)
+
+Config is loaded from TOML file first, then overlaid with env vars.
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `TEE_HOST_CONFIG` | No | `config.toml` | Path to TOML config file (alternative to `--config` CLI flag) |
+| `TEE_HOST__SERVER__BIND_ADDR` | Yes (if not in TOML) | — | Northbound HTTP listen address |
+| `TEE_HOST__SERVER__TASK_RETENTION_SECS` | No | 3600 | Terminal task retention window |
+| `TEE_HOST__SERVER__DEDUP_TTL_SECS` | No | 300 | Witness hash dedup window |
+| `TEE_HOST__SERVER__MONITOR_INTERVAL_SECS` | No | 30 | Background enclave status poll interval |
+| `TEE_HOST__ENCLAVE__VSOCK_CID` | No | 0 | vsock CID (production Nitro) |
+| `TEE_HOST__ENCLAVE__VSOCK_PORT` | No | 0 | vsock port (production Nitro) |
+| `TEE_HOST__ENCLAVE__TCP_ADDR` | No | 127.0.0.1:7878 | TCP target (dev mode) |
+| `TEE_HOST__ENCLAVE__REQUEST_TIMEOUT_SECS` | No | 180 | Per-request timeout for enclave calls |
+| `TEE_HOST__ATTESTATION__CACHE_TTL_SECS` | No | 60 | Attestation document cache TTL |
+
 ## Observability
 
 | Variable | Default | Purpose |

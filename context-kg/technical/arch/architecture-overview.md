@@ -38,3 +38,4 @@ description: "Layer definitions, allowed/prohibited call directions, service res
 | `scripts/utils` | CLI tools for config generation, cost estimation, preflight checks | Runtime proof submission |
 | `bindings` | alloy contract bindings (L2OO, DGF, FDG, AccessManager, AnchorStateRegistry) | Runtime logic |
 | `xlayer-tee-types` (`fault-proof/tee/types`) | Shared TEE contract types: RangeJournal (sol! + 168-byte pack), wire protocol constants, task state machine, error classification. Leaf crate — no upstream imports | Business logic; signing; witness handling; network stack |
+| `xlayer-tee-host` (`fault-proof/tee/host`) | TEE host coordination layer: northbound JSON REST (axum), southbound rkyv-over-HTTP to enclave (hyper, vsock/TCP), in-memory task lifecycle, witness dedup, proofBytes packaging via `abi_encode_params`. First inbound HTTP service in op-succinct | Enclave internals; proposer business logic; contract interaction; signing; witness parsing |

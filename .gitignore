@@ -65,3 +65,6 @@ copilot.pem
 # Claude Code local settings
 settings.local.json
 .claude/settings.json
+
+# TEE Host runtime config
+fault-proof/tee/host/config.toml

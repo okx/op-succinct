@@ -48,3 +48,7 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 | WitnessExecutor | Async trait composing oracle + blob provider into a DA-specific derivation pipeline. | `utils/host/src/witness_generation/traits.rs`, `utils/{eth,celestia,eigenda}/host/*` |
 | WitnessGenerator | Async trait orchestrating witness collection from oracle + blob streams. | `utils/host/src/witness_generation/traits.rs` |
 | XLayerRemoteClient | HTTP signer client — POST sign, GET polling; AES-ECB + HMAC auth; routes by `OperateType`. | `utils/signer/src/xlayer_remote_client.rs` |
+| xlayer-tee-host | TEE host coordination layer — proposer ↔ Nitro Enclave bridge; northbound JSON REST (axum), southbound rkyv-over-HTTP (hyper vsock/TCP). First inbound HTTP service in op-succinct. | `fault-proof/tee/host/src/*` |
+| DedupMap | In-memory witness-hash → task-id map (`std::sync::Mutex<HashMap<B256, DedupEntry>>`) for deduplicating identical witness submissions within a TTL window. | `fault-proof/tee/host/src/task_manager.rs` |
+| EnclaveClient | Hyper HTTP/1.1 client for southbound communication with Nitro Enclave; supports vsock (production) and TCP (dev) via compile-time feature flag. | `fault-proof/tee/host/src/enclave_client.rs` |
+| proofBytes | ABI-encoded `(RangeJournal, bytes)` via `abi_encode_params()` — the on-chain decodable output of a successful TEE range proof. | `fault-proof/tee/host/src/packager.rs`, `fault-proof/tee/types/src/journal.rs` |

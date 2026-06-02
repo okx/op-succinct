@@ -1,0 +1,42 @@
+[package]
+name = "xlayer-tee-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "TEE host coordination layer between proposer and Nitro Enclave"
+
+[features]
+default = []
+vsock = ["dep:tokio-vsock"]
+tz = []
+
+[dependencies]
+xlayer-tee-types = { path = "../types" }
+alloy-primitives = { workspace = true, features = ["sha3-keccak"] }
+alloy-sol-types = { workspace = true }
+axum = { version = "0.8", features = ["macros"] }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+hex = { workspace = true }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rkyv = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["full"] }
+tokio-vsock = { version = "0.6", optional = true }
+toml = "0.8"
+tower-http = { version = "0.6", features = ["limit"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+uuid = { workspace = true }
+tokio-util = "0.7"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+alloy-sol-types = { workspace = true }
+tempfile = { workspace = true }

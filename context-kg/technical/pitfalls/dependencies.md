@@ -38,4 +38,13 @@ description: "Dependency and build pitfalls — sp1 patches, kona-rpc avoidance,
 
 ## Workspace Member Drift
 
-[Pitfall] Root `Cargo.toml` lists 19 explicit + 2 glob workspace members (`programs/range/*`, `scripts/*`). Adding a new member requires updating the workspace list. Whether to also add it to `workspace.dependencies` depends on consumption pattern: crates consumed by multiple workspace members via `{name}.workspace = true` should be added; leaf crates consumed via `path = "…"` by a small number of specific consumers may be omitted (e.g. `xlayer-tee-types` is referenced by path only). Trigger: new crate scaffolding. Correct approach: follow the existing pattern; run `cargo metadata --format-version=1` to verify.
+[Pitfall] Root `Cargo.toml` lists 19 explicit + 2 glob workspace members (`programs/range/*`, `scripts/*`). Adding a new member requires updating the workspace list. Whether to also add it to `workspace.dependencies` depends on consumption pattern: crates consumed by multiple workspace members via `{name}.workspace = true` should be added; leaf crates consumed via `path = "…"` by a small number of specific consumers may be omitted (e.g. `xlayer-tee-types` is referenced by path only, and `xlayer-tee-host` uses direct version specs for deps like `axum 0.8`, `tower-http 0.6` that differ from workspace versions). Trigger: new crate scaffolding. Correct approach: follow the existing pattern; run `cargo metadata --format-version=1` to verify.
+
+## tower-http Version Mismatch with axum 0.8
+
+[Pitfall] The workspace declares `tower-http 0.5.2`, but `axum 0.8` requires `tower-http 0.6`. New crates using axum 0.8 cannot use `tower-http = { workspace = true }` — they must declare a direct dependency on `tower-http 0.6`. This version mismatch is not caught by `cargo check` until the specific axum feature (e.g. `DefaultBodyLimit` from `tower-http::limit`) is actually used, producing a confusing "trait not implemented" error rather than a version conflict. Trigger: adding a new inbound HTTP service crate using axum 0.8 while the workspace pins tower-http 0.5.x. Correct approach: use direct version dependency `tower-http = { version = "0.6", features = ["limit"] }` in the new crate's Cargo.toml instead of `workspace = true`. Do not bump the workspace version unless all existing consumers are migrated.
+
+**Module**: `fault-proof/tee/host/Cargo.toml`
+**Source**: TDD Summary A-06 (design decision #5)
+**Date**: 2026-06-02
+**Hit count**: 1

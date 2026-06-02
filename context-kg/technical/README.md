@@ -14,7 +14,7 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 | `terminology.md` | Glossary of domain and code terms |
 | `arch/architecture-overview.md` | Layer definitions and per-module responsibilities |
 | `arch/dependency.md` | Crate dependency map + storage/external services |
-| `apis/rest-api-conventions.md` | API conventions (n/a — service has no public REST surface) |
+| `apis/rest-api-conventions.md` | API conventions (xlayer-tee-host exposes inbound REST; other services remain outbound-only) |
 | `apis/error-codes.md` | Error registration conventions |
 | `conventions/feature-types.md` | DA feature flags, ELF embedding, build patterns |
 | `conventions/service-patterns.md` | Signer dispatch, witness collection, polling, retries |
@@ -33,9 +33,9 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 4. **Produce a constraint checklist** — explicitly declare if no relevant content was found.
 5. **Cross-validate during work** — correct violations immediately.
 
-## Workspace Members (23)
+## Workspace Members (24)
 
 `utils/{client,host,build,proof,signer,elfs}`,
 `utils/celestia/{client,host}`, `utils/eigenda/{client,host}`, `utils/ethereum/{client,host}`,
 `programs/range/{celestia,eigenda,ethereum,utils}`, `programs/aggregation`,
-`scripts/{prove,utils}`, `validity`, `fault-proof`, `fault-proof/tee/types`, `bindings`.
+`scripts/{prove,utils}`, `validity`, `fault-proof`, `fault-proof/tee/types`, `fault-proof/tee/host`, `bindings`.

@@ -1,14 +1,36 @@
 ---
 name: "rest-api-conventions"
-description: "API conventions for op-succinct — note: this workspace exposes no public REST API"
+description: "API conventions for op-succinct — xlayer-tee-host exposes inbound REST; other services remain outbound-only"
 ---
 # REST API Conventions
 
-**Not applicable.** op-succinct does not expose a public REST API. The runtime services are:
+Most op-succinct services do not expose inbound HTTP — they are outbound-only RPC callers:
 
 - `validity` — long-running proposer daemon that calls L1/L2 RPC outbound; no inbound HTTP server.
 - `fault-proof` (proposer / challenger) — same shape; outbound RPC only.
 - `scripts/*` — one-shot CLI tools.
+- `xlayer-tee-host` — **exception**: exposes 4 inbound REST endpoints (see below).
+
+## Inbound REST — xlayer-tee-host
+
+`xlayer-tee-host` (`fault-proof/tee/host`) is the first inbound HTTP service in op-succinct. It uses axum 0.8 with a JSON envelope convention.
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/tee/task` | POST | Create range task (body: rkyv witness bytes) |
+| `/tee/task/{id}` | GET | Query task status + retrieve proofBytes |
+| `/tee/task/{id}` | DELETE | Cancel task |
+| `/tee/info` | GET | Query enclave attestation (cached) |
+
+**Response envelope**: `{ "code": <int>, "message": "<string>", "data": <T|null> }`
+
+**Error codes** (intentional deviation from "no centralized error codes"):
+- `0` — success
+- `10001` — client error (empty body, oversized body, enclave-sourced validation errors)
+- `10004` — task not found
+- `20001` — enclave/internal error
+
+[Convention] New inbound REST services in op-succinct should follow this envelope pattern unless the upstream consumer requires a different shape.
 
 ## Outbound HTTP
 
