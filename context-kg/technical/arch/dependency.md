@@ -41,7 +41,8 @@ description: "Crate dependency map, storage, and external services for op-succin
 | `programs/range/ethereum` → `ethereum-client-utils` | rust-crate (guest) | DA driver, block execution |
 | `programs/range/celestia` → `celestia-client-utils` | rust-crate (guest) | Celestia DA driver |
 | `programs/range/eigenda` → `eigenda-client-utils` | rust-crate (guest) | EigenDA driver + canoe verifier |
-| `programs/aggregation` → `client-utils` | rust-crate (guest) | Verifies range proofs via SP1 + reads BootInfo |
+| `programs/aggregation` → `client-utils` | rust-crate (guest) | Verifies range proofs via SP1 + TEE, reads BootInfo + RangeProof |
+| `programs/aggregation` → `k256`, `p384`, `ciborium`, `x509-parser` | rust-crate (guest) | TEE attestation verification: secp256k1 ecrecover, P-384 cert chain, CBOR parsing, DER cert parsing |
 | `scripts/prove` → `proof-utils`, `host-utils` | rust-crate | CLI orchestration |
 | `scripts/utils` → `host-utils`, `bindings` | rust-crate | Config-fetching CLI |
 

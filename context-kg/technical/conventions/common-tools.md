@@ -18,7 +18,9 @@ description: "Reusable components, traits, and macros across op-succinct crates"
 
 [Reuse] `BootInfoStruct` (`utils/client/src/boot.rs`) — public-input struct serialised for on-chain verification; reuse for both range and aggregation outputs.
 
-[Reuse] `AggregationInputs` (`utils/client/src/types.rs`) — multi-block aggregation input bundle; written to `SP1Stdin`.
+[Reuse] `AggregationInputs` (`utils/client/src/types.rs`) — multi-block aggregation input bundle; written to `SP1Stdin`. Includes `range_proofs: Vec<RangeProof>` parallel-indexed with `boot_infos`.
+
+[Reuse] `RangeProof` (`utils/client/src/types.rs`) — per-range proof variant enum: `Sp1` (unit) for ZK range proofs, `Tee { signature: Vec<u8> }` for TEE-signed ranges (65-byte secp256k1 ECDSA). Extend this enum when adding new proof types; do not create parallel type hierarchies.
 
 [Reuse] `ClusterProofConfig` / `ClusterProofHandle` (`utils/proof/src/lib.rs`) — encapsulate cluster prover state; persist `ClusterProofHandle` JSON across restarts.
 

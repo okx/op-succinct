@@ -5,8 +5,15 @@ use serde::{Deserialize, Serialize};
 use crate::boot::BootInfoStruct;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RangeProof {
+    Sp1,
+    Tee { signature: Vec<u8> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationInputs {
     pub boot_infos: Vec<BootInfoStruct>,
+    pub range_proofs: Vec<RangeProof>,
     pub latest_l1_checkpoint_head: B256,
     pub multi_block_vkey: [u32; 8],
     pub prover_address: Address,
