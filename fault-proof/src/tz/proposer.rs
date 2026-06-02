@@ -225,11 +225,15 @@ where
 
     /// TZ-specific game proving.
     ///
-    /// Mock mode: SP1MockVerifier only checks `proofBytes.length == 0`, so submit empty bytes.
+    /// Fetches the DexState snapshot + `Vec<Block>` from the tz chain (single segment),
+    /// generates a compressed range proof, then wraps it into an aggregation proof (Plonk or
+    /// Groth16 per `AGG_PROOF_MODE`). Submits the proof bytes to
+    /// `OPSuccinctFaultDisputeGame.prove`.
     ///
-    /// Real mode: fetch DexState snapshot + Vec<Block> from the tz chain HTTP endpoints
-    /// (single segment), generate a compressed range proof, then wrap into a groth16 aggregation
-    /// proof. Submit the groth16 proof bytes to OPSuccinctFaultDisputeGame.prove.
+    /// In mock mode the same fetch path runs and range/agg guests `execute` (no real
+    /// proving) via `ProofProvider::Mock`. `SP1ProofWithPublicValues::bytes()` returns
+    /// empty bytes for mock Plonk/Groth16 proofs, satisfying `SP1MockVerifier`'s
+    /// `proofBytes.length == 0` assertion.
     #[tracing::instrument(name = "[[Proving]]", skip(self), fields(game_address = ?game_address))]
     pub async fn prove_game(
         &self,
@@ -239,12 +243,13 @@ where
     ) -> Result<(TxHash, u64, u64)> {
         let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
 
-        let proof_bytes = if self.config.mock_mode {
-            tracing::info!(game_address = ?game_address, "tz: submitting mock proof (empty bytes)");
-            alloy_primitives::Bytes::new()
-        } else {
-            self.tz_prove(start_block, end_block).await?
-        };
+        // Mock mode is handled inside `tz_prove` via the `ProofProvider::Mock` backend:
+        // the same fetch path (snapshot + blocks) runs, range/agg guests execute (no real
+        // proving), and `create_mock_proof` packs the public values into proof bytes that
+        // the on-chain `SP1MockVerifier` accepts. This mirrors the non-tz proposer mock
+        // pattern and catches guest-side regressions that an empty-bytes shortcut would
+        // miss.
+        let proof_bytes = self.tz_prove(start_block, end_block).await?;
 
         let transaction_request = game.prove(proof_bytes).into_transaction_request();
         let receipt = self
