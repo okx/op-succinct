@@ -46,6 +46,29 @@ Shared contract crate for the TEE fault-proof path. Contains only types, constan
 
 [Rule] Consumers reference via `path = "…/tee/types"` (not `workspace.dependencies`) — each caller declares its own dependency.
 
+### `tee/enclave` (`xlayer-tee-enclave`)
+
+Nitro Enclave L2 replay and RangeJournal signing service. Runs inside an AWS Nitro Enclave (no network, no disk). Re-executes L2 block ranges via kona, verifies output roots, and signs 168-byte packed `RangeJournal` with secp256k1. Exposes an async task model (POST/GET/DELETE/list) over TCP (dev) or vsock (prod).
+
+| Module | Contents |
+|--------|----------|
+| `main.rs` | Binary entry: init keys, start server (TCP dev / vsock prod) |
+| `server.rs` | axum router (5 endpoints from wire constants + attestation) |
+| `task_manager.rs` | Task registry, UUID idempotency, concurrency cap, cooperative cancellation |
+| `runner.rs` | 4-phase pipeline: Deserialize → Boot → Kona → Sign |
+| `witness.rs` | `check_bounds()` validation (claimed_l2_block_number > 0) |
+| `signing.rs` | `sign_range_wire()` → keccak256(pack) + k256 prehash → 65-byte signature |
+| `keys.rs` | `ENCLAVE_KEY` OnceLock (dev: Anvil#0 / vsock: OsRng) |
+| `attestation.rs` | Dev marker attestation + prod NSM (cfg-gated) |
+| `error.rs` | Internal Error enum + `CLAIM_MISMATCH_SENTINEL` + `to_wire_kind()` |
+| `gc.rs` | Background TTL sweep loop for terminal tasks |
+
+[Rule] `CLAIM_MISMATCH_SENTINEL` couples to `utils/client/src/witness/executor.rs:163` error format — pin deps and maintain a golden integration test. See `pitfalls/dependencies.md` "Upstream Error String Coupling".
+
+[Rule] Dev key (`DEV_KEY_HEX`) is `#[cfg(not(feature = "vsock"))]` only — production builds use OsRng-generated key at startup.
+
+[Rule] Build features: `tz` (enables tests with dev key) and `vsock` (production, enables NSM attestation + vsock listener). Mutually exclusive runtime paths.
+
 ## Dependencies
 - Refer to `arch/dependency.md` for full dependency details.
 

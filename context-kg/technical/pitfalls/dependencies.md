@@ -36,6 +36,15 @@ description: "Dependency and build pitfalls — sp1 patches, kona-rpc avoidance,
 
 [Pitfall] Merging `dev` into a feature branch often produces a `Cargo.lock` conflict due to sp1/kona version bumps in dev. Trigger: routine PR maintenance. Correct approach: `git checkout --theirs Cargo.lock` and run `cargo check` to let cargo re-solve from the merged `Cargo.toml`; commit the result.
 
+## Upstream Error String Coupling
+
+[Pitfall] Detecting upstream error conditions by matching `e.to_string().contains("…")` silently breaks when the upstream crate changes wording. Trigger: dependency version bump modifies an error message used as a discrimination sentinel. Correct approach: define a `const SENTINEL: &str = "…"` in the consumer crate, reference it in both the match logic and a dedicated integration test that asserts the sentinel still appears in the upstream output. Pin the dep version and re-validate on every bump. Example: `fault-proof/tee/enclave/src/error.rs::CLAIM_MISMATCH_SENTINEL` detects kona executor's "Failed to validate L2 block" message; a golden-test asserts the format.
+
+**Module**: `fault-proof/tee/enclave/src/error.rs`, `fault-proof/tee/enclave/src/runner.rs`
+**Source**: Adversarial Review Finding #1 (2026-06-02)
+**Date**: 2026-06-02
+**Hit count**: 1
+
 ## Workspace Member Drift
 
 [Pitfall] Root `Cargo.toml` lists 19 explicit + 2 glob workspace members (`programs/range/*`, `scripts/*`). Adding a new member requires updating the workspace list. Whether to also add it to `workspace.dependencies` depends on consumption pattern: crates consumed by multiple workspace members via `{name}.workspace = true` should be added; leaf crates consumed via `path = "…"` by a small number of specific consumers may be omitted (e.g. `xlayer-tee-types` is referenced by path only). Trigger: new crate scaffolding. Correct approach: follow the existing pattern; run `cargo metadata --format-version=1` to verify.

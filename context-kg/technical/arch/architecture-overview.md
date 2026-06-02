@@ -38,3 +38,4 @@ description: "Layer definitions, allowed/prohibited call directions, service res
 | `scripts/utils` | CLI tools for config generation, cost estimation, preflight checks | Runtime proof submission |
 | `bindings` | alloy contract bindings (L2OO, DGF, FDG, AccessManager, AnchorStateRegistry) | Runtime logic |
 | `xlayer-tee-types` (`fault-proof/tee/types`) | Shared TEE contract types: RangeJournal (sol! + 168-byte pack), wire protocol constants, task state machine, error classification. Leaf crate — no upstream imports | Business logic; signing; witness handling; network stack |
+| `xlayer-tee-enclave` (`fault-proof/tee/enclave`) | Nitro Enclave L2 replay service: re-executes block ranges via kona, verifies output roots, signs RangeJournal (secp256k1). Async task model with UUID idempotency, concurrency cap, GC. TCP (dev) / vsock (prod) | Host coordination; aggregation; chain-on verification; remote signing (uses own ENCLAVE_KEY) |
