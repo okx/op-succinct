@@ -8,6 +8,13 @@
 //! - `config`: Environment-based `TzConfig`.
 //! - `l2_provider`: `TzL2Provider` implementing `L2ProviderTrait` against the REST cache,
 //!   and the `compute_tz_root_claim` formula.
+//!
+//! Upstream sync: this module is a downstream addition. Upstream files touched are
+//! `Cargo.toml` (feature flag + optional deps), `src/lib.rs` (`pub mod tz` + trait
+//! methods on `L2ProviderTrait`), and `src/proposer.rs` / `src/challenger.rs`
+//! (cfg blocks + `#[path] mod tz_impl;`). Run
+//! `git diff upstream/main -- fault-proof/src/{lib,proposer,challenger}.rs`
+//! to inspect divergence before rebasing.
 
 pub mod chain_client;
 pub mod config;
