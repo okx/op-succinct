@@ -7,12 +7,14 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 | Term | Description | References |
 |------|-------------|------------|
 | Aggregation proof | SP1 proof that combines multiple range proofs into a single L1-verifiable proof (synonym: composite proof). | `programs/aggregation/src/main.rs`, `utils/client/src/types.rs` |
-| AggregationInputs | zkVM-guest input bundle: `boot_infos[]`, latest L1 checkpoint head, multi-block vkey (u32×8), prover address. | `utils/client/src/types.rs` |
+| AggregationInputs | zkVM-guest input bundle: `boot_infos[]`, `range_proofs[]`, latest L1 checkpoint head, multi-block vkey (u32×8), prover address. | `utils/client/src/types.rs` |
 | Anchor Game | Latest finalized dispute game from `AnchorStateRegistry`; canonical head computed from it. | `fault-proof/src/proposer.rs:186-192` |
 | BatchSize | Block count per range proof execution; resolved by `effective_batch_size` (default 10). | `scripts/utils/src/lib.rs` |
 | BlobProvider | `kona-proof` trait for DA blob retrieval; per-DA impl wraps it (Ethereum uses `OracleBlobProvider`). | `utils/{ethereum,celestia,eigenda}/client/src/*` |
 | BlobStore | In-guest blob verifier — converts `BlobData` → `Vec<(VersionedHash, Blob)>` and verifies KZG batch. | `utils/client/src/oracle/blob_provider.rs` |
 | BootInfoStruct | ABI struct: `l1Head`, `l2PreRoot`, `l2PostRoot`, `l2BlockNumber`, `rollupConfigHash`. | `utils/client/src/boot.rs` |
+| CertChain | X.509 certificate chain validator for AWS Nitro attestation: P-384 ECDSA signature verification, expiry, basicConstraints, root anchor assertion. | `programs/aggregation/src/tee/cert_chain.rs` |
+| CoseSign1 | COSE_Sign1 envelope parser (RFC 8152): accepts both CBOR Tag(18) and plain array forms; extracts protected headers, payload, and 96-byte ES384 signature. | `programs/aggregation/src/tee/cose.rs` |
 | Canonical Head | Proposer's best-known game (parent slot for the next proposal). | `fault-proof/src/proposer.rs:186-192` |
 | ClusterProofConfig | Cluster prover RPC + artifact store config (Redis/S3) + cached gRPC client. | `utils/proof/src/lib.rs` |
 | ClusterProofHandle | Persisted JSON handle: `proof_id`, `proof_output_id`, `consecutive_poll_failures`. | `utils/proof/src/lib.rs`, `validity/migrations/04_*` |
@@ -37,6 +39,7 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 | ProposalStatus | FaultDisputeGame internal claim state: `Unchallenged` / `Challenged` / `*ValidProofProvided` / `Resolved`. | `fault-proof/src/contract.rs:165-177` |
 | ProposerIdentity | Version metadata (vkey hashes + rollup config hash) checked on-chain at game creation. | `fault-proof/src/proposer.rs:88-143` |
 | Range proof | SP1 proof for executing a sequential range of L2 blocks; produced by the range zkVM program. | `programs/range/{eth,celestia,eigenda}/src/main.rs` |
+| RangeProof | Per-range proof variant enum: `Sp1` (unit) for ZK range proofs, `Tee { signature: Vec<u8> }` for TEE-signed ranges carrying a 65-byte secp256k1 ECDSA signature. Parallel-indexed with `boot_infos` in `AggregationInputs`. | `utils/client/src/types.rs` |
 | RequesterConfig | Validity service runtime config: chain IDs, contracts, gas/cycle/concurrency limits, timeouts. | `validity/src/config.rs:47-147` |
 | RequestMode | `Real` (SP1 network) or `Mock` (local mock prover). | `validity/src/db/types.rs:59-76` |
 | RequestStatus | Proof lifecycle state: Unrequested → WitnessGeneration → Execution → Prove → Complete → Relayed (or Failed/Cancelled). | `validity/src/db/types.rs:9-38` |
@@ -52,3 +55,6 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 | DedupMap | In-memory witness-hash → task-id map (`std::sync::Mutex<HashMap<B256, DedupEntry>>`) for deduplicating identical witness submissions within a TTL window. | `fault-proof/tee/host/src/task_manager.rs` |
 | EnclaveClient | Hyper HTTP/1.1 client for southbound communication with Nitro Enclave; supports vsock (production) and TCP (dev) via compile-time feature flag. | `fault-proof/tee/host/src/enclave_client.rs` |
 | proofBytes | ABI-encoded `(RangeJournal, bytes)` via `abi_encode_params()` — the on-chain decodable output of a successful TEE range proof. | `fault-proof/tee/host/src/packager.rs`, `fault-proof/tee/types/src/journal.rs` |
+| VerifiedSession | TEE attestation result: `signer: Address` (Ethereum address derived from enclave public key) + `pcr0_hash: B256` (enclave measurement). Extracted by `verify_attestation` in the aggregation guest. | `programs/aggregation/src/tee/mod.rs` |
+| TrustAnchors | Hardcoded P-384 root public key (`aws_root_pubkey: [u8; 96]`) for AWS Nitro Enclave root certificate anchor verification. | `programs/aggregation/src/tee/mod.rs` |
+| AttestationDoc | AWS Nitro attestation document: CBOR-encoded fields including `module_id`, `timestamp`, `digest`, `pcrs`, `certificate`, `cabundle`, `public_key`. Parsed from the COSE_Sign1 payload. | `programs/aggregation/src/tee/attestation.rs` |

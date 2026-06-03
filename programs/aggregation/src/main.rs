@@ -9,10 +9,12 @@ use alloy_primitives::B256;
 use alloy_sol_types::SolValue;
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
-    types::{u32_to_u8, AggregationInputs, AggregationOutputs},
+    types::{u32_to_u8, AggregationInputs, AggregationOutputs, RangeProof},
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+
+mod tee;
 
 pub fn main() {
     // Read in the public values corresponding to each range proof.
@@ -22,6 +24,11 @@ pub fn main() {
     let headers_bytes = sp1_zkvm::io::read_vec();
     let headers: Vec<Header> = serde_cbor::from_slice(&headers_bytes).unwrap();
     assert!(!agg_inputs.boot_infos.is_empty());
+    assert_eq!(
+        agg_inputs.boot_infos.len(),
+        agg_inputs.range_proofs.len(),
+        "boot_infos and range_proofs must be parallel-indexed"
+    );
 
     // Confirm that the boot infos are sequential.
     agg_inputs.boot_infos.windows(2).for_each(|pair| {
@@ -36,15 +43,37 @@ pub fn main() {
         assert_eq!(prev_boot_info.rollupConfigHash, boot_info.rollupConfigHash);
     });
 
-    // Verify each range program proof.
-    agg_inputs.boot_infos.iter().for_each(|boot_info| {
-        // In the range program, the public values digest is just the hash of the ABI encoded
-        // boot info.
-        let serialized_boot_info = bincode::serialize(&boot_info).unwrap();
-        let pv_digest = Sha256::digest(serialized_boot_info);
+    // Detect TEE leaves and conditionally read attestation bytes.
+    let has_tee_leaf =
+        agg_inputs.range_proofs.iter().any(|rp| matches!(rp, RangeProof::Tee { .. }));
 
-        sp1_lib::verify::verify_sp1_proof(&agg_inputs.multi_block_vkey, &pv_digest.into());
-    });
+    let session: Option<tee::VerifiedSession> = if has_tee_leaf {
+        let attestation_bytes = sp1_zkvm::io::read_vec();
+        Some(tee::attestation::verify_attestation(&attestation_bytes, &tee::DEFAULT_TRUST_ANCHORS))
+    } else {
+        None
+    };
+
+    // Verify each range program proof via per-range dispatch.
+    for (boot_info, range_proof) in agg_inputs.boot_infos.iter().zip(agg_inputs.range_proofs.iter())
+    {
+        match range_proof {
+            RangeProof::Sp1 => {
+                let serialized_boot_info = bincode::serialize(&boot_info).unwrap();
+                let pv_digest = Sha256::digest(serialized_boot_info);
+                sp1_lib::verify::verify_sp1_proof(&agg_inputs.multi_block_vkey, &pv_digest.into());
+            }
+            RangeProof::Tee { signature } => {
+                let s = session.as_ref().expect("TEE leaf present without attestation session");
+                tee::range_proof::verify_tee_range_proof(
+                    boot_info,
+                    signature,
+                    &s.pcr0_hash,
+                    &s.signer,
+                );
+            }
+        }
+    }
 
     // Create a map of each l1 head in the [`BootInfoStruct`]'s to booleans
     let mut l1_heads_map: HashMap<B256, bool> =
@@ -81,8 +110,11 @@ pub fn main() {
         rollupConfigHash: last_boot_info.rollupConfigHash,
     };
 
-    // Convert the range vkey to a B256.
-    let multi_block_vkey_b256 = B256::from(u32_to_u8(agg_inputs.multi_block_vkey));
+    // Select multiBlockVKey: pcr0_hash if TEE present, else vkey conversion.
+    let multi_block_vkey_b256 = match &session {
+        Some(s) => s.pcr0_hash,
+        None => B256::from(u32_to_u8(agg_inputs.multi_block_vkey)),
+    };
 
     let agg_outputs = AggregationOutputs {
         l1Head: final_boot_info.l1Head,

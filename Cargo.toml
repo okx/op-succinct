@@ -50,6 +50,10 @@ dotenv = "0.15.0"
 num-format = "0.4.4"
 futures = "0.3.30"
 serde_cbor = "0.11.2"
+ciborium = { version = "0.2", default-features = false }
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+x509-parser = { version = "0.16", default-features = false }
 log = "0.4.22"
 itertools = "0.13.0"
 reqwest = { version = "0.12", features = ["json"] }
