@@ -1538,21 +1538,6 @@ where
             .await?;
         let extra_data =
             (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
-        let maybe_existing_game = self
-            .factory
-            .games(self.config.game_type, output_root, extra_data.clone().into())
-            .call()
-            .await?
-            .proxy;
-
-        // If a game already exists at this checkpoint, skip — do not advance to an unverified block.
-        if maybe_existing_game != Address::ZERO {
-            tracing::info!(
-                l2_block_number = %next_l2_block_number_for_proposal,
-                "Game already exists for this checkpoint, skipping"
-            );
-            return Ok(());
-        }
 
         tracing::info!(
             l2_block_number = %next_l2_block_number_for_proposal,
@@ -2110,8 +2095,34 @@ where
             (canonical_head_l2_block, parent_game_index)
         };
 
-        let next_l2_block_number_for_proposal =
+        let mut next_l2_block_number_for_proposal =
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
+
+        // Advance past any blocks that already have an existing game for this (output_root,
+        // extra_data) tuple. This handles the case where a CHALLENGER_WINS game exists at the
+        // base proposal target — without incrementing, the proposer would skip indefinitely.
+        loop {
+            let output_root = self
+                .l2_provider
+                .compute_output_root_at_block(next_l2_block_number_for_proposal)
+                .await?;
+            let extra_data =
+                (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+            let existing = self
+                .factory
+                .games(self.config.game_type, output_root, extra_data.into())
+                .call()
+                .await?
+                .proxy;
+            if existing == Address::ZERO {
+                break;
+            }
+            tracing::debug!(
+                l2_block_number = %next_l2_block_number_for_proposal,
+                "Game already exists at proposal target, trying next block"
+            );
+            next_l2_block_number_for_proposal += U256::from(1);
+        }
 
         let can_propose = if self.config.enable_host_verification {
             // Gate on last_verified_l2_block: the background verification task advances this
