@@ -1532,34 +1532,26 @@ where
         mut next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
-        let mut output_root = self
+        let output_root = self
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
-        let mut extra_data =
+        let extra_data =
             (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
-        let mut maybe_existing_game = self
+        let maybe_existing_game = self
             .factory
             .games(self.config.game_type, output_root, extra_data.clone().into())
             .call()
             .await?
             .proxy;
 
-        // If there already exists a game at the next L2 block number for proposal, increment the L2
-        // block number by 1
-        while maybe_existing_game != Address::ZERO {
-            next_l2_block_number_for_proposal += U256::from(1);
-            output_root = self
-                .l2_provider
-                .compute_output_root_at_block(next_l2_block_number_for_proposal)
-                .await?;
-            extra_data = (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
-            maybe_existing_game = self
-                .factory
-                .games(self.config.game_type, output_root, extra_data.clone().into())
-                .call()
-                .await?
-                .proxy;
+        // If a game already exists at this checkpoint, skip — do not advance to an unverified block.
+        if maybe_existing_game != Address::ZERO {
+            tracing::info!(
+                l2_block_number = %next_l2_block_number_for_proposal,
+                "Game already exists for this checkpoint, skipping"
+            );
+            return Ok(());
         }
 
         tracing::info!(
@@ -1712,15 +1704,13 @@ where
         // Snap the verification baseline to canonical_head on startup/restart.
         // Blocks up to canonical_head are already covered by existing on-chain games and
         // do not need re-verification. This avoids a potentially huge re-check after restart.
-        let effective_start = last_verified.max(canonical_head);
-        if effective_start > last_verified {
+        let prev = self.last_verified_l2_block.fetch_max(canonical_head, Ordering::Relaxed);
+        if prev < canonical_head {
             tracing::info!(
-                last_verified,
+                last_verified = prev,
                 canonical_head,
-                effective_start,
                 "Snapping verification baseline to canonical head"
             );
-            self.last_verified_l2_block.store(effective_start, Ordering::Relaxed);
         }
 
         let start = self.last_verified_l2_block.load(Ordering::Relaxed);
@@ -1728,7 +1718,7 @@ where
         let finalized =
             self.host.get_finalized_l2_block_number(&self.fetcher, canonical_head).await?;
         let Some(end) = finalized else {
-            tracing::debug!("Host verification: finalized L2 block not available");
+            tracing::warn!("Host verification: finalized L2 block not available — game creation is blocked");
             return Ok(false);
         };
 

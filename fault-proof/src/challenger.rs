@@ -465,10 +465,9 @@ where
                         .games
                         .values()
                         .filter(|game| {
-                            // Only challenge games that are unchallenged and not already flagged
-                            // for challenging
-                            !game.should_attempt_to_challenge &&
-                                game.proposal_status == ProposalStatus::Unchallenged
+                            // Only challenge games that are unchallenged and not already flagged for challenging
+                            !game.should_attempt_to_challenge
+                                && game.proposal_status == ProposalStatus::Unchallenged
                         })
                         .min_by_key(|game| game.index)
                         .cloned()

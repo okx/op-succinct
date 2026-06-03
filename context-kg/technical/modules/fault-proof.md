@@ -52,8 +52,6 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 
 [Pitfall] `fault-proof/src/backup.rs:136-137`: `serde_json::to_value().unwrap()` + `.as_object().unwrap()` panics the proposer on serialization failure. Correct approach: graceful skip with warn log.
 
-[Pitfall] `fault-proof/src/proposer.rs:1744`: zero `HOST_VERIFICATION_CHUNK_SIZE` causes infinite loop in `spawn_host_verification_task` inline chunk iteration. Correct approach: validate chunk_size > 0 at config parse or clamp before loop.
-
 [Warning] `fault-proof/src/challenger.rs:357-359, 375`: `sync_state()` recomputes `output_root` for every cached game every interval — O(n) L2 RPC calls. Scale issue on large game DAGs; consider lazy evaluation.
 
 [Warning] `fault-proof/src/challenger.rs:78-85, 457-499`: `malicious_challenge_percentage > 0.0` is testing-only but has no env/feature gate to prevent accidental production enable.

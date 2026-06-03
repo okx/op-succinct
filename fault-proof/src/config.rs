@@ -171,9 +171,13 @@ impl ProposerConfig {
             enable_host_verification: env::var("ENABLE_HOST_VERIFICATION")
                 .unwrap_or("false".to_string())
                 .parse()?,
-            host_verification_chunk_size: env::var("HOST_VERIFICATION_CHUNK_SIZE")
-                .unwrap_or("300".to_string())
-                .parse()?,
+            host_verification_chunk_size: {
+                let v: u64 = env::var("HOST_VERIFICATION_CHUNK_SIZE")
+                    .unwrap_or("300".to_string())
+                    .parse()?;
+                anyhow::ensure!(v > 0, "HOST_VERIFICATION_CHUNK_SIZE must be > 0");
+                v
+            },
         })
     }
 

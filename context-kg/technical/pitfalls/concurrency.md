@@ -32,9 +32,3 @@ description: "Concurrency pitfalls — task management, nonce serialization, cha
 
 [Pitfall] `fault-proof/src/proposer.rs:217-227`, `lib.rs:192-207`: when parent resolves `CHALLENGER_WINS`, `remove_subtree()` purges descendants but does NOT cancel their in-flight `JoinHandle`s. Trigger: child game has a pending proving task at the moment parent resolves. Correct approach: track and cancel descendant tasks on parent resolution.
 
-## Zero Chunk Size Infinite Loop
-
-[Pitfall] `fault-proof/src/proposer.rs:1744`: inline chunk iteration `while cursor < end { chunk_end = (cursor + chunk_size).min(end); … cursor = chunk_end; }` loops forever when `chunk_size == 0` because `cursor + 0 = cursor` never advances. The extracted `compute_chunks()` in `host_verification.rs` handles this (returns empty vec), but the inline loop in `spawn_host_verification_task` does not use it. Trigger: operator sets `HOST_VERIFICATION_CHUNK_SIZE=0` (deliberate misconfiguration). Correct approach: validate `chunk_size > 0` at config parse time, or clamp to `max(chunk_size, 1)` before entering the loop. Affected module: `fault-proof/src/proposer.rs`.
-
-**Source**: Code review finding R3-2 (2026-06-01)
-**Hit count**: 1

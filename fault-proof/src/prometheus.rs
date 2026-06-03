@@ -115,14 +115,12 @@ pub enum ProposerGauge {
     // Host verification metrics
     #[strum(
         serialize = "op_succinct_fp_last_verified_l2_block",
-        message = "Highest L2 block that has passed incremental host verification (native kona \
-                   execution). Game creation is blocked until this value reaches the proposal target."
+        message = "Highest L2 block that has passed incremental host verification (native kona execution). Only meaningful when ENABLE_HOST_VERIFICATION=true; otherwise reflects anchor_l2_block and is not updated."
     )]
     LastVerifiedL2Block,
     #[strum(
         serialize = "op_succinct_fp_host_verification_errors_total",
-        message = "Total number of incremental host verification failures. A non-zero value means \
-                   the proposer detected un-provable L2 blocks and is blocking new game creation."
+        message = "Total number of incremental host verification failures. A non-zero value means the proposer detected un-provable L2 blocks and is blocking new game creation."
     )]
     HostVerificationErrors,
     // Backup metrics
