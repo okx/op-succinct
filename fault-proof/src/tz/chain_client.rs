@@ -176,54 +176,74 @@ impl TzChainClient {
                 return self.download_snapshot(endpoint, height).await;
             }
 
-            // state_available=false — expect a running replay task. Log progress and wait.
-            match data.task_status.as_ref() {
-                Some(ts) => match ts.state {
+            // state_available=false — server should have spawned (or reused) a replay task.
+            // Fetch detailed state + progress via the poll_path endpoint.
+            if let Some(poll_path) = data.poll_path.as_deref() {
+                let task_url = format!("{endpoint}{poll_path}");
+                let task_resp = self.client.get(&task_url).send().await?;
+                let task_status_code = task_resp.status();
+                if !task_status_code.is_success() {
+                    let body = task_resp.text().await.unwrap_or_default();
+                    anyhow::bail!("HTTP {task_status_code} from {task_url}: {body}");
+                }
+                let task_envelope: ApiEnvelope<ReplayTaskResponse> = task_resp.json().await?;
+                let task = task_envelope.data.ok_or_else(|| {
+                    anyhow!(
+                        "replay task query missing data field: code={} message={}",
+                        task_envelope.code,
+                        task_envelope.message
+                    )
+                })?;
+
+                match task.state {
                     SnapshotReplayState::Running | SnapshotReplayState::Finished => {
                         tracing::info!(
-                            task_id = %ts.task_id,
+                            task_id = %task.task_id,
                             requested_height = height,
                             base_snapshot_height = data.base_snapshot_height,
-                            current_height = ts.current_height,
-                            blocks_processed = ts.blocks_processed,
-                            total_blocks = ts.total_blocks,
-                            progress_pct = ts.progress_pct,
-                            blocks_per_sec = ?ts.blocks_per_sec,
-                            state = ?ts.state,
+                            current_height = task.current_height,
+                            blocks_processed = task.blocks_processed,
+                            total_blocks = task.total_blocks,
+                            progress_percent = task.progress_percent,
+                            throughput = %task.throughput,
+                            state = ?task.state,
                             "tz: snapshot replay in progress"
                         );
                     }
                     SnapshotReplayState::Failed => {
-                        let err = ts.error.clone().unwrap_or_else(|| "<no error>".into());
+                        let err = task.error.clone().unwrap_or_else(|| "<no error>".into());
                         tracing::error!(
-                            task_id = %ts.task_id,
+                            task_id = %task.task_id,
                             error = %err,
                             requested_height = height,
                             "tz: snapshot replay task FAILED — bailing"
                         );
                         anyhow::bail!(
                             "tz snapshot replay failed (task {}, height {}): {}",
-                            ts.task_id, height, err
+                            task.task_id,
+                            height,
+                            err
                         );
                     }
                     SnapshotReplayState::Cancelled => {
                         tracing::error!(
-                            task_id = %ts.task_id,
+                            task_id = %task.task_id,
                             requested_height = height,
                             "tz: snapshot replay task CANCELLED — bailing"
                         );
                         anyhow::bail!(
                             "tz snapshot replay cancelled (task {}, height {})",
-                            ts.task_id, height
+                            task.task_id,
+                            height
                         );
                     }
-                },
-                None => {
-                    tracing::warn!(
-                        height,
-                        "tz: state_available=false but no task_status returned; re-querying"
-                    );
                 }
+            } else {
+                tracing::warn!(
+                    height,
+                    task_status = ?data.task_status,
+                    "tz: state_available=false but no poll_path returned; re-querying"
+                );
             }
 
             tokio::time::sleep(poll_interval).await;
@@ -271,23 +291,29 @@ struct ApiEnvelope<T> {
     data: Option<T>,
 }
 
+/// Response shape of `GET /chain/dex_state_snapshot?height={u64}` — matches
+/// `SnapshotQueryResponse` in tradezone (`crates/chain/src/rpc/handlers/zkvm_snapshot.rs`).
+///
+/// When `state_available = false`, the server includes `poll_path` pointing at
+/// `/chain/dex_state_snapshot/tasks/{task_id}` which we GET separately to
+/// inspect detailed replay progress (see [`ReplayTaskResponse`]).
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct DexStateSnapshotResponse {
     state_available: bool,
-    #[allow(dead_code)]
-    #[serde(default)]
-    requested_height: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    confirmed_height: u64,
     #[serde(default)]
     base_snapshot_height: u64,
     #[allow(dead_code)]
     #[serde(default)]
-    task_id: Option<String>,
+    height: u64,
+    #[allow(dead_code)]
     #[serde(default)]
-    task_status: Option<SnapshotReplayStatus>,
+    task_id: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    task_status: Option<String>,
+    #[serde(default)]
+    poll_path: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -299,17 +325,13 @@ enum SnapshotReplayState {
     Cancelled,
 }
 
+/// Response shape of `GET /chain/dex_state_snapshot/tasks/{task_id}` — matches
+/// tradezone's `ReplayTaskResponse`.
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct SnapshotReplayStatus {
+struct ReplayTaskResponse {
     task_id: String,
     state: SnapshotReplayState,
-    #[allow(dead_code)]
-    #[serde(default)]
-    requested_height: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    base_snapshot_height: u64,
     #[serde(default)]
     current_height: u64,
     #[serde(default)]
@@ -317,9 +339,9 @@ struct SnapshotReplayStatus {
     #[serde(default)]
     blocks_processed: u64,
     #[serde(default)]
-    progress_pct: f64,
+    progress_percent: f64,
     #[serde(default)]
-    blocks_per_sec: Option<f64>,
+    throughput: String,
     #[serde(default)]
     error: Option<String>,
 }
@@ -405,11 +427,8 @@ mod tests {
                 "message": "OK",
                 "data": {
                     "stateAvailable": true,
-                    "requestedHeight": 137000u64,
-                    "confirmedHeight": 138000u64,
                     "baseSnapshotHeight": 137000u64,
-                    "taskId": null,
-                    "taskStatus": null
+                    "height": 137000u64
                 }
             })))
             .mount(&mock_server)
@@ -432,29 +451,41 @@ mod tests {
     #[tokio::test]
     async fn dex_state_snapshot_failed_task_bails() {
         let mock_server = MockServer::start().await;
+        // Query endpoint reports the task is being driven; client must follow pollPath.
         Mock::given(method("GET"))
             .and(path("/chain/dex_state_snapshot"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "code": 10004,
-                "message": "replay required",
+                "code": 0,
+                "message": "OK",
                 "data": {
                     "stateAvailable": false,
-                    "requestedHeight": 137000u64,
-                    "confirmedHeight": 138000u64,
                     "baseSnapshotHeight": 130000u64,
+                    "height": 137000u64,
                     "taskId": "task-xyz",
-                    "taskStatus": {
-                        "taskId": "task-xyz",
-                        "state": "failed",
-                        "requestedHeight": 137000u64,
-                        "baseSnapshotHeight": 130000u64,
-                        "currentHeight": 132500u64,
-                        "totalBlocks": 7000u64,
-                        "blocksProcessed": 2500u64,
-                        "progressPct": 35.7,
-                        "blocksPerSec": 42.0,
-                        "error": "process_block panicked at height 132501"
-                    }
+                    "taskStatus": "failed",
+                    "pollPath": "/chain/dex_state_snapshot/tasks/task-xyz"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        // Detail endpoint carries the actual replay state + error message.
+        Mock::given(method("GET"))
+            .and(path("/chain/dex_state_snapshot/tasks/task-xyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "message": "OK",
+                "data": {
+                    "taskId": "task-xyz",
+                    "state": "failed",
+                    "height": 137000u64,
+                    "baseSnapshotHeight": 130000u64,
+                    "currentHeight": 132500u64,
+                    "totalBlocks": 7000u64,
+                    "blocksProcessed": 2500u64,
+                    "progressPercent": 35.7,
+                    "throughput": "42.0 blocks/s",
+                    "error": "process_block panicked at height 132501",
+                    "startedAt": 0u64
                 }
             })))
             .mount(&mock_server)
