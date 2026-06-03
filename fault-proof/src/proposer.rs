@@ -2098,9 +2098,38 @@ where
         let mut next_l2_block_number_for_proposal =
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
+        // Determine the provable ceiling and gate in one step. The ceiling acts as both the
+        // can_propose check and the upper bound for the existing-game skip loop below — this
+        // ensures compute_output_root_at_block is never called for a block that does not yet
+        // exist on the L2 node.
+        let provable_ceiling: U256 = if self.config.enable_host_verification {
+            let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
+            tracing::debug!(
+                last_verified,
+                next_l2_block = %next_l2_block_number_for_proposal,
+                "Checking if target block has been host-verified"
+            );
+            if U256::from(last_verified) < next_l2_block_number_for_proposal {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            }
+            U256::from(last_verified)
+        } else {
+            let finalized = self
+                .host
+                .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+                .await?;
+            let Some(finalized) = finalized else {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            };
+            if U256::from(finalized) < next_l2_block_number_for_proposal {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            }
+            U256::from(finalized)
+        };
+
         // Advance past any blocks that already have an existing game for this (output_root,
-        // extra_data) tuple. This handles the case where a CHALLENGER_WINS game exists at the
-        // base proposal target — without incrementing, the proposer would skip indefinitely.
+        // extra_data) tuple, but never exceed the provable ceiling — every candidate block
+        // is guaranteed to exist on the L2 node.
         loop {
             let output_root = self
                 .l2_provider
@@ -2122,31 +2151,12 @@ where
                 "Game already exists at proposal target, trying next block"
             );
             next_l2_block_number_for_proposal += U256::from(1);
+            if next_l2_block_number_for_proposal > provable_ceiling {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            }
         }
 
-        let can_propose = if self.config.enable_host_verification {
-            // Gate on last_verified_l2_block: the background verification task advances this
-            // as new blocks pass native kona execution, preventing un-provable games.
-            let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
-            tracing::debug!(
-                last_verified,
-                next_l2_block = %next_l2_block_number_for_proposal,
-                "Checking if target block has been host-verified"
-            );
-            U256::from(last_verified) >= next_l2_block_number_for_proposal
-        } else {
-            let finalized_l2_head_block_number = self
-                .host
-                .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
-                .await?;
-            finalized_l2_head_block_number
-                .map(|finalized_block| {
-                    U256::from(finalized_block) >= next_l2_block_number_for_proposal
-                })
-                .unwrap_or(false)
-        };
-
-        Ok((can_propose, next_l2_block_number_for_proposal, parent_game_index))
+        Ok((true, next_l2_block_number_for_proposal, parent_game_index))
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.
