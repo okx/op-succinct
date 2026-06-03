@@ -38,4 +38,4 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 `utils/{client,host,build,proof,signer,elfs}`,
 `utils/celestia/{client,host}`, `utils/eigenda/{client,host}`, `utils/ethereum/{client,host}`,
 `programs/range/{celestia,eigenda,ethereum,utils}`, `programs/aggregation`,
-`scripts/{prove,utils}`, `validity`, `fault-proof`, `fault-proof/tee/types`, `fault-proof/tee/host`, `bindings`.
+`scripts/{prove,utils}`, `validity`, `fault-proof`, `fault-proof/tee/{types,enclave,host}`, `bindings`.

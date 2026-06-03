@@ -18,6 +18,7 @@ members = [
     "fault-proof",
     "fault-proof/tee/types",
     "fault-proof/tee/host",
+    "fault-proof/tee/enclave",
     "bindings",
 ]
 resolver = "2"
