@@ -61,9 +61,29 @@ pub fn main() {
         assert_eq!(prev.rollupConfigHash, curr.rollupConfigHash);
     });
 
-    // One attestation per cycle covers signer + PCR0 for all TEE leaves.
+    // Aggregations must be homogeneous: either every leaf is `Sp1` or every leaf
+    // is `Tee`. Mixing the two in one batch is unsound.
+    //
+    // The public-output `multiBlockVKey` slot has a single occupant: in all-SP1
+    // batches it carries `multi_block_vkey` (the range program vkey), in batches
+    // with a TEE leaf it carries the attested PCR0 (see below). On-chain the slot
+    // is compared against the immutable `RANGE_VKEY_COMMITMENT`. In a MIXED batch
+    // the slot would hold PCR0, so `multi_block_vkey` — which `Sp1` leaves are
+    // recursively verified against at the dispatch loop — is never committed and
+    // thus never pinned on-chain. An attacker could then pass an arbitrary
+    // `multi_block_vkey` (proving forged `Sp1` leaves over fabricated roots) while
+    // a single genuine `Tee` leaf forces the slot to the real PCR0, passing
+    // on-chain verification. Rejecting mixed batches keeps the slot's lone
+    // occupant pinned: all-SP1 -> range vkey pinned, all-TEE -> PCR0 pinned.
     let has_tee_leaf =
         agg_inputs.range_proofs.iter().any(|rp| matches!(rp, RangeProof::Tee { .. }));
+    let has_sp1_leaf = agg_inputs.range_proofs.iter().any(|rp| matches!(rp, RangeProof::Sp1));
+    assert!(
+        !(has_tee_leaf && has_sp1_leaf),
+        "aggregation must be homogeneous: cannot mix Sp1 and Tee range proofs in one batch",
+    );
+
+    // One attestation per cycle covers signer + PCR0 for all TEE leaves.
     let session: Option<VerifiedSession> = if has_tee_leaf {
         let attestation_bytes = sp1_zkvm::io::read_vec();
         Some(verify_attestation(&attestation_bytes, &TRUST_ANCHORS))
@@ -113,9 +133,10 @@ pub fn main() {
         rollupConfigHash: last_boot_info.rollupConfigHash,
     };
 
-    // SP1 leaves: range program vkey. TEE leaves: attested PCR0. Both ride
-    // the same on-chain `RANGE_VKEY_COMMITMENT` immutable; the SP1 verifier
-    // enforces equality when the contract reconstructs the public values.
+    // Single occupant of the on-chain `RANGE_VKEY_COMMITMENT` slot, safe because
+    // the batch is homogeneous (enforced above): all-TEE -> attested PCR0,
+    // all-SP1 -> range program vkey. The on-chain verifier compares this slot to
+    // its immutable, pinning whichever value is present.
     let multi_block_vkey_b256 = match session.as_ref() {
         Some(s) => s.pcr0_hash,
         None => B256::from(u32_to_u8(agg_inputs.multi_block_vkey)),
