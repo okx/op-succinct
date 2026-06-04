@@ -7,7 +7,6 @@ import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {GameType} from "src/dispute/lib/Types.sol";
 import {Timestamp} from "src/dispute/lib/LibUDT.sol";
-import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 /// @notice Mock factory with configurable games for testing
 contract MockDisputeGameFactory {
@@ -37,6 +36,8 @@ contract MockDisputeGameFactory {
 }
 
 contract AccessManagerTest is Test {
+    uint32 internal constant TEST_GAME_TYPE = 42;
+
     AccessManager accessManager;
 
     address owner = address(0x1234);
@@ -55,13 +56,14 @@ contract AccessManagerTest is Test {
         mockFactory = IDisputeGameFactory(address(mockFactoryImpl));
 
         vm.prank(owner);
-        accessManager = new AccessManager(FALLBACK_TIMEOUT, mockFactory);
+        accessManager = new AccessManager(FALLBACK_TIMEOUT, mockFactory, GameType.wrap(TEST_GAME_TYPE));
     }
 
     function testConstructor() public view {
         assertEq(accessManager.FALLBACK_TIMEOUT(), FALLBACK_TIMEOUT);
         assertEq(accessManager.owner(), owner);
         assertEq(address(accessManager.DISPUTE_GAME_FACTORY()), address(mockFactory));
+        assertEq(accessManager.GAME_TYPE().raw(), TEST_GAME_TYPE);
     }
 
     function testSetProposer() public {
@@ -168,8 +170,7 @@ contract AccessManagerTest is Test {
 
     function testGetLastProposalTimestamp_FindsOPSuccinctGame() public {
         uint64 newTimestamp = uint64(accessManager.DEPLOYMENT_TIMESTAMP()) + 1;
-        MockDisputeGameFactory(address(mockFactory))
-            .addGame(GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE), newTimestamp);
+        MockDisputeGameFactory(address(mockFactory)).addGame(GameType.wrap(TEST_GAME_TYPE), newTimestamp);
 
         assertEq(accessManager.getLastProposalTimestamp(), newTimestamp);
     }
@@ -179,8 +180,7 @@ contract AccessManagerTest is Test {
         MockDisputeGameFactory(address(mockFactory)).addGame(GameType.wrap(0), cannonTimestamp);
 
         uint64 opSuccinctTimestamp = uint64(accessManager.DEPLOYMENT_TIMESTAMP()) + 1;
-        MockDisputeGameFactory(address(mockFactory))
-            .addGame(GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE), opSuccinctTimestamp);
+        MockDisputeGameFactory(address(mockFactory)).addGame(GameType.wrap(TEST_GAME_TYPE), opSuccinctTimestamp);
 
         assertEq(accessManager.getLastProposalTimestamp(), opSuccinctTimestamp);
     }

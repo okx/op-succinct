@@ -30,21 +30,20 @@ import {
     UnexpectedRootClaim
 } from "src/dispute/lib/Errors.sol";
 import "src/fp/lib/Errors.sol";
-import {AggregationOutputs} from "src/lib/Types.sol";
 
 // Interfaces
 import {ISemver} from "interfaces/universal/ISemver.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 // Contracts
 import {AccessManager} from "src/fp/AccessManager.sol";
 
-/// @title OPSuccinctFaultDisputeGame
-/// @notice An implementation of the `IFaultDisputeGame` interface.
-contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
+/// @title XLayerOPSuccinctFaultDisputeGame
+/// @notice XLayer fork of `OPSuccinctFaultDisputeGame` with typed proof challenges.
+contract XLayerOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
     //                         Enums                              //
     ////////////////////////////////////////////////////////////////
@@ -62,6 +61,11 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         Resolved
     }
 
+    enum ProofType {
+        TEE,
+        ZK
+    }
+
     ////////////////////////////////////////////////////////////////
     //                         Structs                            //
     ////////////////////////////////////////////////////////////////
@@ -76,13 +80,25 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         Timestamp deadline;
     }
 
+    /// @notice The public values committed to by the XLayer aggregation program.
+    struct XLayerAggregationOutputs {
+        bytes32 l1Head;
+        bytes32 l2PreRoot;
+        bytes32 claimRoot;
+        uint256 claimBlockNum;
+        bytes32 rollupConfigHash;
+        bytes32 rangeProgramCommitment;
+        address proverAddress;
+    }
+
     ////////////////////////////////////////////////////////////////
     //                         Events                             //
     ////////////////////////////////////////////////////////////////
 
     /// @notice Emitted when the game is challenged.
     /// @param challenger The address of the challenger.
-    event Challenged(address indexed challenger);
+    /// @param proofType The proof type requested by the challenger.
+    event Challenged(address indexed challenger, ProofType proofType);
 
     /// @notice Emitted when the game is proved.
     /// @param prover The address of the prover.
@@ -90,6 +106,19 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Emitted when the game is closed.
     event GameClosed(BondDistributionMode bondDistributionMode);
+
+    ////////////////////////////////////////////////////////////////
+    //                         Errors                             //
+    ////////////////////////////////////////////////////////////////
+
+    /// @notice Thrown when the provided proof type does not match the challenged proof type.
+    error UnexpectedProofType(ProofType expected, ProofType actual);
+
+    /// @notice Thrown when the typed proof bytes do not contain a proof type byte.
+    error EmptyTypedProof();
+
+    /// @notice Thrown when the proof type byte is not a valid ProofType enum value.
+    error InvalidProofType(bytes1 proofType);
 
     ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
@@ -120,6 +149,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// this verification is the output of converting the [u32; 8] range BabyBear verification key to a [u8; 32] array.
     bytes32 internal immutable RANGE_VKEY_COMMITMENT;
 
+    /// @notice The PCR / measurement commitment expected for TEE proofs.
+    bytes32 internal immutable TEE_PCR_COMMITMENT;
+
     /// @notice The challenger bond for the game. This is the amount of the bond that the
     ///         challenger has to bond to challenge. The prover will receive this bond if they
     ///         provide a valid proof in response to a challenge.
@@ -132,8 +164,8 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     AccessManager internal immutable ACCESS_MANAGER;
 
     /// @notice Semantic version.
-    /// @custom:semver 2.0.0
-    string public constant version = "2.0.0";
+    /// @custom:semver 2.0.0-xlayer
+    string public constant version = "2.0.0-xlayer";
 
     /// @notice The starting timestamp of the game.
     Timestamp public createdAt;
@@ -149,6 +181,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice The claim made by the proposer.
     ClaimData public claimData;
+
+    /// @notice The proof type requested by the challenger.
+    ProofType public challengedProofType;
 
     /// @notice Credited balances for winning participants.
     mapping(address => uint256) public normalModeCredit;
@@ -174,6 +209,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @param _rollupConfigHash The rollup config hash for the L2 network.
     /// @param _aggregationVkey The vkey for the aggregation program.
     /// @param _rangeVkeyCommitment The commitment to the range vkey.
+    /// @param _teePcrCommitment The PCR / measurement commitment expected for TEE proofs.
     /// @param _challengerBond The bond amount that must be submitted by the challenger.
     /// @param _anchorStateRegistry The anchor state registry for the L2 network.
     constructor(
@@ -185,6 +221,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         bytes32 _rollupConfigHash,
         bytes32 _aggregationVkey,
         bytes32 _rangeVkeyCommitment,
+        bytes32 _teePcrCommitment,
         uint256 _challengerBond,
         IAnchorStateRegistry _anchorStateRegistry,
         AccessManager _accessManager
@@ -198,6 +235,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         ROLLUP_CONFIG_HASH = _rollupConfigHash;
         AGGREGATION_VKEY = _aggregationVkey;
         RANGE_VKEY_COMMITMENT = _rangeVkeyCommitment;
+        TEE_PCR_COMMITMENT = _teePcrCommitment;
         CHALLENGER_BOND = _challengerBond;
         ANCHOR_STATE_REGISTRY = _anchorStateRegistry;
         ACCESS_MANAGER = _accessManager;
@@ -267,8 +305,8 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             }
 
             startingOutputRoot = Proposal({
-                l2SequenceNumber: OPSuccinctFaultDisputeGame(address(proxy)).l2SequenceNumber(),
-                root: Hash.wrap(OPSuccinctFaultDisputeGame(address(proxy)).rootClaim().raw())
+                l2SequenceNumber: XLayerOPSuccinctFaultDisputeGame(address(proxy)).l2SequenceNumber(),
+                root: Hash.wrap(XLayerOPSuccinctFaultDisputeGame(address(proxy)).rootClaim().raw())
             });
 
             // INVARIANT: The parent game must be a valid game.
@@ -349,7 +387,8 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
 
     /// @notice Challenges the game.
-    function challenge() external payable returns (ProposalStatus) {
+    /// @param proofType The proof type that the proposer must use when proving this challenge.
+    function challenge(ProofType proofType) external payable returns (ProposalStatus) {
         // INVARIANT: Can only challenge a game that has not been challenged yet.
         if (claimData.status != ProposalStatus.Unchallenged) revert ClaimAlreadyChallenged();
 
@@ -368,36 +407,46 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // Update the status of the proposal
         claimData.status = ProposalStatus.Challenged;
 
+        // Store the requested proof type so the proposer cannot answer with a different proof type.
+        challengedProofType = proofType;
+
         // Update the clock to the current block timestamp, which marks the start of the challenge.
         claimData.deadline = Timestamp.wrap(uint64(block.timestamp + MAX_PROVE_DURATION.raw()));
 
         // Deposit the bond.
         refundModeCredit[msg.sender] += msg.value;
 
-        emit Challenged(claimData.counteredBy);
+        emit Challenged(claimData.counteredBy, proofType);
 
         return claimData.status;
     }
 
     /// @notice Proves the game.
-    /// @param proofBytes The proof bytes to validate the claim.
+    /// @param proofBytes The typed proof bytes to validate the claim. The first byte is the proof type.
     function prove(bytes calldata proofBytes) external returns (ProposalStatus) {
         // INVARIANT: Cannot prove if the game is over.
         if (gameOver()) revert GameOver();
 
+        if (proofBytes.length == 0) revert EmptyTypedProof();
+
+        ProofType proofType = _decodeProofType(proofBytes[0]);
+        if (claimData.counteredBy != address(0) && proofType != challengedProofType) {
+            revert UnexpectedProofType(challengedProofType, proofType);
+        }
+
         // Decode the public values to check the claim root
-        AggregationOutputs memory publicValues = AggregationOutputs({
+        XLayerAggregationOutputs memory publicValues = XLayerAggregationOutputs({
             l1Head: Hash.unwrap(l1Head()),
             l2PreRoot: Hash.unwrap(startingOutputRoot.root),
             claimRoot: rootClaim().raw(),
             claimBlockNum: l2SequenceNumber(),
             rollupConfigHash: ROLLUP_CONFIG_HASH,
-            rangeVkeyCommitment: RANGE_VKEY_COMMITMENT,
+            rangeProgramCommitment: proofType == ProofType.TEE ? TEE_PCR_COMMITMENT : RANGE_VKEY_COMMITMENT,
             proverAddress: msg.sender
         });
 
-        // Verify the proof. Reverts if the proof is invalid.
-        SP1_VERIFIER.verifyProof(AGGREGATION_VKEY, abi.encode(publicValues), proofBytes);
+        // Verify the original SP1 proof bytes after removing the XLayer proof type prefix.
+        SP1_VERIFIER.verifyProof(AGGREGATION_VKEY, abi.encode(publicValues), proofBytes[1:]);
 
         // Update the prover address
         claimData.prover = msg.sender;
@@ -412,6 +461,13 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         emit Proved(claimData.prover);
 
         return claimData.status;
+    }
+
+    /// @notice Decodes the XLayer proof type prefix byte.
+    function _decodeProofType(bytes1 proofType) private pure returns (ProofType proofType_) {
+        uint8 proofTypeRaw = uint8(proofType);
+        if (proofTypeRaw > uint8(ProofType.ZK)) revert InvalidProofType(proofType);
+        proofType_ = ProofType(proofTypeRaw);
     }
 
     /// @notice Returns the status of the parent game.
@@ -676,6 +732,11 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice Returns the range vkey commitment.
     function rangeVkeyCommitment() external view returns (bytes32 rangeVkeyCommitment_) {
         rangeVkeyCommitment_ = RANGE_VKEY_COMMITMENT;
+    }
+
+    /// @notice Returns the TEE PCR / measurement commitment.
+    function teePcrCommitment() external view returns (bytes32 teePcrCommitment_) {
+        teePcrCommitment_ = TEE_PCR_COMMITMENT;
     }
 
     /// @notice Returns the challenger bond amount.
