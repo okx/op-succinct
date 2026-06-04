@@ -1,10 +1,34 @@
 ---
 name: "rest-api-conventions"
-description: "API conventions for op-succinct — note: this workspace exposes no public REST API"
+description: "API conventions for op-succinct — inbound REST (xlayer-tee-host) and outbound HTTP patterns"
 ---
 # REST API Conventions
 
-**Not applicable.** op-succinct does not expose a public REST API. The runtime services are:
+## Inbound REST — xlayer-tee-host
+
+`xlayer-tee-host` (`fault-proof/tee/host/`) is the first inbound REST service in op-succinct, exposing 4 JSON endpoints for proposer interaction:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/tee/task` | POST | Create range task (rkyv witness body) |
+| `/tee/task/{id}` | GET | Query task status + retrieve proofBytes |
+| `/tee/task/{id}` | DELETE | Cancel task |
+| `/tee/info` | GET | Query enclave attestation (cached) |
+
+**Response envelope**: `{ "code": <int>, "message": <string>, "data": <T|null> }`
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 10001 | Client error (empty body, oversize, invalid input, non-TaskUnknown enclave errors) |
+| 10004 | Task not found / TaskUnknown |
+| 20001 | Enclave unreachable / server-side enclave error |
+
+[Convention] All error responses go through `HostError → ApiResponse` — no magic number `ApiResponse::error(10001, ...)` in handlers.
+
+[Convention] Numeric error codes are intentionally limited to 4 values. This is a deliberate deviation from op-succinct's prior pattern (no centralized error codes) — the 4-code set is specified by the TEE design document for the northbound contract.
+
+## Other Runtime Services
 
 - `validity` — long-running proposer daemon that calls L1/L2 RPC outbound; no inbound HTTP server.
 - `fault-proof` (proposer / challenger) — same shape; outbound RPC only.

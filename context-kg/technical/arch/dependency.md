@@ -45,6 +45,11 @@ description: "Crate dependency map, storage, and external services for op-succin
 | `scripts/prove` → `proof-utils`, `host-utils` | rust-crate | CLI orchestration |
 | `scripts/utils` → `host-utils`, `bindings` | rust-crate | Config-fetching CLI |
 | `fault-proof/tee/{enclave,host,proposer}` → `xlayer-tee-types` | rust-crate (path dep) | Shared TEE contract types (journal, wire, task, error) |
+| `xlayer-tee-host` → `axum`, `hyper`, `hyper-util`, `http-body-util`, `tower-http` | rust-crate | Northbound REST server + southbound HTTP client |
+| `xlayer-tee-host` → `rkyv` | rust-crate (workspace) | Southbound enclave request/response encoding (AlignedVec + CheckBytes) |
+| `xlayer-tee-host` → `alloy-primitives`, `alloy-sol-types` | rust-crate (workspace) | keccak256 hashing + abi_encode_params for proofBytes |
+| `xlayer-tee-host` → `config`, `dotenvy` | rust-crate | TOML config + env overlay (TEE_HOST__ prefix) |
+| `xlayer-tee-host` → `tokio-vsock` (optional) | rust-crate | vsock transport for Nitro Enclave (Linux production only) |
 
 ## Storage and Middleware
 

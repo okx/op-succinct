@@ -26,7 +26,8 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 | L2OO | OPSuccinctL2OutputOracle — validity-mode L1 oracle contract receiving aggregated proofs. | `validity/src/contract.rs` |
 | OnlineBlobStore | Host-side blob fetcher that collects KZG commitments/proofs during witness generation. | `utils/host/src/witness_generation/online_blob_store.rs` |
 | OPSuccinctDataFetcher | L1/L2/beacon RPC client + rollup config loader; `Arc`-shared across services. | `utils/host/src/fetcher.rs` |
-| OPSuccinctHost | DA-agnostic host trait: `fetch_args`, `calculate_safe_l1_head`, `get_finalized_l2_block_number`. | `utils/host/src/lib.rs` |
+| OPSuccinctHost | DA-agnostic host trait: `fetch_args`, `calculate_safe_l1_head`, `get_finalized_l2_block_number`. **Not to be confused with xlayer-tee-host.** | `utils/host/src/lib.rs` |
+| xlayer-tee-host | TEE proof coordination layer between proposer and Nitro Enclave. Northbound JSON REST, southbound rkyv-over-HTTP. Distinct from `OPSuccinctHost` (witness generation host trait). | `fault-proof/tee/host/` |
 | OPSuccinctRequest | Validity proposer DB row: block range, status, timing, commitments, proof bytes. | `validity/src/db/types.rs:78-114` |
 | OracleL1ChainProvider | `kona-proof` L1 chain data oracle backed by the preimage server. | `utils/client/src/oracle/*` |
 | OracleL2ChainProvider | `kona-proof` L2 chain data oracle backed by the preimage server. | `utils/client/src/oracle/*` |
