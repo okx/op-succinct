@@ -29,6 +29,25 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 | `TaskInfo` | `GameCreation`, `GameProving`, `GameResolution`, `BondClaim`, `HostVerification` | Task type enum for `TaskMap`; each variant maps to spawn/completion/failure handlers |
 | `last_verified_l2_block` | `Arc<AtomicU64>` on `OPSuccinctProposer` | Highest L2 block that passed native host verification; written by HostVerification task, read atomically by `should_create_game` |
 
+## Sub-Crates
+
+### `tee/types` (`xlayer-tee-types`)
+
+Shared contract crate for the TEE fault-proof path. Contains only types, constants, and pure functions — no business logic, no runtime, no network stack. Serves as the single source of truth for enclave/host/proposer/verifier protocol definitions.
+
+| Module | Contents |
+|--------|----------|
+| `journal.rs` | `RangeJournal` (sol! struct), 168-byte `pack()`, `RangeJournalWire` (rkyv mirror), `RangeTaskResponse` |
+| `wire.rs` | HTTP protocol constants (endpoint paths, headers, content types, body limit) |
+| `task.rs` | `TaskPhase` state machine, `TaskStatusView`, task wire types (all rkyv-Archive) |
+| `error.rs` | `ErrorKind` (13 variants), `status_code()`, `is_retryable()`, `ErrorResponse` (JSON) |
+
+[Rule] `RangeJournal` field order and 168-byte pack layout are frozen from v0.1 — any reorder breaks existing signatures and on-chain ABI decoding. Golden-value regression test guards this in CI.
+
+[Rule] This crate must never depend on witness crates — host must not gain witness parsing capability through this dependency.
+
+[Rule] Consumers reference via `path = "…/tee/types"` (not `workspace.dependencies`) — each caller declares its own dependency.
+
 ## Dependencies
 - Refer to `arch/dependency.md` for full dependency details.
 
