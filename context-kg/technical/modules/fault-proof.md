@@ -46,6 +46,27 @@ Shared contract crate for the TEE fault-proof path. Contains only types, constan
 
 [Rule] Consumers reference via `path = "…/tee/types"` (not `workspace.dependencies`) — each caller declares its own dependency.
 
+### `tee/host` (`xlayer-tee-host`)
+
+Coordination layer between proposer and Nitro Enclave. Exposes a northbound JSON REST API (axum) and communicates southbound with the enclave via rkyv-over-HTTP (vsock/TCP compile-time switch). Manages task lifecycle: registry, witness hash dedup, state mirroring, TTL recycling, 429 capacity smoothing.
+
+| Module | Contents |
+|--------|----------|
+| `server.rs` | 4 REST handlers (POST/GET/DELETE /tee/task, GET /tee/info), background delivery coroutine, monitor, sweeper |
+| `task_manager.rs` | TaskManager registry + dedup, TaskStatus (Running/Finished/Failed/Cancelled), per-task Arc<Mutex<TaskEntry>> |
+| `enclave_client.rs` | hyper HTTP/1.1 keep-alive client, 3-attempt retry with backoff, vsock/TCP compile-time transport switch |
+| `packager.rs` | RangeJournalWire → RangeJournal → `abi_encode_params()` for on-chain compatible proofBytes |
+| `config.rs` | TOML + `TEE_HOST__` env overlay via `config` crate |
+| `error.rs` | HostError enum → 4 numeric codes (0/10001/10004/20001), centralized mapping from ErrorKind |
+| `api.rs` | ApiResponse<T> JSON envelope |
+| `main.rs` | Entry point, CLI args, tracing init, axum wiring, spawn monitor/sweeper |
+
+[Rule] Host uses `AppState` as a concrete type (not generic). No `trait EnclaveTransport` or mockall — unit tests cover pure logic modules only (packager, config, error, task_manager).
+
+[Rule] Host Cargo.toml `[features]` must contain only `default = []` and `vsock = ["dep:tokio-vsock"]`. No `tz` or other feature gates.
+
+[Rule] `enclave_client.rs` must include `compile_error!` guard: `#[cfg(all(feature = "vsock", not(target_os = "linux")))]` to fail fast on invalid platform+feature combinations.
+
 ## Dependencies
 - Refer to `arch/dependency.md` for full dependency details.
 

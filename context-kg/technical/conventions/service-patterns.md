@@ -65,6 +65,20 @@ proof_id, proof_output_id, consecutive_poll_failures
 
 [Pitfall] Tasks that fail to update DB or panic mid-flight remain in the map until next `handle_completed_tasks()`; ensure DB status is written before spawning the task.
 
+## TEE Host Task Management
+
+`fault-proof/tee/host/src/task_manager.rs::TaskManager`:
+
+- **Two-level locking**: `Mutex<HashMap<String, Arc<Mutex<TaskEntry>>>>` — outer lock protects map insert/remove/lookup (take `Arc` clone, release immediately); inner per-task mutex protects individual task state mutations.
+- **Separate dedup mutex**: `Mutex<HashMap<B256, DedupEntry>>` — keccak256 computed outside lock; only HashMap ops inside (p99 ≤ 5ms).
+- **No .await inside any mutex guard** — sequential lock-release-reacquire pattern throughout.
+- **Cancellation**: `oneshot::Sender<()>` + `tokio::select! { biased; }` in background delivery coroutine provides immediate preemption on DELETE.
+- **Terminal one-shot**: `set_finished`/`set_failed`/`set_cancelled` are no-ops if task is already terminal.
+
+[Convention] When implementing per-task or per-entity concurrent management with in-memory HashMap, prefer the two-level lock pattern over a single global lock. Heavy computation (ABI encoding, hashing) must happen outside the global lock scope.
+
+[Rule] Lock ordering: never hold both the registry mutex and dedup mutex simultaneously. Use sequential lock-release-reacquire to avoid deadlocks.
+
 ## Chain Lock (validity)
 
 `validity/src/db/client.rs::is_chain_locked` / `add_chain_lock` / `update_chain_lock`:

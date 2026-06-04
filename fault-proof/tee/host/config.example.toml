@@ -1,0 +1,14 @@
+[server]
+bind_addr = "0.0.0.0:18080"
+# task_retention_secs = 3600
+# dedup_ttl_secs = 300
+# monitor_interval_secs = 30
+
+[enclave]
+# vsock_cid = 0
+# vsock_port = 0
+tcp_addr = "127.0.0.1:7878"
+# request_timeout_secs = 180
+
+[attestation]
+# cache_ttl_secs = 60
