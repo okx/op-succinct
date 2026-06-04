@@ -17,6 +17,7 @@ members = [
     "validity",
     "fault-proof",
     "fault-proof/tee/types",
+    "fault-proof/tee/enclave",
     "bindings",
 ]
 resolver = "2"

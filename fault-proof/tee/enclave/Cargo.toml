@@ -1,0 +1,62 @@
+[package]
+name = "xlayer-tee-enclave"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "TEE enclave: Nitro Enclave L2 replay & RangeJournal signing"
+
+[lib]
+name = "xlayer_tee_enclave"
+
+[[bin]]
+name = "xlayer-tee-enclave"
+path = "src/main.rs"
+
+[features]
+default = []
+tz = []
+vsock = ["dep:tokio-vsock", "dep:aws-nitro-enclaves-nsm-api", "dep:serde_bytes"]
+
+[dependencies]
+xlayer-tee-types = { path = "../types" }
+op-succinct-client-utils = { workspace = true }
+op-succinct-ethereum-client-utils = { workspace = true }
+kona-proof = { workspace = true }
+kona-preimage = { workspace = true }
+kona-genesis = { workspace = true }
+kona-driver = { workspace = true }
+kona-derive = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde", "sha3-keccak"] }
+alloy-sol-types = { workspace = true }
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+rkyv = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+axum = "0.7"
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot = "0.12"
+uuid = { workspace = true, features = ["v4"] }
+bytes = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
+hex = { workspace = true }
+base64 = { workspace = true }
+spin = { workspace = true }
+async-trait = { workspace = true }
+
+# vsock-only (linux) deps
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { version = "0.5", optional = true }
+aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true }
+serde_bytes = { version = "0.11", optional = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["full"] }
