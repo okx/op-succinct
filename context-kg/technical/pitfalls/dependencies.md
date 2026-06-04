@@ -24,6 +24,21 @@ description: "Dependency and build pitfalls — sp1 patches, kona-rpc avoidance,
 
 [Pitfall] `Cargo.toml [patch.crates-io]` pins `sha2`, `sha3`, `tiny-keccak`, `k256`, `p256`, `substrate-bn` to `sp1-patches` forks. These contain precompile-friendly variants for the zkVM. Removing them silently degrades guest performance and may break precompile invocation. Trigger: dependency cleanup. Correct approach: keep patches; bump tags only when the official sp1 release notes call out a change.
 
+## p384 Not in SP1 Patch Set
+
+[Pitfall] `p384` is NOT included in the `[patch.crates-io]` SP1 fork set, unlike `k256` and `p256`. All P-384 ECDSA operations (used by TEE attestation cert chain verification — 4 cert signature verifications + 1 COSE ES384 signature) run as pure Rust on RISC-V without hardware acceleration. This makes TEE batch proving significantly more cycle-expensive than SP1 batches.
+
+**Trigger**: Adding or modifying code that uses P-384 curves inside a zkVM guest (e.g. TEE attestation verification).
+
+**Correct**: Profile P-384 cycle count with `sp1_zkvm::precompiles::cycle_tracker` before assuming acceptable performance. Monitor SP1 releases for a potential `p384` precompile patch.
+
+[Rule] When adding new elliptic curve operations to a zkVM guest, always check whether the curve has an SP1 precompile patch in `[patch.crates-io]`. Unpatched curves run orders of magnitude slower.
+
+**Module**: `programs/aggregation` (TEE attestation verification)
+**Source**: Adversarial review finding #1 (XLOP-1065)
+**Date**: 2026-06-04
+**Hit count**: 1
+
 ## Local Build Hits Endpoint Security
 
 [Pitfall] sp1's build scripts spawn helper binaries under `~/.cargo/git/checkouts/sp1-*/target/sp1-native-bins/debug/build/`. On macOS with Santa (or similar endpoint security), these are blocked and SIGKILLed. Trigger: first sp1 build after a version bump. Correct approach: apply to the Santa allowlist; or build inside Docker; or rely on CI for verification.

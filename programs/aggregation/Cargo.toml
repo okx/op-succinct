@@ -17,3 +17,12 @@ alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 serde_cbor.workspace = true
 bincode.workspace = true
+
+# TEE attestation verification
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+ciborium.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+rcgen = { workspace = true, features = ["x509-parser"] }

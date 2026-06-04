@@ -22,7 +22,8 @@ description: "zkVM-guest shared utilities — boot info, oracle traits, precompi
 | Entity | Key Fields | Description |
 |--------|-----------|-------------|
 | `BootInfoStruct` | `l1Head`, `l2PreRoot`, `l2PostRoot`, `l2BlockNumber`, `rollupConfigHash` | ABI public-input struct |
-| `AggregationInputs` | `boot_infos[]`, latest L1 checkpoint head, multi-block vkey, prover address | Aggregation guest input |
+| `AggregationInputs` | `boot_infos[]`, `range_proofs[]`, latest L1 checkpoint head, multi-block vkey, prover address | Aggregation guest input; `boot_infos` and `range_proofs` are parallel-indexed |
+| `RangeProof` | `Sp1` or `Tee { signature: Vec<u8> }` | Per-leaf proof type discriminator for aggregation dispatch |
 | `WitnessData` | preimage entries + blob data | Default rkyv-encoded witness |
 | `BlobData` / `BlobStore` | KZG commitments, proofs, blob bytes | In-guest verifier |
 | `PreimageStore` (in `witness/preimage_store.rs`) | preimage map + flushable cache | Oracle wrapper |

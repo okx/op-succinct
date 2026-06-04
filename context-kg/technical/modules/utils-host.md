@@ -43,3 +43,5 @@ description: "Host-side utilities — RPC fetching, block-range planning, witnes
 [Pitfall] Isthmus pre/post `withdrawals_root` handling — pre-Isthmus headers carry `nil` withdrawals root; we fall back to `eth_getProof` for the message-passer storage root. Future hardforks may change this again.
 
 [Pitfall] `PreimageStore` lock contention — multi-threaded oracle access under `Arc<Mutex<…>>` can stall. Release lock before heavy operations; never nest locks.
+
+[Pitfall] `get_agg_proof_stdin` fills `range_proofs` with `vec![RangeProof::Sp1; boot_infos.len()]` for SP1-only batches. When adding TEE batch support (proposer-side), the caller must construct the correct `RangeProof::Tee { signature }` variants and ensure parallel-index alignment with `boot_infos`. The stdin also conditionally carries attestation bytes after `AggregationInputs` when the batch has TEE leaves.
