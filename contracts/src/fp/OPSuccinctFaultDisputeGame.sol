@@ -385,7 +385,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Decode the public values to check the claim root
         AggregationOutputs memory publicValues = AggregationOutputs({
-            l1Head: bytes32(0),
+            l1Head: Hash.unwrap(l1Head()),
             l2PreRoot: Hash.unwrap(startingOutputRoot.root),
             claimRoot: rootClaim().raw(),
             claimBlockNum: l2SequenceNumber(),

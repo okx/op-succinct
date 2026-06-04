@@ -243,13 +243,18 @@ where
     ) -> Result<(TxHash, u64, u64)> {
         let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
 
+        // Read game.l1Head() (CWIA arg stamped by DGF at create time). The aggregation
+        // program commits this same value end-to-end so on-chain prove() check
+        // `publicValues.l1Head == Hash.unwrap(game.l1Head())` succeeds.
+        let game_l1_head = B256::from(game.l1Head().call().await?.0);
+
         // Mock mode is handled inside `tz_prove` via the `ProofProvider::Mock` backend:
         // the same fetch path (snapshot + blocks) runs, range/agg guests execute (no real
         // proving), and `create_mock_proof` packs the public values into proof bytes that
         // the on-chain `SP1MockVerifier` accepts. This mirrors the non-tz proposer mock
         // pattern and catches guest-side regressions that an empty-bytes shortcut would
         // miss.
-        let proof_bytes = self.tz_prove(start_block, end_block).await?;
+        let proof_bytes = self.tz_prove(start_block, end_block, game_l1_head).await?;
 
         let transaction_request = game.prove(proof_bytes).into_transaction_request();
         let receipt = self
@@ -275,10 +280,14 @@ where
 
     /// Run the twin-layer prove pipeline (single segment): range proof → aggregation proof.
     /// Returns groth16-wrapped proof bytes ready for OPSuccinctFaultDisputeGame.prove.
+    ///
+    /// `game_l1_head` is the on-chain game.l1Head() CWIA arg; the aggregation guest commits
+    /// this value to AggregationOutputs.l1Head so the on-chain prove() verifier passes.
     async fn tz_prove(
         &self,
         start_block: u64,
         end_block: u64,
+        game_l1_head: B256,
     ) -> Result<alloy_primitives::Bytes> {
         tracing::info!(
             start_block,
@@ -339,8 +348,9 @@ where
 
         let agg_inputs = AggregationInputs {
             boot_infos: vec![boot_info],
-            // tz has no L1 derivation; the on-chain verifier expects ZERO.
-            latest_l1_checkpoint_head: B256::ZERO,
+            // Pass-through: the aggregation guest commits this to AggregationOutputs.l1Head;
+            // the on-chain prove() reads the same value via Hash.unwrap(game.l1Head()).
+            latest_l1_checkpoint_head: game_l1_head,
             multi_block_vkey: self.prover.keys().range_vk.hash_u32(),
             prover_address: self.signer.address(),
         };
