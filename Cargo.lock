@@ -15793,17 +15793,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xlayer-tee-types"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "rkyv",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "xlayer-tee-host"
 version = "0.1.0"
 dependencies = [

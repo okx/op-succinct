@@ -172,7 +172,7 @@ impl EnclaveClient {
             )
             .await?;
 
-        if status == 200 {
+        if (200..=299).contains(&status) {
             return Ok(());
         }
 
@@ -184,7 +184,7 @@ impl EnclaveClient {
         let uri = wire::task_path(task_id);
         let (status, body) = self.execute_request("GET", &uri, vec![], Bytes::new()).await?;
 
-        if status == 200 {
+        if (200..=299).contains(&status) {
             return decode_task_state_view(&body);
         }
 
@@ -196,7 +196,7 @@ impl EnclaveClient {
         let uri = wire::task_path(task_id);
         let (status, body) = self.execute_request("DELETE", &uri, vec![], Bytes::new()).await?;
 
-        if status == 200 {
+        if (200..=299).contains(&status) {
             return decode_delete_task_response(&body);
         }
 
@@ -208,7 +208,7 @@ impl EnclaveClient {
         let (status, body) =
             self.execute_request("GET", wire::ATTESTATION, vec![], Bytes::new()).await?;
 
-        if status == 200 {
+        if (200..=299).contains(&status) {
             return Ok(body);
         }
 

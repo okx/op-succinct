@@ -66,8 +66,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/tee/task", post(server::create_task))
-        .route("/tee/task/{id}", get(server::query_task))
-        .route("/tee/task/{id}", delete(server::delete_task))
+        .route("/tee/task/:id", get(server::query_task))
+        .route("/tee/task/:id", delete(server::delete_task))
         .route("/tee/info", get(server::query_attestation))
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(Arc::clone(&state));
