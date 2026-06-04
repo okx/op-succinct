@@ -6,8 +6,8 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 
 | Term | Description | References |
 |------|-------------|------------|
-| Aggregation proof | SP1 proof that combines multiple range proofs into a single L1-verifiable proof (synonym: composite proof). | `programs/aggregation/src/main.rs`, `utils/client/src/types.rs` |
-| AggregationInputs | zkVM-guest input bundle: `boot_infos[]`, latest L1 checkpoint head, multi-block vkey (u32×8), prover address. | `utils/client/src/types.rs` |
+| Aggregation proof | SP1 proof that combines multiple range proofs (SP1 or TEE) into a single L1-verifiable proof; batch must be homogeneous (all-SP1 or all-TEE). | `programs/aggregation/src/main.rs`, `utils/client/src/types.rs` |
+| AggregationInputs | zkVM-guest input bundle: `boot_infos[]`, `range_proofs[]` (parallel-indexed), latest L1 checkpoint head, multi-block vkey (u32×8), prover address. | `utils/client/src/types.rs` |
 | Anchor Game | Latest finalized dispute game from `AnchorStateRegistry`; canonical head computed from it. | `fault-proof/src/proposer.rs:186-192` |
 | BatchSize | Block count per range proof execution; resolved by `effective_batch_size` (default 10). | `scripts/utils/src/lib.rs` |
 | BlobProvider | `kona-proof` trait for DA blob retrieval; per-DA impl wraps it (Ethereum uses `OracleBlobProvider`). | `utils/{ethereum,celestia,eigenda}/client/src/*` |
@@ -46,6 +46,10 @@ description: "Domain term glossary for op-succinct — unified terminology acros
 | SafeDB | L1 head timestamp-based fallback when block estimator can't see ahead; `--safe_db_fallback`. | `utils/ethereum/host/src/host.rs` |
 | Signer | Enum dispatch over `Web3Signer`, `LocalSigner`, `CloudHsmSigner` (GCP-KMS), `XLayerRemoteSigner`. | `utils/signer/src/lib.rs` |
 | SignerLock | `Arc<Mutex<Signer>>` wrapper; serializes tx submission to avoid nonce conflicts. | `utils/signer/src/lib.rs` |
+| RangeProof | Enum discriminator for per-leaf proof type in aggregation: `Sp1` (recursive ZK verification) or `Tee { signature: Vec<u8> }` (65-byte secp256k1 ECDSA signature). | `utils/client/src/types.rs` |
+| VerifiedSession | Attestation-derived TEE session identity: `signer: Address` + `pcr0_hash: B256`. Constructed once per TEE batch from the attestation document. | `programs/aggregation/src/tee/types.rs` |
+| TrustAnchors | Container for the AWS Nitro Root-G1 P-384 public key (96 bytes X‖Y); the single trust root baked into the aggregation guest. | `programs/aggregation/src/tee/types.rs` |
+| pack_range_journal | 168-byte commitment packing function: pcr0[0..32], configHash[32..64], l1OriginHash[64..96], l2BlockNumber[96..104] BE, prevOutputRoot[104..136], outputRoot[136..168]. Must match enclave signing side. | `programs/aggregation/src/tee/crypto.rs` |
 | WitnessExecutor | Async trait composing oracle + blob provider into a DA-specific derivation pipeline. | `utils/host/src/witness_generation/traits.rs`, `utils/{eth,celestia,eigenda}/host/*` |
 | WitnessGenerator | Async trait orchestrating witness collection from oracle + blob streams. | `utils/host/src/witness_generation/traits.rs` |
 | XLayerRemoteClient | HTTP signer client — POST sign, GET polling; AES-ECB + HMAC auth; routes by `OperateType`. | `utils/signer/src/xlayer_remote_client.rs` |
