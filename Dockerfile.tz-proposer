@@ -1,0 +1,72 @@
+# Dockerfile.tz-proposer — builds `tz-proposer` for TradeZone fault-proof.
+#
+# Mirrors the cargo-chef multi-stage layout in `Dockerfile` (non-tz proposer)
+# but flips on the `tz` feature so `bin/tz_proposer.rs` (which carries
+# `required-features = ["tz"]`) compiles, and only that single binary lands
+# in the runtime image. The tz range / aggregation ELFs are `include_bytes!`-d
+# into the binary via `utils/elfs` — no SP1 toolchain is needed at image-build
+# time, the ELFs are committed under `elf/`.
+#
+# Private SSH deps (`ssh://git@github.com/okx/x2.git`, the okx/sp1 mirror, …)
+# need to be reachable by the build container. This file does NOT bring in
+# any auth mechanism itself — for SSH-agent forwarding use
+# `Dockerfile.tz-proposer.ssh-agent`; otherwise arrange offline access via
+# `cargo vendor` / pre-populated `~/.cargo/git` mount / etc.
+#
+# Build:
+#   docker build -f Dockerfile.tz-proposer -t tz-proposer:latest .
+#
+# Run (mount your .env and expose metrics):
+#   docker run --rm \
+#     --env-file .env.tz-proposer \
+#     -p 9000:9000 \
+#     tz-proposer:latest
+
+# ----- Chef stage: shared toolchain + recipe extraction -----
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    clang \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cargo needs the git CLI for our private SSH deps (x2 / okx-sp1 mirrors).
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+# Pin the same toolchain the workspace requires (nightly-2025-09-15 today).
+COPY rust-toolchain.toml ./
+RUN rustup show
+
+# ----- Planner stage: extract dependency recipe -----
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ----- Builder stage: cook deps, then build tz-proposer -----
+FROM chef AS builder
+
+COPY --from=planner /app/recipe.json recipe.json
+
+# Pre-cook tz-feature deps so source edits don't blow away the dep cache.
+RUN cargo chef cook --release --features tz --bin tz-proposer --recipe-path recipe.json
+
+COPY . .
+
+RUN cargo build --release --features tz --bin tz-proposer
+
+# ----- Runtime stage: minimal image with just the binary -----
+FROM ubuntu:24.04 AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/tz-proposer /usr/local/bin/
+
+ENTRYPOINT ["tz-proposer"]
