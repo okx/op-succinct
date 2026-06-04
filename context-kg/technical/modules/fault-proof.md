@@ -26,12 +26,14 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 | `ProposerIdentity` | `range_vkey`, `agg_vkey`, `rollup_config_hash` | Hardfork compatibility identity |
 | `Anchor Game` | Latest finalized game | Read from `AnchorStateRegistry` |
 | `Canonical Head` | Proposer's best-known parent for the next game | Recomputed each `sync_state()` |
+| `TaskInfo` | `GameCreation`, `GameProving`, `GameResolution`, `BondClaim`, `HostVerification` | Task type enum for `TaskMap`; each variant maps to spawn/completion/failure handlers |
+| `last_verified_l2_block` | `Arc<AtomicU64>` on `OPSuccinctProposer` | Highest L2 block that passed native host verification; written by HostVerification task, read atomically by `should_create_game` |
 
 ## Dependencies
 - Refer to `arch/dependency.md` for full dependency details.
 
 ## Relevant Flows
-- See `core-flows/fault-proof-proposer.md` for game creation, defense (prove), resolution, and bond claiming.
+- See `core-flows/fault-proof-proposer.md` for host verification, game creation, defense (prove), resolution, and bond claiming.
 - See `core-flows/fault-proof-challenger.md` for game monitoring, challenge, resolve, and claim.
 
 ## Module-Specific Pitfalls

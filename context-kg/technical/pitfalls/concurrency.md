@@ -31,3 +31,4 @@ description: "Concurrency pitfalls — task management, nonce serialization, cha
 ## CHALLENGER_WINS Subtree Race
 
 [Pitfall] `fault-proof/src/proposer.rs:217-227`, `lib.rs:192-207`: when parent resolves `CHALLENGER_WINS`, `remove_subtree()` purges descendants but does NOT cancel their in-flight `JoinHandle`s. Trigger: child game has a pending proving task at the moment parent resolves. Correct approach: track and cancel descendant tasks on parent resolution.
+

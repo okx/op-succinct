@@ -83,6 +83,7 @@ pub enum TaskInfo {
     GameProving { game_address: Address, is_defense: bool },
     GameResolution,
     BondClaim,
+    HostVerification,
 }
 
 /// Proposer identity information for version tracking and monitoring.
@@ -270,6 +271,9 @@ where
     /// Proposer identity with version and vkey information for monitoring and compatibility
     /// checks.
     pub identity: ProposerIdentity,
+    /// Highest L2 block number that passed native host verification.
+    /// Only written by the HostVerification task; read atomically by should_create_game.
+    last_verified_l2_block: Arc<AtomicU64>,
 }
 
 impl<P, H> OPSuccinctProposer<P, H>
@@ -377,6 +381,7 @@ where
             state: Arc::new(RwLock::new(initial_state)),
             backup_semaphore: Arc::new(Semaphore::new(1)),
             identity,
+            last_verified_l2_block: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -527,6 +532,7 @@ where
         contract_params: ContractParams,
     ) -> Result<()> {
         self.state.write().await.canonical_head_l2_block = Some(anchor_l2_block);
+        self.last_verified_l2_block.store(anchor_l2_block.to::<u64>(), Ordering::Relaxed);
         self.init_bond
             .set(init_bond)
             .map_err(|_| anyhow::anyhow!("init_bond must not already be set"))?;
@@ -1526,35 +1532,12 @@ where
         mut next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
-        let mut output_root = self
+        let output_root = self
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
-        let mut extra_data =
+        let extra_data =
             (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
-        let mut maybe_existing_game = self
-            .factory
-            .games(self.config.game_type, output_root, extra_data.clone().into())
-            .call()
-            .await?
-            .proxy;
-
-        // If there already exists a game at the next L2 block number for proposal, increment the L2
-        // block number by 1
-        while maybe_existing_game != Address::ZERO {
-            next_l2_block_number_for_proposal += U256::from(1);
-            output_root = self
-                .l2_provider
-                .compute_output_root_at_block(next_l2_block_number_for_proposal)
-                .await?;
-            extra_data = (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
-            maybe_existing_game = self
-                .factory
-                .games(self.config.game_type, output_root, extra_data.clone().into())
-                .call()
-                .await?
-                .proxy;
-        }
 
         tracing::info!(
             l2_block_number = %next_l2_block_number_for_proposal,
@@ -1682,12 +1665,144 @@ where
             TaskInfo::BondClaim => {
                 ProposerGauge::BondClaimingError.increment(1.0);
             }
+            TaskInfo::HostVerification => {
+                ProposerGauge::HostVerificationErrors.increment(1.0);
+            }
         }
         Ok(())
     }
 
+    /// Spawn a background task that verifies new L2 blocks via native kona execution.
+    ///
+    /// Returns Ok(true) if a task was spawned, Ok(false) if nothing to verify.
+    async fn spawn_host_verification_task(&self) -> Result<bool> {
+        let state = self.state.read().await;
+        let Some(canonical_head_l2_block) = state.canonical_head_l2_block else {
+            tracing::debug!("Host verification: canonical head not available, skipping");
+            return Ok(false);
+        };
+        let canonical_head = canonical_head_l2_block.to::<u64>();
+        drop(state);
+
+        let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
+
+        // Snap the verification baseline to canonical_head on startup/restart.
+        // Blocks up to canonical_head are already covered by existing on-chain games and
+        // do not need re-verification. This avoids a potentially huge re-check after restart.
+        let prev = self.last_verified_l2_block.fetch_max(canonical_head, Ordering::Relaxed);
+        if prev < canonical_head {
+            tracing::info!(
+                last_verified = prev,
+                canonical_head,
+                "Snapping verification baseline to canonical head"
+            );
+        }
+
+        let start = self.last_verified_l2_block.load(Ordering::Relaxed);
+
+        let finalized =
+            self.host.get_finalized_l2_block_number(&self.fetcher, canonical_head).await?;
+        let Some(end) = finalized else {
+            tracing::warn!("Host verification: finalized L2 block not available — game creation is blocked");
+            return Ok(false);
+        };
+
+        if start >= end {
+            tracing::debug!(start, end, "Host verification: nothing to verify");
+            return Ok(false);
+        }
+
+        let host = self.host.clone();
+        let chunk_size = self.config.host_verification_chunk_size;
+        let safe_db_fallback = self.safe_db_fallback;
+        let last_verified = self.last_verified_l2_block.clone();
+
+        tracing::info!(start, end, chunk_size, "Spawning host verification task");
+
+        let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
+        let handle = tokio::spawn(async move {
+            let total_blocks = end.saturating_sub(start);
+            tracing::info!(
+                start,
+                end,
+                total_blocks,
+                chunk_size,
+                "Host verification started — verifying L2 [{start}, {end}] in chunks of {chunk_size}"
+            );
+
+            let mut chunk_start = start;
+            while chunk_start < end {
+                let chunk_end = (chunk_start + chunk_size).min(end);
+
+                tracing::info!(
+                    chunk_start,
+                    chunk_end,
+                    total_start = start,
+                    total_end = end,
+                    "Host verification: verifying chunk [{chunk_start}, {chunk_end}]"
+                );
+
+                let chunk_result: Result<()> = async {
+                    let args = host
+                        .fetch(chunk_start, chunk_end, None, safe_db_fallback)
+                        .await
+                        .context("host.fetch failed during verification")?;
+                    host.run(&args).await.context("host.run failed during verification")?;
+                    Ok(())
+                }
+                .await;
+
+                match chunk_result {
+                    Ok(()) => {
+                        last_verified.store(chunk_end, Ordering::Relaxed);
+                        ProposerGauge::LastVerifiedL2Block.set(chunk_end as f64);
+                        chunk_start = chunk_end;
+                    }
+                    Err(e) => {
+                        ProposerGauge::HostVerificationErrors.increment(1.0);
+                        tracing::error!(
+                            chunk_start,
+                            chunk_end,
+                            total_start = start,
+                            total_end = end,
+                            error = ?e,
+                            "Host verification FAILED on chunk [{chunk_start}, {chunk_end}] — \
+                             these L2 blocks may not be provable. Game creation is now blocked. \
+                             Check L2/CL node consistency."
+                        );
+                        // last_verified_l2_block stays at the last successful chunk boundary.
+                        // Next cycle will retry from that boundary.
+                        return Ok(());
+                    }
+                }
+            }
+
+            tracing::info!(
+                start,
+                end,
+                total_blocks,
+                "Host verification passed — all L2 blocks [{start}, {end}] are derivable from L1"
+            );
+            Ok(())
+        });
+
+        self.tasks.lock().await.insert(task_id, (handle, TaskInfo::HostVerification));
+        Ok(true)
+    }
+
     /// Spawn pending operations if not already running
     async fn spawn_pending_operations(&self) -> Result<()> {
+        // Host verification task (opt-in gate for game creation)
+        if self.config.enable_host_verification &&
+            !self.has_active_task_of_type(&TaskInfo::HostVerification).await
+        {
+            match self.spawn_host_verification_task().await {
+                Ok(true) => tracing::info!("Spawned host verification task"),
+                Ok(false) => tracing::debug!("No new blocks to verify"),
+                Err(e) => tracing::warn!("Failed to spawn host verification task: {:?}", e),
+            }
+        }
+
         // Check if we should create a game and spawn task if needed
         if !self.has_active_task_of_type(&TaskInfo::GameCreation { block_number: U256::ZERO }).await
         {
@@ -1757,6 +1872,7 @@ where
                     }
                     TaskInfo::GameResolution => "GameResolution",
                     TaskInfo::BondClaim => "BondClaim",
+                    TaskInfo::HostVerification => "HostVerification",
                 };
                 *task_counts.entry(task_type).or_insert(0) += 1;
             }
@@ -1979,23 +2095,68 @@ where
             (canonical_head_l2_block, parent_game_index)
         };
 
-        let next_l2_block_number_for_proposal =
+        let mut next_l2_block_number_for_proposal =
             canonical_head_l2_block + U256::from(self.config.proposal_interval_in_blocks);
 
-        let finalized_l2_head_block_number = self
-            .host
-            .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
-            .await?;
+        // Determine the provable ceiling and gate in one step. The ceiling acts as both the
+        // can_propose check and the upper bound for the existing-game skip loop below — this
+        // ensures compute_output_root_at_block is never called for a block that does not yet
+        // exist on the L2 node.
+        let provable_ceiling: U256 = if self.config.enable_host_verification {
+            let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
+            tracing::debug!(
+                last_verified,
+                next_l2_block = %next_l2_block_number_for_proposal,
+                "Checking if target block has been host-verified"
+            );
+            if U256::from(last_verified) < next_l2_block_number_for_proposal {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            }
+            U256::from(last_verified)
+        } else {
+            let finalized = self
+                .host
+                .get_finalized_l2_block_number(&self.fetcher, canonical_head_l2_block.to::<u64>())
+                .await?;
+            let Some(finalized) = finalized else {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            };
+            if U256::from(finalized) < next_l2_block_number_for_proposal {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            }
+            U256::from(finalized)
+        };
 
-        Ok((
-            finalized_l2_head_block_number
-                .map(|finalized_block| {
-                    U256::from(finalized_block) >= next_l2_block_number_for_proposal
-                })
-                .unwrap_or(false),
-            next_l2_block_number_for_proposal,
-            parent_game_index,
-        ))
+        // Advance past any blocks that already have an existing game for this (output_root,
+        // extra_data) tuple, but never exceed the provable ceiling — every candidate block
+        // is guaranteed to exist on the L2 node.
+        loop {
+            let output_root = self
+                .l2_provider
+                .compute_output_root_at_block(next_l2_block_number_for_proposal)
+                .await?;
+            let extra_data =
+                (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+            let existing = self
+                .factory
+                .games(self.config.game_type, output_root, extra_data.into())
+                .call()
+                .await?
+                .proxy;
+            if existing == Address::ZERO {
+                break;
+            }
+            tracing::debug!(
+                l2_block_number = %next_l2_block_number_for_proposal,
+                "Game already exists at proposal target, trying next block"
+            );
+            next_l2_block_number_for_proposal += U256::from(1);
+            if next_l2_block_number_for_proposal > provable_ceiling {
+                return Ok((false, next_l2_block_number_for_proposal, parent_game_index));
+            }
+        }
+
+        Ok((true, next_l2_block_number_for_proposal, parent_game_index))
     }
 
     /// Backup proposer state to disk in background. Skips if backup already in progress.
