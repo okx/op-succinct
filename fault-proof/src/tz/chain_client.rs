@@ -35,6 +35,10 @@ fn snapshot_poll_interval() -> Duration {
     Duration::from_secs(secs)
 }
 
+fn bytes_to_mb(bytes: usize) -> f64 {
+    bytes as f64 / 1024.0 / 1024.0
+}
+
 impl TzChainClient {
     pub fn new(endpoints: Vec<String>) -> Self {
         Self {
@@ -252,13 +256,24 @@ impl TzChainClient {
 
     async fn download_snapshot(&self, endpoint: &str, height: u64) -> Result<Vec<u8>> {
         let url = format!("{endpoint}/chain/dex_state_snapshot/download?height={height}");
+        let started_at = Instant::now();
         let resp = self.client.get(&url).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("HTTP {status} from {url}: {body}");
         }
-        Ok(resp.bytes().await?.to_vec())
+        let bytes = resp.bytes().await?.to_vec();
+        let elapsed = started_at.elapsed();
+        tracing::info!(
+            endpoint = %endpoint,
+            height,
+            elapsed_ms = elapsed.as_millis() as u64,
+            bytes = bytes.len(),
+            size_mb = bytes_to_mb(bytes.len()),
+            "tz: snapshot download complete"
+        );
+        Ok(bytes)
     }
 
     /// `GET /chain/blocks?start=N&end=M` — returns msgpack-encoded Vec<Block> bytes.
@@ -266,6 +281,7 @@ impl TzChainClient {
         let mut last_err = anyhow!("no endpoints configured");
         for endpoint in &self.endpoints {
             let url = format!("{}/chain/blocks?start={}&end={}", endpoint, start, end);
+            let started_at = Instant::now();
             let resp = match self.client.get(&url).send().await {
                 Ok(r) => r,
                 Err(e) => { last_err = e.into(); continue; }
@@ -274,7 +290,19 @@ impl TzChainClient {
                 last_err = anyhow!("HTTP {} from {}", resp.status(), url);
                 continue;
             }
-            return Ok(resp.bytes().await?.to_vec());
+            let bytes = resp.bytes().await?.to_vec();
+            let elapsed = started_at.elapsed();
+            tracing::info!(
+                endpoint = %endpoint,
+                start,
+                end,
+                block_count = end.saturating_sub(start).saturating_add(1),
+                elapsed_ms = elapsed.as_millis() as u64,
+                bytes = bytes.len(),
+                size_mb = bytes_to_mb(bytes.len()),
+                "tz: blocks range download complete"
+            );
+            return Ok(bytes);
         }
         Err(last_err)
     }
