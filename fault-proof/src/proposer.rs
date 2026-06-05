@@ -1208,7 +1208,17 @@ where
         let mut proof_bytes = vec![0x01u8];
         proof_bytes.extend_from_slice(&agg_proof.bytes());
 
-        let transaction_request = game.prove(proof_bytes.into()).into_transaction_request();
+        let transaction_request = game.prove(proof_bytes.clone().into()).into_transaction_request();
+        tracing::info!(
+            game_address = ?game_address,
+            proof_type = "ZK",
+            proof_bytes_len = proof_bytes.len(),
+            calldata = %transaction_request.input.input()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            "prove calldata"
+        );
+
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
@@ -1315,7 +1325,17 @@ where
         let mut proof_bytes = vec![0x00u8];
         proof_bytes.extend_from_slice(&agg_proof.bytes());
 
-        let transaction_request = game.prove(proof_bytes.into()).into_transaction_request();
+        let transaction_request = game.prove(proof_bytes.clone().into()).into_transaction_request();
+        tracing::info!(
+            game_address = ?game_address,
+            proof_type = "TEE",
+            proof_bytes_len = proof_bytes.len(),
+            calldata = %transaction_request.input.input()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            "prove calldata"
+        );
+
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
