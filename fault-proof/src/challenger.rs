@@ -15,8 +15,8 @@ use crate::{
     config::ChallengerConfig,
     contract::{
         AnchorStateRegistry::AnchorStateRegistryInstance,
-        DisputeGameFactory::DisputeGameFactoryInstance, GameStatus, OPSuccinctFaultDisputeGame,
-        ProposalStatus,
+        DisputeGameFactory::DisputeGameFactoryInstance, GameStatus, ProofType, ProposalStatus,
+        XLayerOPSuccinctFaultDisputeGame,
     },
     is_parent_challenger_wins, is_parent_resolved,
     prometheus::ChallengerGauge,
@@ -236,7 +236,7 @@ where
 
             for game in games {
                 let contract =
-                    OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
+                    XLayerOPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
                 let status = contract.status().call().await?;
                 let claim_data = contract.claimData().call().await?;
                 let proposal_status = claim_data.status;
@@ -342,7 +342,8 @@ where
     async fn fetch_game(&self, index: U256) -> Result<()> {
         let game = self.factory.gameAtIndex(index).call().await?;
         let game_address = game.proxy;
-        let contract = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
 
         let game_type = contract.gameType().call().await?;
         if game_type != self.config.game_type {
@@ -465,9 +466,10 @@ where
                         .games
                         .values()
                         .filter(|game| {
-                            // Only challenge games that are unchallenged and not already flagged for challenging
-                            !game.should_attempt_to_challenge
-                                && game.proposal_status == ProposalStatus::Unchallenged
+                            // Only challenge games that are unchallenged and not already flagged
+                            // for challenging
+                            !game.should_attempt_to_challenge &&
+                                game.proposal_status == ProposalStatus::Unchallenged
                         })
                         .min_by_key(|game| game.index)
                         .cloned()
@@ -507,13 +509,16 @@ where
     }
 
     pub async fn submit_challenge_transaction(&self, game: &Game) -> Result<()> {
-        let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let challenger_bond = *self
             .challenger_bond
             .get()
             .context("challenger_bond must be set via startup_validations")?;
+        let proof_type =
+            if self.config.challenge_proof_type == 0 { ProofType::TEE } else { ProofType::ZK };
         let transaction_request =
-            contract.challenge().value(challenger_bond).into_transaction_request();
+            contract.challenge(proof_type).value(challenger_bond).into_transaction_request();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
@@ -579,7 +584,8 @@ where
     }
 
     pub async fn submit_resolution_transaction(&self, game: &Game) -> Result<()> {
-        let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request = contract.resolve().into_transaction_request();
         let receipt = self
             .signer
@@ -647,7 +653,8 @@ where
 
     #[tracing::instrument(name = "[[Claiming Proposer Bonds]]", skip(self, game))]
     async fn submit_bond_claim_transaction(&self, game: &Game) -> Result<()> {
-        let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request =
             contract.claimCredit(self.signer.address()).gas(200_000).into_transaction_request();
         let receipt = self

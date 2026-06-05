@@ -44,4 +44,4 @@ description: "Host-side utilities — RPC fetching, block-range planning, witnes
 
 [Pitfall] `PreimageStore` lock contention — multi-threaded oracle access under `Arc<Mutex<…>>` can stall. Release lock before heavy operations; never nest locks.
 
-[Pitfall] `get_agg_proof_stdin` fills `range_proofs` with `vec![RangeProof::Sp1; boot_infos.len()]` for SP1-only batches. When adding TEE batch support (proposer-side), the caller must construct the correct `RangeProof::Tee { signature }` variants and ensure parallel-index alignment with `boot_infos`. The stdin also conditionally carries attestation bytes after `AggregationInputs` when the batch has TEE leaves.
+[Pitfall] `get_agg_proof_stdin` fills `range_proofs` with `vec![RangeProof::Sp1; boot_infos.len()]` for SP1-only batches. For TEE batches, use `get_agg_proof_stdin_tee()` which constructs `RangeProof::Tee { signature }` variants with parallel-index alignment to `boot_infos`, writes `AggregationInputs` (with `multi_block_vkey: [0u32; 8]`), CBOR headers, and attestation bytes to stdin. The two functions must not be mixed — SP1 batches use `get_agg_proof_stdin`, TEE batches use `get_agg_proof_stdin_tee`.

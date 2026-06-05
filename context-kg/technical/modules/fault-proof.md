@@ -5,10 +5,10 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 # fault-proof Module
 
 ## Responsibilities
-- Two daemons: `proposer` (creates `DisputeGame`s and defends them) and `challenger` (monitors all games and challenges invalid claims).
+- Two daemons: `proposer` (creates `DisputeGame`s and defends them with ZK or TEE proofs) and `challenger` (monitors all games and challenges invalid claims with typed `challenge(ProofType)`).
 - Maintain a cached game DAG anchored at `AnchorStateRegistry`'s anchor game.
-- Generate SP1 range + aggregation proofs to `prove()` games when challenged or for fast finality.
-- Submit `challenge()` / `resolve()` / `resolveClaim()` / `claimCredit()` to `OPSuccinctFaultDisputeGame`.
+- Generate SP1 range + aggregation proofs (ZK path) or collect TEE host range signatures + aggregation proofs (TEE path) to `prove()` games.
+- Submit `challenge(ProofType)` / `resolve()` / `resolveClaim()` / `claimCredit()` to `XLayerOPSuccinctFaultDisputeGame`.
 - Periodic backup of `ProposerState` to disk for restart recovery.
 
 ## NOT Responsible For
@@ -28,6 +28,8 @@ description: "Fault-dispute proposer & challenger services — propose, prove, c
 | `Canonical Head` | Proposer's best-known parent for the next game | Recomputed each `sync_state()` |
 | `TaskInfo` | `GameCreation`, `GameProving`, `GameResolution`, `BondClaim`, `HostVerification` | Task type enum for `TaskMap`; each variant maps to spawn/completion/failure handlers |
 | `last_verified_l2_block` | `Arc<AtomicU64>` on `OPSuccinctProposer` | Highest L2 block that passed native host verification; written by HostVerification task, read atomically by `should_create_game` |
+| `ProofType` | sol! enum: TEE=0, ZK=1 | Determines which proof generation path (ZK or TEE) is used for proving and challenging |
+| `TeeHostClient` | `base_url`, `http`, `poll_interval`, `task_timeout` | HTTP client for TEE host service; stored as `Option<Arc<TeeHostClient>>` on proposer; constructed when `TEE_HOST_URL` is configured |
 
 ## Sub-Crates
 

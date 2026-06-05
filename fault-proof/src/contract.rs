@@ -128,6 +128,92 @@ sol! {
         function credit(address _recipient) external view returns (uint256 credit_);
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum ProofType {
+        TEE, // 0
+        ZK   // 1
+    }
+
+    #[sol(rpc)]
+    contract XLayerOPSuccinctFaultDisputeGame {
+        /// @notice Getter for the game type.
+        function gameType() public pure returns (GameType gameType_);
+
+        /// @notice Getter for the creator of the dispute game.
+        function gameCreator() public pure returns (address creator_);
+
+        /// @notice The L2 sequence number (block number) for which this game is proposing an output root.
+        function l2SequenceNumber() public pure returns (uint256 l2SequenceNumber_);
+
+        /// @notice The L2 block number for which this game is proposing an output root.
+        /// @dev Alias for l2SequenceNumber() for backward compatibility.
+        function l2BlockNumber() public pure returns (uint256 l2BlockNumber_);
+
+        /// @notice Only the starting block number of the game.
+        function startingBlockNumber() external view returns (uint256 startingBlockNumber_);
+
+        /// @notice Getter for the root claim.
+        function rootClaim() public pure returns (Claim rootClaim_);
+
+        /// @notice Getter for the parent hash of the L1 block when the dispute game was created.
+        function l1Head() public pure returns (Hash l1Head_);
+
+        /// @notice Getter for the status of the game.
+        function status() public view returns (GameStatus status_);
+
+        /// @notice Getter for the claim data.
+        function claimData() public view returns (ClaimData memory claimData_);
+
+        /// @notice Getter for the was respected game type when created.
+        function wasRespectedGameTypeWhenCreated() external view returns (bool wasRespectedGameTypeWhenCreated_);
+
+        /// @notice Challenges the game with a specific proof type.
+        function challenge(ProofType proofType) external payable returns (ProposalStatus);
+
+        /// @notice Returns the proof type that was challenged.
+        function challengedProofType() external view returns (ProofType);
+
+        /// @notice Proves the game.
+        function prove(bytes calldata proofBytes) external returns (ProposalStatus);
+
+        /// @notice Resolves the game after the clock expires.
+        ///         `DEFENDER_WINS` when no one has challenged the proposer's claim and `MAX_CHALLENGE_DURATION` has passed
+        ///         or there is a challenge but the prover has provided a valid proof within the `MAX_PROVE_DURATION`.
+        ///         `CHALLENGER_WINS` when the proposer's claim has been challenged, but the proposer has not proven
+        ///         its claim within the `MAX_PROVE_DURATION`.
+        function resolve() external returns (GameStatus status_);
+
+        /// @notice Determines if the game is finished.
+        function gameOver() external view returns (bool gameOver_);
+
+        /// @notice Returns the max challenge duration.
+        function maxChallengeDuration() external view returns (uint256 maxChallengeDuration_);
+
+        /// @notice Returns the max prove duration.
+        function maxProveDuration() external view returns (uint64 maxProveDuration_);
+
+        /// @notice Returns the anchor state registry contract.
+        function anchorStateRegistry() external view returns (IAnchorStateRegistry registry_);
+
+        /// @notice Returns the challenger bond amount.
+        function challengerBond() external view returns (uint256 challengerBond_);
+
+        /// @notice Returns the aggregation verification key.
+        function aggregationVkey() external view returns (bytes32 aggregationVkey_);
+
+        /// @notice Returns the range verification key commitment.
+        function rangeVkeyCommitment() external view returns (bytes32 rangeVkeyCommitment_);
+
+        /// @notice Returns the rollup config hash.
+        function rollupConfigHash() external view returns (bytes32 rollupConfigHash_);
+
+        /// @notice Claim the credit belonging to the recipient address.
+        function claimCredit(address _recipient) external;
+
+        /// @notice Returns the credit balance of a given recipient.
+        function credit(address _recipient) external view returns (uint256 credit_);
+    }
+
     #[allow(missing_docs)]
     #[sol(rpc)]
     interface IAnchorStateRegistry {
