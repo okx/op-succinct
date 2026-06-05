@@ -27,6 +27,7 @@ op-succinct-ethereum-host-utils.workspace = true
 op-succinct-host-utils.workspace = true
 op-succinct-proof-utils.workspace = true
 op-succinct-signer-utils.workspace = true
+xlayer-tee-types = { path = "tee/types" }
 
 # sp1
 sp1-sdk.workspace = true
@@ -65,6 +66,9 @@ tokio.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
 hex.workspace = true
+base64.workspace = true
+reqwest = { workspace = true }
+rkyv = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros.workspace = true
 tikv-jemallocator = "0.6.0"

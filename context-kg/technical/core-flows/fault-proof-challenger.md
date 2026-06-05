@@ -1,6 +1,6 @@
 ---
 name: "fault-proof-challenger"
-description: "Fault-proof challenger flow — monitor games, challenge invalid claims, resolve, claim bonds"
+description: "Fault-proof challenger flow — monitor games, typed challenge (ProofType), resolve, claim bonds"
 ---
 # Fault-Proof Challenger Flow
 
@@ -8,7 +8,7 @@ description: "Fault-proof challenger flow — monitor games, challenge invalid c
 `fault-proof/bin/challenger.rs::main()` → `OPSuccinctChallenger::new()` → `challenger.run()`.
 
 ## Primary Entities
-`OPSuccinctChallenger`, `Game` (cached), `GameStatus`, `ProposalStatus`, `DisputeGameFactoryInstance`, `OPSuccinctFaultDisputeGame`.
+`OPSuccinctChallenger`, `Game` (cached), `GameStatus`, `ProposalStatus`, `ProofType` (sol! enum: TEE=0, ZK=1), `DisputeGameFactoryInstance`, `XLayerOPSuccinctFaultDisputeGame`.
 
 ## State Transitions
 
@@ -24,7 +24,7 @@ Challenger consumes the same state machine as proposer (see `fault-proof-propose
 | Step | Action | Module |
 |------|--------|--------|
 | 1 | `sync_state()` — load new games from factory; sync status of every cached game; mark for challenge/resolve/claim based on output-root validity and parent state | `challenger.rs` |
-| 2 | `handle_game_challenging()` — for every game flagged should-challenge, submit `challenge()` with bond | `challenger.rs` |
+| 2 | `handle_game_challenging()` — for every game flagged should-challenge, submit `challenge(config.challenge_proof_type)` with bond via `XLayerOPSuccinctFaultDisputeGame` | `challenger.rs` |
 | 3 | `handle_game_resolution()` — for every flagged should-resolve, submit `resolve()` | `challenger.rs` |
 | 4 | `handle_bond_claiming()` — finalized + credit > 0 games; submit `claimCredit(signer)` | `challenger.rs` |
 | 5 | Sleep `fetch_interval`; loop | `challenger.rs` |
