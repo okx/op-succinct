@@ -1384,6 +1384,16 @@ where
             .value(init_bond)
             .into_transaction_request();
 
+        tracing::info!(
+            game_type = self.config.game_type,
+            output_root = ?output_root,
+            init_bond = %init_bond,
+            calldata = %transaction_request.input.input()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            "create_game calldata"
+        );
+
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
