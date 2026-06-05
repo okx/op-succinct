@@ -8,6 +8,10 @@ use super::*;
 use op_succinct_client_utils::types::AggregationInputs;
 use sp1_sdk::{SP1Proof, SP1VerifyingKey};
 
+fn bytes_to_mb(bytes: usize) -> f64 {
+    bytes as f64 / 1024.0 / 1024.0
+}
+
 impl<P, H> OPSuccinctProposer<P, H>
 where
     P: Provider + Clone + Send + Sync + 'static,
@@ -294,7 +298,18 @@ where
             end_block,
             "tz: fetching witness (snapshot + blocks) from tz chain"
         );
+        let witness_fetch_started_at = std::time::Instant::now();
+        let snapshot_fetch_started_at = std::time::Instant::now();
         let snapshot = self.l2_provider.fetch_dex_state_snapshot(start_block).await?;
+        let snapshot_fetch_elapsed = snapshot_fetch_started_at.elapsed();
+        let snapshot_bytes = snapshot.len();
+        tracing::info!(
+            start_block,
+            elapsed_ms = snapshot_fetch_elapsed.as_millis() as u64,
+            bytes = snapshot_bytes,
+            size_mb = bytes_to_mb(snapshot_bytes),
+            "tz: snapshot fetch complete"
+        );
 
         let tz_blocks_per_fetch: u64 = std::env::var("TZ_BLOCKS_PER_FETCH")
             .ok()
@@ -315,12 +330,31 @@ where
         range_stdin.write(&chunk_count);
 
         let mut cur = first_block;
+        let mut blocks_bytes = 0usize;
         for _ in 0..chunk_count {
             let chunk_end = cur.saturating_add(tz_blocks_per_fetch - 1).min(end_block);
             let chunk = self.l2_provider.fetch_blocks_range(cur, chunk_end).await?;
+            blocks_bytes += chunk.len();
             range_stdin.write_vec(chunk);
             cur = chunk_end.saturating_add(1);
         }
+        let witness_fetch_elapsed = witness_fetch_started_at.elapsed();
+        let witness_bytes = snapshot_bytes + blocks_bytes;
+        tracing::info!(
+            start_block,
+            end_block,
+            total_blocks,
+            chunk_count,
+            tz_blocks_per_fetch,
+            snapshot_bytes,
+            snapshot_size_mb = bytes_to_mb(snapshot_bytes),
+            blocks_bytes,
+            blocks_size_mb = bytes_to_mb(blocks_bytes),
+            witness_bytes,
+            witness_size_mb = bytes_to_mb(witness_bytes),
+            elapsed_ms = witness_fetch_elapsed.as_millis() as u64,
+            "tz: witness fetch complete"
+        );
 
         if std::env::var("TZ_LOCAL_EXECUTE").ok().as_deref() == Some("1") {
             tracing::info!("tz: TZ_LOCAL_EXECUTE=1 — running range guest on local CPU first");
