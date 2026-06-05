@@ -1,6 +1,6 @@
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
     types::{AggregationInputs, RangeProof},
@@ -68,7 +68,8 @@ pub fn get_agg_proof_stdin_tee(
         prover_address,
     });
 
-    let headers_bytes = serde_cbor::to_vec(&headers).unwrap();
+    let headers_bytes =
+        serde_cbor::to_vec(&headers).context("failed to CBOR-encode L1 headers for TEE agg stdin")?;
     stdin.write_vec(headers_bytes);
 
     stdin.write_vec(attestation_bytes);

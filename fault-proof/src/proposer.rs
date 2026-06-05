@@ -1254,7 +1254,7 @@ where
         let num_ranges = ranges.len();
         tracing::info!("TEE proving over {num_ranges} ranges");
 
-        let tasks = ranges.into_iter().map(|(start, end)| {
+        let tasks = ranges.into_iter().enumerate().map(|(idx, (start, end))| {
             let this = self.clone();
             let tee_client = tee_client.clone();
             async move {
@@ -1265,16 +1265,14 @@ where
                     .fetch(start, end, Some(l1_head_hash.into()), this.config.safe_db_fallback)
                     .await
                     .context("Failed to get host CLI args")?;
-                let witness_data =
-                    this.host.run(&host_args).await.context("Failed to generate witness")?;
-
-                let (preimage_store, blob_data) = witness_data.into_parts();
-                let concrete_witness = op_succinct_client_utils::witness::DefaultWitnessData {
-                    preimage_store,
-                    blob_data,
+                let witness_bytes = {
+                    let witness_data = this
+                        .host
+                        .run(&host_args)
+                        .await
+                        .context("Failed to generate witness")?;
+                    witness_data.to_rkyv_bytes()?
                 };
-                let witness_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&concrete_witness)
-                    .map_err(|e| anyhow::anyhow!("rkyv serialization failed: {e}"))?;
 
                 let task_id = tee_client.submit_task(&witness_bytes, start, end).await?;
                 let proof_bytes = tee_client.wait_for_proof(&task_id).await?;
@@ -1282,15 +1280,17 @@ where
                 let (journal, signature) = unpack_proof_bytes(&proof_bytes)?;
                 let boot_info = journal_to_boot_info(&journal);
 
-                Ok::<_, anyhow::Error>((boot_info, signature))
+                Ok::<_, anyhow::Error>((idx, boot_info, signature))
             }
         });
 
         let max_concurrent = self.config.max_concurrent_range_proofs.get().min(num_ranges);
-        let results: Vec<(BootInfoStruct, Vec<u8>)> =
+        let mut results: Vec<(usize, BootInfoStruct, Vec<u8>)> =
             stream::iter(tasks).buffer_unordered(max_concurrent).try_collect().await?;
+        results.sort_by_key(|(idx, _, _)| *idx);
 
-        let (boot_infos, tee_signatures): (Vec<_>, Vec<_>) = results.into_iter().unzip();
+        let (boot_infos, tee_signatures): (Vec<_>, Vec<_>) =
+            results.into_iter().map(|(_, b, s)| (b, s)).unzip();
 
         let attestation_bytes = tee_client.get_attestation().await?;
 

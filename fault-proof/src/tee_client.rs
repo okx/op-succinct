@@ -36,8 +36,8 @@ impl TeeHostClient {
             .http
             .post(url)
             .header("content-type", "application/octet-stream")
-            .header("x-start-block", start_blk.to_string())
-            .header("x-end-block", end_blk.to_string())
+            .header("x-start-blk-height", start_blk.to_string())
+            .header("x-end-blk-height", end_blk.to_string())
             .body(witness.to_vec())
             .send()
             .await
