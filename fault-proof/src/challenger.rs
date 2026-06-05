@@ -515,10 +515,10 @@ where
             .challenger_bond
             .get()
             .context("challenger_bond must be set via startup_validations")?;
-        let proof_type =
-            if self.config.challenge_proof_type == 0 { ProofType::TEE } else { ProofType::ZK };
-        let transaction_request =
-            contract.challenge(proof_type).value(challenger_bond).into_transaction_request();
+        let transaction_request = contract
+            .challenge(self.config.challenge_proof_type)
+            .value(challenger_bond)
+            .into_transaction_request();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(

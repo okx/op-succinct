@@ -7,7 +7,7 @@ use anyhow::Result;
 use fault_proof::{
     challenger::OPSuccinctChallenger,
     config::{ChallengerConfig, ProofProviderConfig, RangeSplitCount},
-    contract::{AnchorStateRegistry, DisputeGameFactory},
+    contract::{AnchorStateRegistry, DisputeGameFactory, ProofType},
     proposer::OPSuccinctProposer,
 };
 use op_succinct_host_utils::{
@@ -55,7 +55,7 @@ pub async fn new_proposer(
         tee_host_url: None,
         tee_poll_interval_ms: 5000,
         tee_task_timeout: 14400,
-        default_proof_type: 1,
+        default_proof_type: ProofType::ZK,
         proof_provider: ProofProviderConfig {
             timeout: 14400, // 4 hours
             network_calls_timeout: 15,
@@ -127,7 +127,7 @@ pub async fn new_challenger(
         metrics_port: 9001,
         malicious_challenge_percentage: malicious_percentage.unwrap_or(0.0),
         tx_confirmation_timeout: 60,
-        challenge_proof_type: 1,
+        challenge_proof_type: ProofType::ZK,
     };
 
     let l1_provider = ProviderBuilder::default().connect_http(rpc_config.l1_rpc.clone());

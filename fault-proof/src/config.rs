@@ -8,6 +8,7 @@ use std::{
 use alloy_primitives::Address;
 use alloy_transport_http::reqwest::Url;
 use anyhow::{bail, Result};
+use crate::contract::ProofType;
 use op_succinct_host_utils::network::parse_fulfillment_strategy;
 use serde::{Deserialize, Serialize};
 use sp1_sdk::{network::FulfillmentStrategy, SP1ProofMode};
@@ -115,7 +116,7 @@ pub struct ProposerConfig {
     pub tee_task_timeout: u64,
 
     /// Default proof type for unchallenged (fast-finality) games. Default: ZK.
-    pub default_proof_type: u8,
+    pub default_proof_type: ProofType,
 }
 
 /// Helper function to parse a comma-separated list of addresses
@@ -202,8 +203,8 @@ impl ProposerConfig {
                 .to_lowercase()
                 .as_str()
             {
-                "tee" => 0,
-                _ => 1,
+                "tee" => ProofType::TEE,
+                _ => ProofType::ZK,
             },
         })
     }
@@ -247,7 +248,7 @@ impl ProposerConfig {
             tee_host_url = ?self.tee_host_url,
             tee_poll_interval_ms = self.tee_poll_interval_ms,
             tee_task_timeout = self.tee_task_timeout,
-            default_proof_type = self.default_proof_type,
+            default_proof_type = ?self.default_proof_type,
             "Proposer configuration loaded"
         );
     }
@@ -379,8 +380,8 @@ pub struct ChallengerConfig {
     /// configured confirmation depth needs more headroom.
     pub tx_confirmation_timeout: u64,
 
-    /// Proof type to request when challenging. Default: ZK (1).
-    pub challenge_proof_type: u8,
+    /// Proof type to request when challenging. Default: ZK.
+    pub challenge_proof_type: ProofType,
 }
 
 impl ChallengerConfig {
@@ -408,8 +409,8 @@ impl ChallengerConfig {
                 .to_lowercase()
                 .as_str()
             {
-                "tee" => 0,
-                _ => 1,
+                "tee" => ProofType::TEE,
+                _ => ProofType::ZK,
             },
         })
     }
@@ -426,7 +427,7 @@ impl ChallengerConfig {
             metrics_port = self.metrics_port,
             malicious_challenge_percentage = self.malicious_challenge_percentage,
             tx_confirmation_timeout = self.tx_confirmation_timeout,
-            challenge_proof_type = self.challenge_proof_type,
+            challenge_proof_type = ?self.challenge_proof_type,
             "Challenger configuration loaded"
         );
     }
@@ -755,7 +756,7 @@ mod tee_config_tests {
         assert!(config.tee_host_url.is_none());
         assert_eq!(config.tee_poll_interval_ms, 5000);
         assert_eq!(config.tee_task_timeout, 14400);
-        assert_eq!(config.default_proof_type, 1); // ZK
+        assert_eq!(config.default_proof_type, ProofType::ZK);
         clear_tee_env();
     }
 
@@ -772,7 +773,7 @@ mod tee_config_tests {
         assert_eq!(config.tee_host_url.as_ref().unwrap().as_str(), "http://localhost:8080/");
         assert_eq!(config.tee_poll_interval_ms, 3000);
         assert_eq!(config.tee_task_timeout, 7200);
-        assert_eq!(config.default_proof_type, 0); // TEE
+        assert_eq!(config.default_proof_type, ProofType::TEE);
         clear_tee_env();
     }
 
@@ -783,10 +784,10 @@ mod tee_config_tests {
         clear_tee_env();
         env::set_var("DEFAULT_PROOF_TYPE", "TEE");
         let config = ProposerConfig::from_env().unwrap();
-        assert_eq!(config.default_proof_type, 0);
+        assert_eq!(config.default_proof_type, ProofType::TEE);
         env::set_var("DEFAULT_PROOF_TYPE", "Tee");
         let config = ProposerConfig::from_env().unwrap();
-        assert_eq!(config.default_proof_type, 0);
+        assert_eq!(config.default_proof_type, ProofType::TEE);
         clear_tee_env();
     }
 
@@ -796,7 +797,7 @@ mod tee_config_tests {
         set_required_challenger_env();
         clear_tee_env();
         let config = ChallengerConfig::from_env().unwrap();
-        assert_eq!(config.challenge_proof_type, 1); // ZK
+        assert_eq!(config.challenge_proof_type, ProofType::ZK);
         clear_tee_env();
     }
 
@@ -807,7 +808,7 @@ mod tee_config_tests {
         clear_tee_env();
         env::set_var("CHALLENGE_PROOF_TYPE", "tee");
         let config = ChallengerConfig::from_env().unwrap();
-        assert_eq!(config.challenge_proof_type, 0); // TEE
+        assert_eq!(config.challenge_proof_type, ProofType::TEE);
         clear_tee_env();
     }
 }

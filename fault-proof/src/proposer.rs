@@ -535,7 +535,7 @@ where
         let contract_params = ContractParams { max_challenge_duration, max_prove_duration };
 
         // TEE configuration validation
-        if self.config.default_proof_type == 0 && self.config.tee_host_url.is_none() {
+        if self.config.default_proof_type == ProofType::TEE && self.config.tee_host_url.is_none() {
             bail!(
                 "DEFAULT_PROOF_TYPE=tee but TEE_HOST_URL is not set. \
                  Set TEE_HOST_URL to the TEE host service endpoint, \
@@ -1089,8 +1089,7 @@ where
 
         let claim_data = game.claimData().call().await?;
         let proof_type = if claim_data.counteredBy == Address::ZERO {
-            let pt =
-                if self.config.default_proof_type == 0 { ProofType::TEE } else { ProofType::ZK };
+            let pt = self.config.default_proof_type;
             tracing::info!(?pt, "Unchallenged game, using default proof type");
             pt
         } else {
@@ -1102,7 +1101,7 @@ where
         match proof_type {
             ProofType::ZK => self.prove_game_zk(game_address, start_block, end_block).await,
             ProofType::TEE => self.prove_game_tee(game_address, start_block, end_block).await,
-            _ => bail!("Unknown proof type variant"),
+            _ => bail!("Unknown proof type variant: {:?}", proof_type),
         }
     }
 
