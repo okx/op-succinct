@@ -2,6 +2,7 @@ pub mod attestation;
 pub mod error;
 pub mod gc;
 pub mod keys;
+pub mod mem;
 pub mod runner;
 pub mod server;
 pub mod signing;

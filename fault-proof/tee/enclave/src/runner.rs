@@ -10,6 +10,7 @@ use xlayer_tee_types::{RangeJournalWire, RangeTaskResponse, TaskPhase, TaskStatu
 
 use crate::{
     error::{Error, CLAIM_MISMATCH_SENTINEL},
+    mem::{PeakTracker, vm_rss_kb},
     signing::sign_range_wire,
     task_manager::TaskEntry,
     witness::check_bounds,
@@ -64,6 +65,40 @@ pub async fn run_pipeline(
 }
 
 async fn execute_phases(
+    entry: &TaskEntry,
+    witness_bytes: Bytes,
+    pcr0: [u8; 32],
+) -> Result<RangeTaskResponse, Error> {
+    let body_bytes = witness_bytes.len();
+    let rss_before_kb = vm_rss_kb();
+    let tracker = PeakTracker::start(100);
+
+    let result = execute_phases_inner(entry, witness_bytes, pcr0).await;
+
+    let peak_kb = tracker.finish();
+    let rss_after_kb = vm_rss_kb();
+    let delta_kb = peak_kb.saturating_sub(rss_before_kb);
+    let multiplier = if body_bytes > 0 {
+        (delta_kb as f64 * 1024.0) / body_bytes as f64
+    } else {
+        0.0
+    };
+    info!(
+        task_id = %entry.task_id,
+        body_mib = body_bytes / 1024 / 1024,
+        rss_before_mib = rss_before_kb / 1024,
+        rss_after_mib = rss_after_kb / 1024,
+        peak_rss_mib = peak_kb / 1024,
+        delta_mib = delta_kb / 1024,
+        multiplier = format!("{multiplier:.2}"),
+        ok = result.is_ok(),
+        "task memory profile",
+    );
+
+    result
+}
+
+async fn execute_phases_inner(
     entry: &TaskEntry,
     witness_bytes: Bytes,
     pcr0: [u8; 32],
