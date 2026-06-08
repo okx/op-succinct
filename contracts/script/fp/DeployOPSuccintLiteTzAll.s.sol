@@ -89,7 +89,8 @@ contract DeployOPSuccinctLiteTzAll is Script {
     ) internal returns (OPSuccinctFaultDisputeGame) {
         SP1MockVerifier sp1Verifier = new SP1MockVerifier();
         bytes32 rollupConfigHash = vm.envOr("ROLLUP_CONFIG_HASH", bytes32(0));
-        bytes32 aggregationVkey = vm.envOr("AGGREGATION_VKEY", bytes32(0));
+        // in ci, sp1 proof is mocked. So we donot concern the AGGREGATION_VKEY correctness. So leave it zero. 
+        bytes32 aggregationVkey = vm.envOr("AGGREGATION_VKEY", bytes32(0)); 
         bytes32 rangeVkeyCommitment = vm.envOr("RANGE_VKEY_COMMITMENT", bytes32(0));
         return new OPSuccinctFaultDisputeGame(
             Duration.wrap(3600),

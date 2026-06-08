@@ -80,6 +80,14 @@ cd $TZ_PROJ_PATH
 cd $SCRIPT_DIR
 
 cd ..
+
+# when building tz-proposer, cargo will dump some artifacts to $CARGO_HOME and $TMPDIR. 
+# Set $CARGO_HOME and $TMPDIR to ones inside DACS to address permission issue. 
+if [[ -n "$DACS" ]]; then 
+    export CARGO_HOME=$DACS/.cargo
+    export TMPDIR=$DACS/Documents/tmp
+fi
+
 echo "[*] Building tz-proposer..."
 cargo build --bin tz-proposer --features tz
 echo "[*] Spin up Proposer..."
