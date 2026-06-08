@@ -197,7 +197,8 @@ impl TzChainClient {
             }
 
             let url = format!("{endpoint}/chain/dex_state_snapshot?height={height}");
-            let resp = self.client.get(&url).send().await?;
+            let resp =
+                self.send_snapshot_request(&url, deadline, "querying snapshot endpoint").await?;
             let status = resp.status();
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
@@ -218,14 +219,16 @@ impl TzChainClient {
                     base_snapshot_height = data.base_snapshot_height,
                     "tz: snapshot ready, downloading"
                 );
-                return self.download_snapshot(endpoint, height).await;
+                return self.download_snapshot(endpoint, height, deadline).await;
             }
 
             // state_available=false — server should have spawned (or reused) a replay task.
             // Fetch detailed state + progress via the poll_path endpoint.
             if let Some(poll_path) = data.poll_path.as_deref() {
                 let task_url = format!("{endpoint}{poll_path}");
-                let task_resp = self.client.get(&task_url).send().await?;
+                let task_resp = self
+                    .send_snapshot_request(&task_url, deadline, "polling snapshot task")
+                    .await?;
                 let task_status_code = task_resp.status();
                 if !task_status_code.is_success() {
                     let body = task_resp.text().await.unwrap_or_default();
@@ -295,10 +298,15 @@ impl TzChainClient {
         }
     }
 
-    async fn download_snapshot(&self, endpoint: &str, height: u64) -> Result<Vec<u8>> {
+    async fn download_snapshot(
+        &self,
+        endpoint: &str,
+        height: u64,
+        deadline: Instant,
+    ) -> Result<Vec<u8>> {
         let url = format!("{endpoint}/chain/dex_state_snapshot/download?height={height}");
         let started_at = Instant::now();
-        let resp = self.client.get(&url).send().await?;
+        let resp = self.send_snapshot_request(&url, deadline, "downloading snapshot").await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -315,6 +323,26 @@ impl TzChainClient {
             "tz: snapshot download complete"
         );
         Ok(bytes)
+    }
+
+    async fn send_snapshot_request(
+        &self,
+        url: &str,
+        deadline: Instant,
+        action: &str,
+    ) -> Result<reqwest::Response> {
+        let now = Instant::now();
+        if now >= deadline {
+            anyhow::bail!("tz snapshot replay deadline exceeded while {action}: {url}");
+        }
+
+        // Snapshot replay query/poll/download may sit behind a busy replay worker on the TZ
+        // node. Use the no-total-timeout client, but keep the overall snapshot deadline.
+        let remaining = deadline.saturating_duration_since(now);
+        tokio::time::timeout(remaining, self.stream_client.get(url).send())
+            .await
+            .with_context(|| format!("tz snapshot replay deadline exceeded while {action}: {url}"))?
+            .with_context(|| format!("failed while {action}: {url}"))
     }
 
     /// `GET /chain/blocks?start=N&end=M` — returns msgpack-encoded Vec<Block> bytes.
