@@ -1,6 +1,6 @@
 use alloy_primitives::Bytes as AlloBytes;
 use alloy_sol_types::SolValue;
-use alloy_transport_http::reqwest::{Client, StatusCode, Url};
+use alloy_transport_http::reqwest::{Client, Url};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use op_succinct_client_utils::boot::BootInfoStruct;
@@ -65,12 +65,14 @@ impl TeeHostClient {
                     .await
                     .context("TEE host unreachable during poll")?;
 
-                if resp.status() == StatusCode::NOT_FOUND {
-                    bail!("TEE task {task_id} not found (404)");
-                }
-
                 let body: ApiResponse<QueryTaskData> =
                     resp.json().await.context("failed to parse TEE task query response")?;
+
+                // Host returns HTTP 200 + code 10004 when task is not found (not HTTP 404).
+                if body.code == 10004 {
+                    bail!("TEE task {task_id} not found (code 10004)");
+                }
+
                 let data = body.data.context("missing task data in query response")?;
 
                 match data.status.as_str() {
@@ -145,6 +147,7 @@ pub fn journal_to_boot_info(j: &RangeJournal) -> BootInfoStruct {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiResponse<T> {
+    code: i64,
     data: Option<T>,
 }
 
