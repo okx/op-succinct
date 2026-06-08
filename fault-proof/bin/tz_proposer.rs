@@ -7,7 +7,10 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use fault_proof::{
     config::ProposerConfig,
-    contract::{AnchorStateRegistry, DisputeGameCreated, DisputeGameFactory},
+    contract::{
+        AnchorStateRegistry,
+        DisputeGameFactory::{self, DisputeGameCreated},
+    },
     prometheus::ProposerGauge,
     proposer::OPSuccinctProposer,
     tz::{chain_client::TzChainClient, config::TzConfig, l2_provider::TzL2Provider},
@@ -188,7 +191,7 @@ async fn create_dummy_game(
         );
     }
 
-    let (_, anchor_l2_block) = anchor_state_registry.getAnchorRoot().call().await?;
+    let anchor_l2_block = anchor_state_registry.getAnchorRoot().call().await?._1;
     if anchor_l2_block != U256::from(start_block) {
         tracing::warn!(
             expected_start_block = start_block,
