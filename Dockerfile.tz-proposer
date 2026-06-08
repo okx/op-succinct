@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    golang-go \
     && rm -rf /var/lib/apt/lists/*
 
 # Cargo needs the git CLI for our private SSH deps (x2 / okx-sp1 mirrors).
