@@ -88,6 +88,18 @@ pub trait L2ProviderTrait {
     async fn fetch_blocks_range(&self, _start: u64, _end: u64) -> Result<Vec<u8>> {
         bail!("fetch_blocks_range not supported on this L2 provider")
     }
+
+    // for tz: stream one TradeZone block-store segment into a local payload-frame file.
+    #[cfg(feature = "tz")]
+    async fn stream_blocks_segment_to_file(
+        &self,
+        _start: u64,
+        _end: u64,
+        _frame_blocks: u64,
+        _output_path: &std::path::Path,
+    ) -> Result<crate::tz::chain_client::TzBlockStreamSegmentResult> {
+        bail!("stream_blocks_segment_to_file not supported on this L2 provider")
+    }
 }
 
 #[async_trait]

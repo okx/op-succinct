@@ -74,6 +74,16 @@ impl L2ProviderTrait for TzL2Provider {
     async fn fetch_blocks_range(&self, start: u64, end: u64) -> Result<Vec<u8>> {
         self.tz_client.get_blocks_range(start, end).await
     }
+
+    async fn stream_blocks_segment_to_file(
+        &self,
+        start: u64,
+        end: u64,
+        frame_blocks: u64,
+        output_path: &std::path::Path,
+    ) -> Result<super::chain_client::TzBlockStreamSegmentResult> {
+        self.tz_client.stream_blocks_segment_to_file(start, end, frame_blocks, output_path).await
+    }
 }
 
 #[cfg(test)]

@@ -82,7 +82,7 @@ tikv-jemallocator = "0.6.0"
 tempfile = "3"
 
 # for tz: gated optional dependencies.
-reqwest = { workspace = true, optional = true, features = ["json"] }
+reqwest = { workspace = true, optional = true, features = ["json", "stream"] }
 thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
