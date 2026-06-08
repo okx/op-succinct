@@ -43,6 +43,7 @@ PATCH_SP1_PRAGMAS="${PATCH_SP1_PRAGMAS:-1}"
 BUILD_BINARIES="${BUILD_BINARIES:-0}"
 START_SERVICES="${START_SERVICES:-0}"
 SKIP_ANVIL="${SKIP_ANVIL:-0}"
+SKIP_TZ_CHECKPOINT="${SKIP_TZ_CHECKPOINT:-0}"
 
 CONFIG_PATH="${CONFIG_PATH:-$CONTRACTS_DIR/config/tz/opsuccinctfdgconfig.json}"
 ANVIL_LOG="${ANVIL_LOG:-$DATA_DIR/anvil-$L1_PORT.log}"
@@ -415,7 +416,13 @@ main() {
   mkdir -p "$DATA_DIR"
 
   start_or_reuse_anvil
-  fetch_tz_checkpoint
+  if [[ "$SKIP_TZ_CHECKPOINT" == "1" ]]; then
+    STARTING_L2_BLOCK_NUMBER="${STARTING_L2_BLOCK_NUMBER:-0}"
+    STARTING_ROOT="${STARTING_ROOT:-$ZERO_BYTES32}"
+    log "using configured checkpoint height=$STARTING_L2_BLOCK_NUMBER root=$STARTING_ROOT"
+  else
+    fetch_tz_checkpoint
+  fi
   ensure_contract_deps
   patch_sp1_pragmas
   update_contract_config
