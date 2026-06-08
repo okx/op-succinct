@@ -36,7 +36,7 @@ The TradeZone project must be cloned separately and its own CI-env prerequisites
 |----------|----------|-------------|
 | `TZ_PROJ_PATH` | yes | Absolute path to the TradeZone project root |
 
-All other configuration comes from `.env.tz-proposer.template`, which is rendered automatically into `.env.tz-proposer` by `start.sh`. Edit the template if you need to change RPC endpoints, timeouts, or proof strategy.
+All other configuration comes from `example.env.tz-proposer`, which is rendered automatically into `.env.tz-proposer` by `start.sh`. Edit the template if you need to change RPC endpoints, timeouts, or proof strategy.
 
 ## How to run
 

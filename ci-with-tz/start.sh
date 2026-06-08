@@ -69,7 +69,7 @@ sed \
   -e "s|{{FACTORY_ADDRESS}}|$FACTORY_ADDRESS|g" \
   -e "s|{{ANCHOR_STATE_REGISTRY_ADDRESS}}|$ANCHOR_STATE_REGISTRY|g" \
   -e "s|{{PRIVATE_KEY}}|$PROPOSER_SK|g" \
-  "$SCRIPT_DIR/.env.tz-proposer.template" > "$SCRIPT_DIR/.env.tz-proposer"
+  "$SCRIPT_DIR/example.env.tz-proposer" > "$SCRIPT_DIR/.env.tz-proposer"
 
 
 echo "======================================================================"
