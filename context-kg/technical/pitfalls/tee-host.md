@@ -1,6 +1,6 @@
 ---
 name: "tee-host"
-description: "Pitfalls for xlayer-tee-host — axum body limits, binary encoding, ABI encoding"
+description: "Pitfalls for TEE proof path — axum body limits, binary encoding, ABI encoding, witness serialization"
 ---
 # TEE Host Pitfalls
 
@@ -63,7 +63,29 @@ let proof = (journal, sig_bytes).abi_encode_params();
 ```
 
 [Rule] When encoding data for consumption by Solidity `abi.decode(data, (T1, T2, ...))`, always use `abi_encode_params()`. Reserve `abi_encode()` for top-level function call encoding where the offset is expected.
-**Module**: `fault-proof/tee/host/src/packager.rs`
+**Module**: `fault-proof/tee/host/src/packager.rs`, `fault-proof/src/tee_client.rs`
 **Source**: PRD FR-9 / review-finding F-08
+**Date**: 2026-06-04
+**Hit count**: 2
+
+## WitnessData into_parts() for rkyv Serialization
+
+[Pitfall] The generic `WitnessData` trait (returned by `host.run()`) does not derive `rkyv::Archive`/`rkyv::Serialize`. Calling `rkyv::to_bytes(&witness_data)` directly fails to compile. The TEE proof path needs to send witness bytes to the TEE host via HTTP.
+**Trigger**: Trying to rkyv-serialize the trait object returned from `host.run()` in the TEE proof path.
+**Correct**: Call `witness_data.into_parts()` to decompose into concrete types (`MultiChainBootInfo`, `SerializableOracleData`, `BlobData`), then reconstruct a `DefaultWitnessData` which does derive rkyv:
+
+```rust
+// WRONG — WitnessData trait doesn't have rkyv bounds
+let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&witness_data)?;
+
+// CORRECT — decompose, reconstruct concrete type, then serialize
+let (boot, oracle, blob) = witness_data.into_parts();
+let concrete = DefaultWitnessData::new(boot, oracle, blob);
+let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&concrete)?;
+```
+
+[Rule] When serializing witness data for external transport (TEE host, cache, etc.), always use `into_parts()` → `DefaultWitnessData` reconstruction. Do NOT attempt to add rkyv derives to the `WitnessData` trait — it would propagate rkyv bounds to all DA-specific host implementations.
+**Module**: `fault-proof/src/proposer.rs` (prove_game_tee)
+**Source**: TDD summary design decision #3 (XLOP-1090)
 **Date**: 2026-06-04
 **Hit count**: 1

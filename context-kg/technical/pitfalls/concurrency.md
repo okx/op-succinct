@@ -22,7 +22,35 @@ description: "Concurrency pitfalls — task management, nonce serialization, cha
 
 ## Fast Finality vs Defense Concurrency
 
-[Pitfall] `fault-proof/src/proposer.rs:1242-1250, 1834`: fast-finality proving and standard defense both consume `max_concurrent_defense_tasks`. Trigger: hung proving task. Correct approach: separate budgets (TODO at line 1834). Affected module: `fault-proof/src/proposer.rs`.
+[Pitfall] `fault-proof/src/proposer.rs:1242-1250, 1834`: fast-finality proving and standard defense both consume `max_concurrent_defense_tasks`. TEE proving tasks also share this same budget. Trigger: hung proving task (ZK or TEE). Correct approach: separate budgets (TODO at line 1834). Affected module: `fault-proof/src/proposer.rs`.
+
+## TEE Poll Loop Timeout
+
+[Pitfall] `fault-proof/src/tee_client.rs::wait_for_proof` polls `GET /tee/task/{id}` in a loop while status is `Running`. Without an outer timeout, a stuck TEE task (TEE host bug, network partition returning `Running` indefinitely) permanently occupies a defense slot.
+**Trigger**: TEE host hangs or network partition returns `Running` status indefinitely for one or more tasks.
+**Correct**: Wrap the poll loop in `tokio::time::timeout(Duration::from_secs(task_timeout), poll_future)`. The `task_timeout` config field (env `TEE_TASK_TIMEOUT`, default 14400s) mirrors the ZK path's `proof_provider.timeout`.
+
+```rust
+// WRONG — loops forever if TEE host never returns Finished/Failed
+loop {
+    let status = poll_task(task_id).await?;
+    match status { "Running" => sleep(interval).await, ... }
+}
+
+// CORRECT — bounded by task_timeout
+tokio::time::timeout(self.task_timeout, async {
+    loop {
+        let status = poll_task(task_id).await?;
+        match status { "Running" => sleep(interval).await, ... }
+    }
+}).await.context("TEE task timed out")?
+```
+
+[Rule] Every async poll loop in proposer code (ZK or TEE) must have an outer `tokio::time::timeout` to prevent indefinite slot occupation.
+**Module**: `fault-proof/src/tee_client.rs`
+**Source**: Adversarial review finding #1 (XLOP-1090)
+**Date**: 2026-06-04
+**Hit count**: 1
 
 ## Preimage Store Lock Contention
 

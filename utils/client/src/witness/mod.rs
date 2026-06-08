@@ -19,6 +19,10 @@ pub trait WitnessData: Sized {
     /// Consumes the WitnessData to extract its core components.
     fn into_parts(self) -> (PreimageStore, BlobData);
 
+    /// Serializes the full witness (including DA-specific fields) to rkyv bytes for transmission
+    /// to a TEE enclave. Must not drop any fields — do not implement via into_parts().
+    fn to_rkyv_bytes(&self) -> anyhow::Result<Vec<u8>>;
+
     /// Gets the oracle and blob provider from the witness data and validates the correctness of the
     /// preimages.
     async fn get_oracle_and_blob_provider(self) -> Result<(Arc<PreimageStore>, BlobStore)> {
@@ -56,6 +60,12 @@ impl WitnessData for DefaultWitnessData {
     fn into_parts(self) -> (PreimageStore, BlobData) {
         (self.preimage_store, self.blob_data)
     }
+
+    fn to_rkyv_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        rkyv::to_bytes::<rkyv::rancor::Error>(self)
+            .map(|b| b.to_vec())
+            .map_err(|e| anyhow::anyhow!("rkyv serialization failed: {e}"))
+    }
 }
 
 #[derive(Clone, Debug, Default, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -75,6 +85,12 @@ impl WitnessData for EigenDAWitnessData {
 
     fn into_parts(self) -> (PreimageStore, BlobData) {
         (self.preimage_store, self.blob_data)
+    }
+
+    fn to_rkyv_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        rkyv::to_bytes::<rkyv::rancor::Error>(self)
+            .map(|b| b.to_vec())
+            .map_err(|e| anyhow::anyhow!("rkyv serialization failed: {e}"))
     }
 }
 

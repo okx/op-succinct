@@ -16,11 +16,14 @@ use alloy_provider::{Provider, ProviderBuilder};
 use alloy_sol_types::{SolEvent, SolValue};
 use anyhow::{bail, Context, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
-use op_succinct_client_utils::boot::{hash_rollup_config, BootInfoStruct};
+use op_succinct_client_utils::{
+    boot::{hash_rollup_config, BootInfoStruct},
+    witness::WitnessData as _,
+};
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_host_utils::{
     fetcher::OPSuccinctDataFetcher,
-    get_agg_proof_stdin,
+    get_agg_proof_stdin, get_agg_proof_stdin_tee,
     host::OPSuccinctHost,
     metrics::MetricsGauge,
     network::{determine_network_mode, get_network_signer},
@@ -42,13 +45,14 @@ use crate::{
     contract::{
         AnchorStateRegistry::AnchorStateRegistryInstance,
         DisputeGameFactory::{DisputeGameCreated, DisputeGameFactoryInstance},
-        GameStatus, OPSuccinctFaultDisputeGame, ProposalStatus,
+        GameStatus, ProofType, ProposalStatus, XLayerOPSuccinctFaultDisputeGame,
     },
     is_parent_resolved,
     prometheus::ProposerGauge,
     prover::{
         ClusterProofProvider, MockProofProvider, NetworkProofProvider, ProofKeys, ProofProvider,
     },
+    tee_client::{journal_to_boot_info, unpack_proof_bytes, TeeHostClient},
     FactoryTrait, L1Provider, L2Provider, L2ProviderTrait, TxErrorExt, TX_REVERTED_PREFIX,
 };
 
@@ -274,6 +278,7 @@ where
     /// Highest L2 block number that passed native host verification.
     /// Only written by the HostVerification task; read atomically by should_create_game.
     last_verified_l2_block: Arc<AtomicU64>,
+    tee_client: Option<Arc<TeeHostClient>>,
 }
 
 impl<P, H> OPSuccinctProposer<P, H>
@@ -363,6 +368,14 @@ where
 
         let initial_state = ProposerState::default();
 
+        let tee_client = config.tee_host_url.as_ref().map(|url| {
+            Arc::new(TeeHostClient::new(
+                url.clone(),
+                config.tee_poll_interval_ms,
+                config.tee_task_timeout,
+            ))
+        });
+
         Ok(Self {
             config: config.clone(),
             contract_params: OnceLock::new(),
@@ -382,6 +395,7 @@ where
             backup_semaphore: Arc::new(Semaphore::new(1)),
             identity,
             last_verified_l2_block: Arc::new(AtomicU64::new(0)),
+            tee_client,
         })
     }
 
@@ -519,6 +533,15 @@ where
         let max_challenge_duration = game_impl.maxChallengeDuration().call().await?.to::<u64>();
         let max_prove_duration = game_impl.maxProveDuration().call().await?;
         let contract_params = ContractParams { max_challenge_duration, max_prove_duration };
+
+        // TEE configuration validation
+        if self.config.default_proof_type == ProofType::TEE && self.config.tee_host_url.is_none() {
+            bail!(
+                "DEFAULT_PROOF_TYPE=tee but TEE_HOST_URL is not set. \
+                 Set TEE_HOST_URL to the TEE host service endpoint, \
+                 or change DEFAULT_PROOF_TYPE to zk."
+            );
+        }
 
         Ok((anchor_l2_block, init_bond, contract_params))
     }
@@ -783,7 +806,7 @@ where
 
             for (index, game_address) in games {
                 let contract =
-                    OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+                    XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
                 let claim_data = contract.claimData().call().await?;
                 let status = contract.status().call().await?;
                 let deadline = U256::from(claim_data.deadline).to::<u64>();
@@ -1041,6 +1064,13 @@ where
 
     /// Proves a dispute game at the given address.
     ///
+    /// Dispatches to `prove_game_zk` or `prove_game_tee` based on game state:
+    /// - If unchallenged (`counteredBy == Address::ZERO`), uses `config.default_proof_type`
+    /// - If challenged, reads `challengedProofType()` from the contract
+    ///
+    /// CRITICAL: `counteredBy == Address::ZERO` MUST be checked before reading
+    /// `challengedProofType()` because Solidity's default value for `ProofType` is `TEE (0)`.
+    ///
     /// # Returns
     /// A tuple containing:
     /// - `TxHash`: The transaction hash of the proof submission
@@ -1055,7 +1085,34 @@ where
     ) -> Result<(TxHash, u64, u64)> {
         tracing::info!("Attempting to prove game {:?}", game_address);
 
-        let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+        let game = XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+
+        let claim_data = game.claimData().call().await?;
+        let proof_type = if claim_data.counteredBy == Address::ZERO {
+            let pt = self.config.default_proof_type;
+            tracing::info!(?pt, "Unchallenged game, using default proof type");
+            pt
+        } else {
+            let pt = game.challengedProofType().call().await?;
+            tracing::info!(?pt, "Challenged game, using on-chain proof type");
+            pt
+        };
+
+        match proof_type {
+            ProofType::ZK => self.prove_game_zk(game_address, start_block, end_block).await,
+            ProofType::TEE => self.prove_game_tee(game_address, start_block, end_block).await,
+            _ => bail!("Unknown proof type variant: {:?}", proof_type),
+        }
+    }
+
+    /// Generates ZK range proofs + aggregation proof and submits with 0x01 prefix.
+    async fn prove_game_zk(
+        &self,
+        game_address: Address,
+        start_block: u64,
+        end_block: u64,
+    ) -> Result<(TxHash, u64, u64)> {
+        let game = XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
         let l1_head_hash = game.l1Head().call().await?.0;
         tracing::debug!("L1 head hash: {:?}", hex::encode(l1_head_hash));
 
@@ -1065,7 +1122,7 @@ where
             .split(start_block, end_block)
             .context("failed to split range for proving")?;
         let num_ranges = ranges.len();
-        tracing::info!("Proving over {num_ranges} ranges");
+        tracing::info!("ZK proving over {num_ranges} ranges");
 
         let tasks = ranges.into_iter().enumerate().map(|(idx, (start, end))| {
             let this = self.clone();
@@ -1147,7 +1204,21 @@ where
 
         let agg_proof = self.prover.generate_agg_proof(sp1_stdin).await?;
 
-        let transaction_request = game.prove(agg_proof.bytes().into()).into_transaction_request();
+        // Prepend ZK type prefix (0x01)
+        let mut proof_bytes = vec![0x01u8];
+        proof_bytes.extend_from_slice(&agg_proof.bytes());
+
+        let transaction_request = game.prove(proof_bytes.clone().into()).into_transaction_request();
+        tracing::info!(
+            game_address = ?game_address,
+            proof_type = "ZK",
+            proof_bytes_len = proof_bytes.len(),
+            calldata = %transaction_request.input.input()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            "prove calldata"
+        );
+
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
@@ -1162,6 +1233,127 @@ where
         }
 
         Ok((receipt.transaction_hash, total_instruction_cycles, total_sp1_gas))
+    }
+
+    /// Generates TEE range proofs + aggregation proof and submits with 0x00 prefix.
+    ///
+    /// For each sub-range: generate witness via host.fetch/run, serialize with rkyv,
+    /// submit to TEE host, poll until finished, unpack proof bytes. Then fetch attestation,
+    /// build aggregation stdin, generate agg proof, submit with 0x00 prefix.
+    async fn prove_game_tee(
+        &self,
+        game_address: Address,
+        start_block: u64,
+        end_block: u64,
+    ) -> Result<(TxHash, u64, u64)> {
+        let tee_client = self
+            .tee_client
+            .as_ref()
+            .context("TEE host client not configured but TEE proof type requested")?
+            .clone();
+
+        let game = XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+        let l1_head_hash = game.l1Head().call().await?.0;
+
+        let ranges = self
+            .config
+            .range_split_count
+            .split(start_block, end_block)
+            .context("failed to split range for proving")?;
+        let num_ranges = ranges.len();
+        tracing::info!("TEE proving over {num_ranges} ranges");
+
+        let tasks = ranges.into_iter().enumerate().map(|(idx, (start, end))| {
+            let this = self.clone();
+            let tee_client = tee_client.clone();
+            async move {
+                tracing::info!("Generating TEE range proof for blocks {start} to {end}");
+
+                let host_args = this
+                    .host
+                    .fetch(start, end, Some(l1_head_hash.into()), this.config.safe_db_fallback)
+                    .await
+                    .context("Failed to get host CLI args")?;
+                let witness_bytes = {
+                    let witness_data = this
+                        .host
+                        .run(&host_args)
+                        .await
+                        .context("Failed to generate witness")?;
+                    witness_data.to_rkyv_bytes()?
+                };
+
+                let task_id = tee_client.submit_task(&witness_bytes, start, end).await?;
+                let proof_bytes = tee_client.wait_for_proof(&task_id).await?;
+
+                let (journal, signature) = unpack_proof_bytes(&proof_bytes)?;
+                let boot_info = journal_to_boot_info(&journal);
+
+                Ok::<_, anyhow::Error>((idx, boot_info, signature))
+            }
+        });
+
+        let max_concurrent = self.config.max_concurrent_range_proofs.get().min(num_ranges);
+        let mut results: Vec<(usize, BootInfoStruct, Vec<u8>)> =
+            stream::iter(tasks).buffer_unordered(max_concurrent).try_collect().await?;
+        results.sort_by_key(|(idx, _, _)| *idx);
+
+        let (boot_infos, tee_signatures): (Vec<_>, Vec<_>) =
+            results.into_iter().map(|(_, b, s)| (b, s)).unzip();
+
+        let attestation_bytes = tee_client.get_attestation().await?;
+
+        let latest_l1_head = boot_infos.last().context("No boot infos generated")?.l1Head;
+        let headers = self
+            .fetcher
+            .get_header_preimages(&boot_infos, latest_l1_head)
+            .await
+            .context("Failed to get header preimages")?;
+
+        tracing::info!("Preparing Stdin for TEE Agg Proof");
+        let sp1_stdin = get_agg_proof_stdin_tee(
+            tee_signatures,
+            attestation_bytes,
+            boot_infos,
+            headers,
+            latest_l1_head,
+            self.signer.address(),
+        )?;
+
+        let agg_proof = self.prover.generate_agg_proof(sp1_stdin).await?;
+
+        let mut proof_bytes = vec![0x00u8];
+        proof_bytes.extend_from_slice(&agg_proof.bytes());
+
+        let transaction_request = game.prove(proof_bytes.clone().into()).into_transaction_request();
+        tracing::info!(
+            game_address = ?game_address,
+            proof_type = "TEE",
+            proof_bytes_len = proof_bytes.len(),
+            calldata = %transaction_request.input.input()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            "prove calldata"
+        );
+
+        let receipt = self
+            .signer
+            .send_transaction_request_with_timeout(
+                self.config.l1_rpc.clone(),
+                transaction_request,
+                self.config.tx_confirmation_timeout,
+            )
+            .await?;
+
+        if !receipt.status() {
+            bail!("{TX_REVERTED_PREFIX} {receipt:?}");
+        }
+
+        tracing::info!(
+            tx_hash = ?receipt.transaction_hash,
+            "TEE proof submitted"
+        );
+        Ok((receipt.transaction_hash, 0, 0))
     }
 
     async fn range_proof_stdin(
@@ -1211,6 +1403,16 @@ where
             .create(self.config.game_type, output_root, extra_data.into())
             .value(init_bond)
             .into_transaction_request();
+
+        tracing::info!(
+            game_type = self.config.game_type,
+            output_root = ?output_root,
+            init_bond = %init_bond,
+            calldata = %transaction_request.input.input()
+                .map(hex::encode)
+                .unwrap_or_default(),
+            "create_game calldata"
+        );
 
         let receipt = self
             .signer
@@ -1344,7 +1546,8 @@ where
     }
 
     pub async fn submit_resolution_transaction(&self, game: &Game) -> Result<()> {
-        let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request = contract.resolve().into_transaction_request();
         let receipt = self
             .signer
@@ -1373,7 +1576,8 @@ where
     /// Submit the on-chain transaction to claim the proposer's bond for a given game.
     #[tracing::instrument(name = "[[Claiming Proposer Bonds]]", skip(self, game))]
     pub async fn submit_bond_claim_transaction(&self, game: &Game) -> Result<()> {
-        let contract = OPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game.address, self.l1_provider.clone());
         let transaction_request =
             contract.claimCredit(self.signer.address()).gas(200_000).into_transaction_request();
         let receipt = self
@@ -1432,7 +1636,8 @@ where
             return Ok(GameFetchResult::UnsupportedType { game_address });
         }
 
-        let contract = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+        let contract =
+            XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
 
         // Drop games with a different anchor state registry. During hardfork transitions,
         // old ASR games must not enter the DAG or they can pollute canonical head selection.
@@ -1536,8 +1741,7 @@ where
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
-        let extra_data =
-            (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+        let extra_data = (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
 
         tracing::info!(
             l2_block_number = %next_l2_block_number_for_proposal,
@@ -1703,7 +1907,9 @@ where
         let finalized =
             self.host.get_finalized_l2_block_number(&self.fetcher, canonical_head).await?;
         let Some(end) = finalized else {
-            tracing::warn!("Host verification: finalized L2 block not available — game creation is blocked");
+            tracing::warn!(
+                "Host verification: finalized L2 block not available — game creation is blocked"
+            );
             return Ok(false);
         };
 
@@ -1996,8 +2202,10 @@ where
                     }
 
                     // Check if we own this game
-                    let contract =
-                        OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+                    let contract = XLayerOPSuccinctFaultDisputeGame::new(
+                        game_address,
+                        self.l1_provider.clone(),
+                    );
                     let creator = match contract.gameCreator().call().await {
                         Ok(c) => c,
                         Err(e) => {
@@ -2260,7 +2468,7 @@ where
         let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
 
         // Get the game block number to include in logs
-        let game = OPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
+        let game = XLayerOPSuccinctFaultDisputeGame::new(game_address, self.l1_provider.clone());
         let starting_l2_block_number = game.startingBlockNumber().call().await?;
         let l2_block_number = game.l2BlockNumber().call().await?;
         let start_block = starting_l2_block_number.to::<u64>();

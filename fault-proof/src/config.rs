@@ -8,6 +8,7 @@ use std::{
 use alloy_primitives::Address;
 use alloy_transport_http::reqwest::Url;
 use anyhow::{bail, Result};
+use crate::contract::ProofType;
 use op_succinct_host_utils::network::parse_fulfillment_strategy;
 use serde::{Deserialize, Serialize};
 use sp1_sdk::{network::FulfillmentStrategy, SP1ProofMode};
@@ -104,6 +105,18 @@ pub struct ProposerConfig {
     ///
     /// Default: 300 (~2-3 batcher cycles at 120 blocks/cycle).
     pub host_verification_chunk_size: u64,
+
+    /// TEE host service URL. Required when DEFAULT_PROOF_TYPE=tee.
+    pub tee_host_url: Option<Url>,
+
+    /// Milliseconds between TEE task polls. Default: 5000.
+    pub tee_poll_interval_ms: u64,
+
+    /// Maximum time (seconds) to wait for a single TEE task. Default: 14400 (4 hours).
+    pub tee_task_timeout: u64,
+
+    /// Default proof type for unchallenged (fast-finality) games. Default: ZK.
+    pub default_proof_type: ProofType,
 }
 
 /// Helper function to parse a comma-separated list of addresses
@@ -178,6 +191,21 @@ impl ProposerConfig {
                 anyhow::ensure!(v > 0, "HOST_VERIFICATION_CHUNK_SIZE must be > 0");
                 v
             },
+            tee_host_url: env::var("TEE_HOST_URL").ok().map(|s| s.parse()).transpose()?,
+            tee_poll_interval_ms: env::var("TEE_POLL_INTERVAL_MS")
+                .unwrap_or("5000".to_string())
+                .parse()?,
+            tee_task_timeout: env::var("TEE_TASK_TIMEOUT")
+                .unwrap_or("14400".to_string())
+                .parse()?,
+            default_proof_type: match env::var("DEFAULT_PROOF_TYPE")
+                .unwrap_or("zk".to_string())
+                .to_lowercase()
+                .as_str()
+            {
+                "tee" => ProofType::TEE,
+                _ => ProofType::ZK,
+            },
         })
     }
 
@@ -217,6 +245,10 @@ impl ProposerConfig {
             tx_confirmation_timeout = self.tx_confirmation_timeout,
             enable_host_verification = self.enable_host_verification,
             host_verification_chunk_size = self.host_verification_chunk_size,
+            tee_host_url = ?self.tee_host_url,
+            tee_poll_interval_ms = self.tee_poll_interval_ms,
+            tee_task_timeout = self.tee_task_timeout,
+            default_proof_type = ?self.default_proof_type,
             "Proposer configuration loaded"
         );
     }
@@ -347,6 +379,9 @@ pub struct ChallengerConfig {
     /// signer behavior; raise it (e.g. 180) on networks where mempool inclusion plus the
     /// configured confirmation depth needs more headroom.
     pub tx_confirmation_timeout: u64,
+
+    /// Proof type to request when challenging. Default: ZK.
+    pub challenge_proof_type: ProofType,
 }
 
 impl ChallengerConfig {
@@ -369,6 +404,14 @@ impl ChallengerConfig {
             tx_confirmation_timeout: env::var("TX_CONFIRMATION_TIMEOUT")
                 .unwrap_or("60".to_string())
                 .parse()?,
+            challenge_proof_type: match env::var("CHALLENGE_PROOF_TYPE")
+                .unwrap_or("zk".to_string())
+                .to_lowercase()
+                .as_str()
+            {
+                "tee" => ProofType::TEE,
+                _ => ProofType::ZK,
+            },
         })
     }
 
@@ -384,6 +427,7 @@ impl ChallengerConfig {
             metrics_port = self.metrics_port,
             malicious_challenge_percentage = self.malicious_challenge_percentage,
             tx_confirmation_timeout = self.tx_confirmation_timeout,
+            challenge_proof_type = ?self.challenge_proof_type,
             "Challenger configuration loaded"
         );
     }
@@ -669,5 +713,102 @@ mod host_verification_config_tests {
         assert!(!config.enable_host_verification, "should parse explicit false");
 
         clear_host_verification_env_vars();
+    }
+}
+
+#[cfg(test)]
+mod tee_config_tests {
+    use super::*;
+    use std::{env, sync::Mutex};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_required_proposer_env() {
+        env::set_var("L1_RPC", "http://localhost:8545");
+        env::set_var("L2_RPC", "http://localhost:9545");
+        env::set_var("ANCHOR_STATE_REGISTRY_ADDRESS", "0x0000000000000000000000000000000000000001");
+        env::set_var("FACTORY_ADDRESS", "0x0000000000000000000000000000000000000002");
+        env::set_var("GAME_TYPE", "1");
+    }
+
+    fn set_required_challenger_env() {
+        env::set_var("L1_RPC", "http://localhost:8545");
+        env::set_var("L2_RPC", "http://localhost:9545");
+        env::set_var("ANCHOR_STATE_REGISTRY_ADDRESS", "0x0000000000000000000000000000000000000001");
+        env::set_var("FACTORY_ADDRESS", "0x0000000000000000000000000000000000000002");
+        env::set_var("GAME_TYPE", "1");
+    }
+
+    fn clear_tee_env() {
+        env::remove_var("TEE_HOST_URL");
+        env::remove_var("TEE_POLL_INTERVAL_MS");
+        env::remove_var("TEE_TASK_TIMEOUT");
+        env::remove_var("DEFAULT_PROOF_TYPE");
+        env::remove_var("CHALLENGE_PROOF_TYPE");
+    }
+
+    #[test]
+    fn proposer_tee_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        set_required_proposer_env();
+        clear_tee_env();
+        let config = ProposerConfig::from_env().unwrap();
+        assert!(config.tee_host_url.is_none());
+        assert_eq!(config.tee_poll_interval_ms, 5000);
+        assert_eq!(config.tee_task_timeout, 14400);
+        assert_eq!(config.default_proof_type, ProofType::ZK);
+        clear_tee_env();
+    }
+
+    #[test]
+    fn proposer_tee_configured() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        set_required_proposer_env();
+        clear_tee_env();
+        env::set_var("TEE_HOST_URL", "http://localhost:8080");
+        env::set_var("TEE_POLL_INTERVAL_MS", "3000");
+        env::set_var("TEE_TASK_TIMEOUT", "7200");
+        env::set_var("DEFAULT_PROOF_TYPE", "tee");
+        let config = ProposerConfig::from_env().unwrap();
+        assert_eq!(config.tee_host_url.as_ref().unwrap().as_str(), "http://localhost:8080/");
+        assert_eq!(config.tee_poll_interval_ms, 3000);
+        assert_eq!(config.tee_task_timeout, 7200);
+        assert_eq!(config.default_proof_type, ProofType::TEE);
+        clear_tee_env();
+    }
+
+    #[test]
+    fn proof_type_case_insensitive() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        set_required_proposer_env();
+        clear_tee_env();
+        env::set_var("DEFAULT_PROOF_TYPE", "TEE");
+        let config = ProposerConfig::from_env().unwrap();
+        assert_eq!(config.default_proof_type, ProofType::TEE);
+        env::set_var("DEFAULT_PROOF_TYPE", "Tee");
+        let config = ProposerConfig::from_env().unwrap();
+        assert_eq!(config.default_proof_type, ProofType::TEE);
+        clear_tee_env();
+    }
+
+    #[test]
+    fn challenger_proof_type_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        set_required_challenger_env();
+        clear_tee_env();
+        let config = ChallengerConfig::from_env().unwrap();
+        assert_eq!(config.challenge_proof_type, ProofType::ZK);
+        clear_tee_env();
+    }
+
+    #[test]
+    fn challenger_proof_type_tee() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        set_required_challenger_env();
+        clear_tee_env();
+        env::set_var("CHALLENGE_PROOF_TYPE", "tee");
+        let config = ChallengerConfig::from_env().unwrap();
+        assert_eq!(config.challenge_proof_type, ProofType::TEE);
+        clear_tee_env();
     }
 }
