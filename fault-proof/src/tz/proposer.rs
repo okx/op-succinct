@@ -7,7 +7,6 @@
 use super::*;
 use std::io::Read;
 
-use crate::tz::chain_client::TzBlockStreamUnsupportedError;
 use futures::{stream, StreamExt, TryStreamExt};
 use op_succinct_client_utils::types::AggregationInputs;
 use sp1_sdk::{SP1Proof, SP1VerifyingKey};
@@ -310,23 +309,10 @@ where
         let total_blocks = end_block.saturating_sub(start_block);
         let block_fetch_config = TzBlockFetchConfig::from_env();
 
-        let (snapshot, blocks_witness) = if block_fetch_config.use_stream {
-            tokio::try_join!(
-                self.fetch_tz_snapshot_for_witness(start_block),
-                self.fetch_tz_blocks_witness(
-                    first_block,
-                    end_block,
-                    total_blocks,
-                    block_fetch_config,
-                )
-            )?
-        } else {
-            let snapshot = self.fetch_tz_snapshot_for_witness(start_block).await?;
-            let blocks_witness = self
-                .fetch_tz_blocks_witness(first_block, end_block, total_blocks, block_fetch_config)
-                .await?;
-            (snapshot, blocks_witness)
-        };
+        let (snapshot, blocks_witness) = tokio::try_join!(
+            self.fetch_tz_snapshot_for_witness(start_block),
+            self.fetch_tz_blocks_witness(first_block, end_block, total_blocks, block_fetch_config)
+        )?;
         let snapshot_bytes = snapshot.len();
 
         let mut range_stdin = SP1Stdin::new();
@@ -342,8 +328,6 @@ where
             end_block,
             total_blocks,
             chunk_count,
-            tz_blocks_per_fetch = block_fetch_config.legacy_blocks_per_fetch,
-            use_block_stream = block_fetch_config.use_stream,
             stream_frame_blocks = block_fetch_config.stream_frame_blocks,
             segment_stream_concurrency = block_fetch_config.segment_stream_concurrency,
             snapshot_bytes,
@@ -425,77 +409,13 @@ where
             return Ok(TzBlocksWitness::empty());
         }
 
-        if !config.use_stream {
-            return self
-                .fetch_tz_legacy_blocks_witness(
-                    first_block,
-                    end_block,
-                    total_blocks,
-                    config.legacy_blocks_per_fetch,
-                )
-                .await;
-        }
-
-        match self
-            .fetch_tz_streamed_blocks_witness(
-                first_block,
-                end_block,
-                config.stream_frame_blocks,
-                config.segment_stream_concurrency,
-            )
-            .await
-        {
-            Ok(witness) => Ok(witness),
-            Err(e) if is_tz_block_stream_unsupported(&e) => {
-                tracing::warn!(
-                    first_block,
-                    end_block,
-                    error = %e,
-                    "tz: block stream unsupported, falling back to /chain/blocks"
-                );
-                self.fetch_tz_legacy_blocks_witness(
-                    first_block,
-                    end_block,
-                    total_blocks,
-                    config.legacy_blocks_per_fetch,
-                )
-                .await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn fetch_tz_legacy_blocks_witness(
-        &self,
-        first_block: u64,
-        end_block: u64,
-        total_blocks: u64,
-        blocks_per_fetch: u64,
-    ) -> Result<TzBlocksWitness> {
-        let chunk_count: u32 = total_blocks
-            .div_ceil(blocks_per_fetch)
-            .try_into()
-            .context("chunk_count overflows u32")?;
-        tracing::info!(
+        self.fetch_tz_streamed_blocks_witness(
             first_block,
             end_block,
-            chunk_count,
-            tz_blocks_per_fetch = blocks_per_fetch,
-            "tz: fetching blocks with legacy range endpoint"
-        );
-
-        let mut cur = first_block;
-        let mut blocks_bytes = 0usize;
-        let mut chunks = Vec::with_capacity(chunk_count as usize);
-        for _ in 0..chunk_count {
-            let chunk_end = cur.saturating_add(blocks_per_fetch - 1).min(end_block);
-            let chunk = self.l2_provider.fetch_blocks_range(cur, chunk_end).await?;
-            blocks_bytes += chunk.len();
-            chunks.push(chunk);
-            cur = chunk_end.saturating_add(1);
-        }
-
-        Ok(TzBlocksWitness { chunk_count, blocks_bytes, chunks: TzBlockChunks::InMemory(chunks) })
+            config.stream_frame_blocks,
+            config.segment_stream_concurrency,
+        )
+        .await
     }
 
     async fn fetch_tz_streamed_blocks_witness(
@@ -571,19 +491,15 @@ const TZ_STORAGE_SEGMENT_BLOCKS: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug)]
 struct TzBlockFetchConfig {
-    use_stream: bool,
     stream_frame_blocks: u64,
     segment_stream_concurrency: usize,
-    legacy_blocks_per_fetch: u64,
 }
 
 impl TzBlockFetchConfig {
     fn from_env() -> Self {
         Self {
-            use_stream: env_bool("TZ_USE_BLOCK_STREAM", false),
             stream_frame_blocks: env_positive_u64("TZ_STREAM_FRAME_BLOCKS", 100),
             segment_stream_concurrency: env_positive_usize("TZ_SEGMENT_STREAM_CONCURRENCY", 4),
-            legacy_blocks_per_fetch: env_positive_u64("TZ_BLOCKS_PER_FETCH", 1000),
         }
     }
 }
@@ -608,29 +524,17 @@ struct TzBlocksWitness {
 }
 
 enum TzBlockChunks {
-    InMemory(Vec<Vec<u8>>),
     Streamed(Vec<TzStreamSegmentFile>),
 }
 
 impl TzBlocksWitness {
     fn empty() -> Self {
-        Self { chunk_count: 0, blocks_bytes: 0, chunks: TzBlockChunks::InMemory(Vec::new()) }
+        Self { chunk_count: 0, blocks_bytes: 0, chunks: TzBlockChunks::Streamed(Vec::new()) }
     }
 
     fn write_to_stdin(self, range_stdin: &mut SP1Stdin) -> Result<()> {
         range_stdin.write(&self.chunk_count);
         match self.chunks {
-            TzBlockChunks::InMemory(chunks) => {
-                anyhow::ensure!(
-                    chunks.len() == self.chunk_count as usize,
-                    "legacy chunk count mismatch: expected={}, got={}",
-                    self.chunk_count,
-                    chunks.len()
-                );
-                for chunk in chunks {
-                    range_stdin.write_vec(chunk);
-                }
-            }
             TzBlockChunks::Streamed(segments) => {
                 let mut written = 0u32;
                 for segment in segments {
@@ -661,17 +565,6 @@ impl TzBlocksWitness {
             }
         }
         Ok(())
-    }
-}
-
-fn env_bool(name: &str, default: bool) -> bool {
-    match std::env::var(name) {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "y" | "on" => true,
-            "0" | "false" | "no" | "n" | "off" => false,
-            _ => default,
-        },
-        Err(_) => default,
     }
 }
 
@@ -751,11 +644,6 @@ where
         frames = frames.checked_add(1).context("tz stream local frame count overflows u32")?;
     }
     Ok(frames)
-}
-
-fn is_tz_block_stream_unsupported(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<TzBlockStreamUnsupportedError>().is_some() ||
-        err.chain().any(|cause| cause.is::<TzBlockStreamUnsupportedError>())
 }
 
 /// Build the SP1Stdin for the tz aggregation guest: write each compressed range
@@ -838,19 +726,15 @@ mod tests {
     }
 
     #[test]
-    fn block_fetch_config_uses_legacy_fallback_when_stream_disabled() {
+    fn block_fetch_config_reads_stream_settings() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let _use_stream = EnvVarGuard::set("TZ_USE_BLOCK_STREAM", Some("false"));
         let _frame = EnvVarGuard::set("TZ_STREAM_FRAME_BLOCKS", Some("250"));
         let _concurrency = EnvVarGuard::set("TZ_SEGMENT_STREAM_CONCURRENCY", Some("7"));
-        let _legacy = EnvVarGuard::set("TZ_BLOCKS_PER_FETCH", Some("333"));
 
         let config = TzBlockFetchConfig::from_env();
 
-        assert!(!config.use_stream);
         assert_eq!(config.stream_frame_blocks, 250);
         assert_eq!(config.segment_stream_concurrency, 7);
-        assert_eq!(config.legacy_blocks_per_fetch, 333);
     }
 
     fn temp_segment(start: u64, end: u64, payloads: &[&[u8]]) -> Result<TzStreamSegmentFile> {
