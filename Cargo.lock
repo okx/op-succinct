@@ -327,7 +327,7 @@ dependencies = [
 [[package]]
 name = "alloy-evm"
 version = "0.27.3"
-source = "git+https://gitlab.okg.com/github/evm?branch=feat%2Fxlayer-gasless-alloy-evm-0.27#9a96a62ad9f669ef7cdabeea1142b050a329e181"
+source = "git+https://gitlab.okg.com/github/evm?branch=xl%2Ffeat-op-succinct-compat#0548d3bd090136a928a5f94334a147051ad99a05"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -478,7 +478,7 @@ dependencies = [
 [[package]]
 name = "alloy-op-evm"
 version = "0.26.4"
-source = "git+https://gitlab.okg.com/github/evm?branch=feat%2Fxlayer-gasless-alloy-evm-0.27#9a96a62ad9f669ef7cdabeea1142b050a329e181"
+source = "git+https://gitlab.okg.com/github/evm?branch=xl%2Ffeat-op-succinct-compat#0548d3bd090136a928a5f94334a147051ad99a05"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -495,7 +495,7 @@ dependencies = [
 [[package]]
 name = "alloy-op-hardforks"
 version = "0.4.7"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-chains",
  "alloy-hardforks 0.4.7",
@@ -4795,7 +4795,7 @@ source = "git+https://github.com/celestiaorg/hana?tag=v1.6.0-mocha#3ac60784fd024
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-primitives",
  "cfg-if",
  "hana-celestia",
@@ -4980,7 +4980,7 @@ source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.7#2
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "hokulea-eigenda",
  "kona-client",
  "kona-derive",
@@ -5000,7 +5000,7 @@ version = "0.1.0"
 source = "git+https://github.com/Layr-Labs/hokulea?tag=hokulea-client%2Fv1.1.7#22c48b995b05486fa300510316c78173e6ecc3f3"
 dependencies = [
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "cfg-if",
  "hokulea-client",
  "hokulea-proof",
@@ -5925,7 +5925,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.3.2"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -5945,12 +5945,12 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
@@ -5984,7 +5984,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.4.5"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6005,7 +6005,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.4.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-evm 0.27.3",
@@ -6026,12 +6026,12 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.4.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-op-hardforks",
  "alloy-primitives",
  "alloy-rlp",
@@ -6050,7 +6050,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.4.5"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -6071,7 +6071,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.4.5"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -6082,11 +6082,11 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rlp",
@@ -6130,7 +6130,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.4.5"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6152,12 +6152,12 @@ dependencies = [
 [[package]]
 name = "kona-macros"
 version = "0.1.2"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 
 [[package]]
 name = "kona-mpt"
 version = "0.3.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -6169,7 +6169,7 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-primitives",
  "async-channel",
@@ -6183,12 +6183,12 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-trie",
@@ -6219,12 +6219,12 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
@@ -6251,7 +6251,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.4.5"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus",
@@ -6282,7 +6282,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.3.3"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -6313,7 +6313,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.4.5"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-chains",
  "alloy-eips",
@@ -6332,7 +6332,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -6344,7 +6344,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "cfg-if",
  "kona-std-fpvm",
@@ -7304,7 +7304,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "op-alloy"
 version = "0.23.1"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "op-alloy-consensus 0.23.1",
  "op-alloy-network",
@@ -7333,7 +7333,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-consensus"
 version = "0.23.1"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -7351,7 +7351,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-network"
 version = "0.23.1"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -7366,7 +7366,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-provider"
 version = "0.23.1"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
@@ -7380,7 +7380,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-rpc-types"
 version = "0.23.1"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -7417,7 +7417,7 @@ dependencies = [
 [[package]]
 name = "op-alloy-rpc-types-engine"
 version = "0.23.1"
-source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#950cedac8388d99ae1311a385610959ca1299853"
+source = "git+https://gitlab.okg.com/github/optimism?branch=feat%2Fxlayer-gasless-kona-client#91624ba00b2264c2ff548335df72b2cd36240688"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -7527,7 +7527,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm 0.27.3",
- "alloy-op-evm",
+ "alloy-op-evm 0.26.4",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",

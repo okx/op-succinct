@@ -192,7 +192,7 @@ op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "f
 
 # Execution
 alloy-evm = { version = "0.27.2", default-features = false }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27", default-features = false }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "xl/feat-op-succinct-compat", default-features = false }
 # Use kzg-rs and substrate-bn for the zkVM.
 # Versions aligned with kona v1.2.13
 revm = { version = "34.0.0", default-features = false, features = [
@@ -250,7 +250,7 @@ revm-interpreter = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0
 revm-precompile = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
 revm-primitives = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
 revm-state = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-alloy-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
+alloy-evm = { git = "https://gitlab.okg.com/github/evm", branch = "xl/feat-op-succinct-compat" }
 
 # Patch sp1 crates to add gateway proxy support (only sp1-sdk is modified,
 # but all sp1/slop crates must be patched to avoid duplicate crate versions
@@ -310,7 +310,7 @@ op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "f
 op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
 op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
 op-alloy-provider = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "xl/feat-op-succinct-compat" }
 alloy-op-hardforks = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
 op-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
 
@@ -321,7 +321,7 @@ op-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlay
 # patch, we end up with two alloy-op-evm instances (0.26.3 vs 0.26.4) making the
 # OpTxEnv traits incompatible.
 [patch."https://gitlab.okg.com/github/optimism"]
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "xl/feat-op-succinct-compat" }
 
 [patch."https://github.com/ethereum-optimism/optimism"]
 kona-cli = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
@@ -350,4 +350,4 @@ op-alloy-provider = { git = "https://gitlab.okg.com/github/optimism", branch = "
 op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
 op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
 alloy-op-hardforks = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "xl/feat-op-succinct-compat" }
