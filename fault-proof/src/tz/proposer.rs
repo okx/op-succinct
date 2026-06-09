@@ -413,6 +413,7 @@ where
             first_block,
             end_block,
             config.stream_frame_blocks,
+            config.stream_segment_blocks,
             config.segment_stream_concurrency,
         )
         .await
@@ -423,15 +424,17 @@ where
         first_block: u64,
         end_block: u64,
         frame_blocks: u64,
+        stream_segment_blocks: u64,
         segment_concurrency: usize,
     ) -> Result<TzBlocksWitness> {
         let segment_concurrency = segment_concurrency.max(1);
-        let segments = split_tz_stream_segments(first_block, end_block)?;
+        let segments = split_tz_stream_segments(first_block, end_block, stream_segment_blocks)?;
         tracing::info!(
             first_block,
             end_block,
             segment_count = segments.len(),
             stream_frame_blocks = frame_blocks,
+            stream_segment_blocks,
             segment_stream_concurrency = segment_concurrency,
             "tz: fetching blocks with stream endpoint"
         );
@@ -492,6 +495,7 @@ const TZ_STORAGE_SEGMENT_BLOCKS: u64 = 10_000;
 #[derive(Clone, Copy, Debug)]
 struct TzBlockFetchConfig {
     stream_frame_blocks: u64,
+    stream_segment_blocks: u64,
     segment_stream_concurrency: usize,
 }
 
@@ -499,6 +503,10 @@ impl TzBlockFetchConfig {
     fn from_env() -> Self {
         Self {
             stream_frame_blocks: env_positive_u64("TZ_STREAM_FRAME_BLOCKS", 100),
+            stream_segment_blocks: env_positive_u64(
+                "TZ_STREAM_SEGMENT_BLOCKS",
+                TZ_STORAGE_SEGMENT_BLOCKS,
+            ),
             segment_stream_concurrency: env_positive_usize("TZ_SEGMENT_STREAM_CONCURRENCY", 4),
         }
     }
@@ -584,16 +592,23 @@ fn env_positive_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn split_tz_stream_segments(start: u64, end: u64) -> Result<Vec<TzBlockSegment>> {
+fn split_tz_stream_segments(
+    start: u64,
+    end: u64,
+    max_segment_blocks: u64,
+) -> Result<Vec<TzBlockSegment>> {
     if start > end {
         return Ok(Vec::new());
     }
     anyhow::ensure!(start > 0, "block height 0 is not supported");
+    anyhow::ensure!(max_segment_blocks > 0, "max segment blocks must be greater than 0");
 
     let mut segments = Vec::new();
     let mut cur = start;
     while cur <= end {
-        let segment_end = tz_segment_upper_bound(cur).min(end);
+        let max_configured_end =
+            cur.checked_add(max_segment_blocks.saturating_sub(1)).unwrap_or(u64::MAX);
+        let segment_end = tz_segment_upper_bound(cur).min(max_configured_end).min(end);
         segments.push(TzBlockSegment { start: cur, end: segment_end });
         if segment_end == u64::MAX {
             break;
@@ -700,7 +715,7 @@ mod tests {
 
     #[test]
     fn split_tz_stream_segments_splits_cross_segment_range() {
-        let segments = split_tz_stream_segments(8001, 44000).unwrap();
+        let segments = split_tz_stream_segments(8001, 44000, TZ_STORAGE_SEGMENT_BLOCKS).unwrap();
         assert_eq!(
             segments,
             vec![
@@ -715,25 +730,52 @@ mod tests {
 
     #[test]
     fn split_tz_stream_segments_keeps_exact_segment_range() {
-        let segments = split_tz_stream_segments(10001, 20000).unwrap();
+        let segments = split_tz_stream_segments(10001, 20000, TZ_STORAGE_SEGMENT_BLOCKS).unwrap();
         assert_eq!(segments, vec![TzBlockSegment { start: 10001, end: 20000 }]);
     }
 
     #[test]
     fn split_tz_stream_segments_keeps_single_partial_segment() {
-        let segments = split_tz_stream_segments(15000, 15123).unwrap();
+        let segments = split_tz_stream_segments(15000, 15123, TZ_STORAGE_SEGMENT_BLOCKS).unwrap();
         assert_eq!(segments, vec![TzBlockSegment { start: 15000, end: 15123 }]);
+    }
+
+    #[test]
+    fn split_tz_stream_segments_honors_smaller_configured_segment_size() {
+        let segments = split_tz_stream_segments(8001, 14000, 2000).unwrap();
+        assert_eq!(
+            segments,
+            vec![
+                TzBlockSegment { start: 8001, end: 10000 },
+                TzBlockSegment { start: 10001, end: 12000 },
+                TzBlockSegment { start: 12001, end: 14000 },
+            ]
+        );
+    }
+
+    #[test]
+    fn split_tz_stream_segments_never_crosses_storage_segment_boundary() {
+        let segments = split_tz_stream_segments(9001, 12000, 5000).unwrap();
+        assert_eq!(
+            segments,
+            vec![
+                TzBlockSegment { start: 9001, end: 10000 },
+                TzBlockSegment { start: 10001, end: 12000 },
+            ]
+        );
     }
 
     #[test]
     fn block_fetch_config_reads_stream_settings() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _frame = EnvVarGuard::set("TZ_STREAM_FRAME_BLOCKS", Some("250"));
+        let _segment_blocks = EnvVarGuard::set("TZ_STREAM_SEGMENT_BLOCKS", Some("2000"));
         let _concurrency = EnvVarGuard::set("TZ_SEGMENT_STREAM_CONCURRENCY", Some("7"));
 
         let config = TzBlockFetchConfig::from_env();
 
         assert_eq!(config.stream_frame_blocks, 250);
+        assert_eq!(config.stream_segment_blocks, 2000);
         assert_eq!(config.segment_stream_concurrency, 7);
     }
 
