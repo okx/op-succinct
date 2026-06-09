@@ -7,6 +7,14 @@ use tracing::info;
 
 use xlayer_tee_enclave::{gc, keys, server, task_manager::TaskManager};
 
+// Use jemalloc as the global allocator. It returns free memory to the OS more
+// aggressively than glibc malloc and supports heap profiling via MALLOC_CONF.
+// To enable heap profiling at runtime, launch the enclave with:
+//   MALLOC_CONF=prof:true,prof_active:true,lg_prof_interval:30,prof_prefix:/tmp/jeprof
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -14,7 +22,8 @@ fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
 #[tokio::main]
 #[allow(unreachable_code)]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // Disable ANSI escape codes so console-captured logs grep/awk cleanly.
+    tracing_subscriber::fmt().with_ansi(false).init();
 
     keys::init_dev_keys();
     info!("enclave key initialized, address={}", keys::enclave_address());
