@@ -15774,6 +15774,7 @@ dependencies = [
  "kona-genesis",
  "kona-preimage",
  "kona-proof",
+ "libc",
  "op-succinct-client-utils",
  "op-succinct-ethereum-client-utils",
  "parking_lot",

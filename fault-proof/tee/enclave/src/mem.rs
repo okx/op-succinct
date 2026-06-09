@@ -28,6 +28,18 @@ pub fn vm_hwm_kb() -> u64 {
     read_status_kb("VmHWM:")
 }
 
+/// Ask glibc to release as much unused heap arena back to the OS as it can.
+/// On Linux/glibc, free()'d memory often stays in process-private arenas; this
+/// forces a sweep. No-op on non-Linux. Use after each task completes to test
+/// whether observed RSS growth is allocator caching vs a real leak.
+pub fn trim_malloc() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        // glibc-specific. Safe to call even on musl: libc crate exposes a stub.
+        libc::malloc_trim(0);
+    }
+}
+
 pub struct PeakTracker {
     peak_kb: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
