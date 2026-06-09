@@ -215,6 +215,12 @@ impl EnclaveClient {
         let body_str = String::from_utf8_lossy(&body);
         Err(parse_enclave_error(status, &body_str))
     }
+
+    /// Generic passthrough: forward an arbitrary GET to the enclave and return
+    /// (status, body) verbatim. Used by debug/diagnostic endpoints.
+    pub async fn proxy_get(&self, uri: &str) -> Result<(u16, Vec<u8>), HostError> {
+        self.execute_request("GET", uri, vec![], Bytes::new()).await
+    }
 }
 
 fn decode_task_state_view(raw: &[u8]) -> Result<TaskStateView, HostError> {

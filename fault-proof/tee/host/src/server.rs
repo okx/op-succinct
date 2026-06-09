@@ -2,10 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::keccak256;
 use axum::{
-    body::Bytes,
-    extract::{Path, State},
-    http::HeaderMap,
-    response::IntoResponse,
+    body::{Body, Bytes},
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -456,4 +456,50 @@ fn build_task_detail(entry: &crate::task_manager::TaskEntry) -> TaskDetail {
 
 fn parse_u64_header(headers: &HeaderMap, name: &str) -> Option<u64> {
     headers.get(name)?.to_str().ok()?.parse().ok()
+}
+
+// -------------------- /debug/* proxy to enclave --------------------
+
+/// Forward GET /debug/<rest>[?query] to the enclave's /debug/<rest>[?query].
+/// Returns the enclave response verbatim (status + body), so jeprof heap
+/// profile bytes etc. can be pulled out from a sealed enclave.
+pub async fn proxy_debug(
+    State(state): State<Arc<AppState>>,
+    Path(rest): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let mut uri = format!("/debug/{rest}");
+    if !query.is_empty() {
+        let qs = query
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding(k), urlencoding(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        uri.push('?');
+        uri.push_str(&qs);
+    }
+
+    match state.enclave.proxy_get(&uri).await {
+        Ok((status, body)) => Response::builder()
+            .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap(),
+        Err(e) => Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(format!("enclave proxy error: {e}")))
+            .unwrap(),
+    }
+}
+
+fn urlencoding(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{:02X}", b),
+        })
+        .collect()
 }
