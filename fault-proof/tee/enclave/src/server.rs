@@ -21,8 +21,113 @@ pub fn build_router(manager: Arc<TaskManager>) -> Router {
         .route("/tasks/:task_id", get(handle_get_task).delete(handle_delete_task))
         .route(wire::TASKS_LIST, get(handle_list_tasks))
         .route(wire::ATTESTATION, get(handle_attestation))
+        .route("/debug/heap-list", get(handle_heap_list))
+        .route("/debug/heap-dump", get(handle_heap_dump))
+        .route("/debug/heap-file", get(handle_heap_file))
         .layer(axum::extract::DefaultBodyLimit::max(wire::MAX_RANGE_BODY_BYTES))
         .with_state(manager)
+}
+
+// -------------------- jemalloc heap profile debug endpoints --------------------
+
+/// GET /debug/heap-list — list profile files written by jemalloc in /tmp.
+async fn handle_heap_list() -> Response {
+    let mut out = String::new();
+    if let Ok(read) = std::fs::read_dir("/tmp") {
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("jeprof") && name.ends_with(".heap") {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push_str(&format!("{name}\t{size}\n"));
+            }
+        }
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(out))
+        .unwrap()
+}
+
+/// GET /debug/heap-dump — force jemalloc to dump a profile NOW.
+/// Returns the path of the new file. Requires MALLOC_CONF=prof:true at boot.
+async fn handle_heap_dump() -> Response {
+    #[cfg(target_os = "linux")]
+    {
+        // Allocate the dump path in /tmp, ask jemalloc to write to it.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let path = format!("/tmp/jeprof-manual-{ts}.heap");
+        let c_path = match std::ffi::CString::new(path.clone()) {
+            Ok(s) => s,
+            Err(_) => return text_500("invalid path"),
+        };
+        // mallctl("prof.dump", NULL, NULL, &path_ptr, sizeof(char*))
+        let mut path_ptr = c_path.as_ptr();
+        let name = std::ffi::CString::new("prof.dump").unwrap();
+        let rc = unsafe {
+            tikv_jemalloc_sys::mallctl(
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut path_ptr as *mut _ as *mut std::ffi::c_void,
+                std::mem::size_of::<*const std::os::raw::c_char>(),
+            )
+        };
+        if rc != 0 {
+            return text_500(&format!(
+                "mallctl prof.dump failed (rc={rc}). Was the enclave started with MALLOC_CONF=prof:true ?"
+            ));
+        }
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(path))
+            .unwrap()
+    }
+    #[cfg(not(target_os = "linux"))]
+    text_500("not linux")
+}
+
+/// GET /debug/heap-file?name=jeprof.NN.heap — return raw bytes of a profile file.
+async fn handle_heap_file(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let name = match q.get("name") {
+        Some(n) => n.clone(),
+        None => return text_400("missing ?name=..."),
+    };
+    // Path traversal guard: must be a bare filename in /tmp.
+    if name.contains('/') || name.contains('\0') {
+        return text_400("bad name");
+    }
+    let path = format!("/tmp/{name}");
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(bytes))
+            .unwrap(),
+        Err(e) => text_500(&format!("read {path}: {e}")),
+    }
+}
+
+fn text_400(msg: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(msg.to_string()))
+        .unwrap()
+}
+
+fn text_500(msg: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(msg.to_string()))
+        .unwrap()
 }
 
 fn error_response(err: &Error) -> Response {
