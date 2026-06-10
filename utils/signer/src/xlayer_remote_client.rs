@@ -142,45 +142,43 @@ struct XLayerQueryRequest {
 /// carry no arguments (e.g. `resolve()`) produce an empty overlay.
 /// Flattened into `XLayerOtherInfo`, so absent fields don't appear in
 /// the JSON payload.
-#[derive(Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MethodOverlay {
-    // DisputeGameFactory.create(uint32, bytes32, bytes)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    game_type: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_claim: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    extra_data: Option<String>,
-    // OPSuccinctFaultDisputeGame.claimCredit(address)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recipient: Option<String>,
-    // OPSuccinctFaultDisputeGame.prove(bytes)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proof_bytes: Option<String>,
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum MethodOverlay {
+    /// `DisputeGameFactory.create(uint32, bytes32, bytes)`
+    #[serde(rename_all = "camelCase")]
+    Create {
+        game_type: u32,
+        root_claim: String,
+        extra_data: String,
+    },
+    /// `OPSuccinctFaultDisputeGame.claimCredit(address)`
+    ClaimCredit { recipient: String },
+    /// `OPSuccinctFaultDisputeGame.prove(bytes)`
+    #[serde(rename_all = "camelCase")]
+    Prove { proof_bytes: String },
+    /// `resolve()` / `challenge()` — no business params. The empty struct
+    /// variant serializes to `{}`, which flattens away cleanly inside
+    /// `XLayerOtherInfo`.
+    Empty {},
 }
 
 impl MethodOverlay {
-    /// Dispatches on the calldata selector to the right decoder. Unknown
-    /// selectors are rejected upstream in `detect_operate_type`; the
-    /// fallback here only fires for empty calldata.
-    fn from_calldata(data: &[u8]) -> Self {
-        if data.len() < 4 {
-            return Self::default();
-        }
+    /// Dispatches on the calldata selector. `detect_operate_type` runs
+    /// upstream and guarantees `data.len() >= 4` and that the selector
+    /// is one of the five we recognise.
+    fn from_calldata(data: &[u8]) -> Result<Self> {
         let selector = format!("0x{}", hex::encode(&data[..4]));
         let args = &data[4..];
         match selector.as_str() {
-            METHOD_SIG_DGF_CREATE => decode_create(args).unwrap_or_default(),
-            METHOD_SIG_CLAIM_CREDIT => Self {
-                recipient: extract_recipient(args),
-                ..Self::default()
-            },
-            METHOD_SIG_PROVE => Self {
-                proof_bytes: extract_prove_bytes(args),
-                ..Self::default()
-            },
-            _ => Self::default(),
+            METHOD_SIG_DGF_CREATE => decode_create(args),
+            METHOD_SIG_CLAIM_CREDIT => decode_claim_credit(args),
+            METHOD_SIG_PROVE => decode_prove(args),
+            METHOD_SIG_RESOLVE | METHOD_SIG_CHALLENGE => Ok(Self::Empty {}),
+            other => unreachable!(
+                "unexpected selector {other:?} reached MethodOverlay::from_calldata; \
+                 detect_operate_type should have rejected it"
+            ),
         }
     }
 }
@@ -206,14 +204,12 @@ struct XLayerOtherInfo {
     overlay: MethodOverlay,
 }
 
-/// Decodes `DisputeGameFactory.create(uint32, bytes32, bytes)`. Returns
-/// `None` if `args` is too short to hold the three head words; the
+/// Decodes `DisputeGameFactory.create(uint32, bytes32, bytes)`. The
 /// dynamic `extraData` tail is truncated rather than erroring when its
 /// declared length runs off the end.
-fn decode_create(args: &[u8]) -> Option<MethodOverlay> {
+fn decode_create(args: &[u8]) -> Result<MethodOverlay> {
     if args.len() < 96 {
-        tracing::warn!("Insufficient calldata for create()");
-        return None;
+        anyhow::bail!("Insufficient calldata for create(): {} bytes", args.len());
     }
     let game_type = u32_from_word(&args[0..32]);
     let root_claim = hex_0x(&args[32..64]);
@@ -227,36 +223,38 @@ fn decode_create(args: &[u8]) -> Option<MethodOverlay> {
         %extra_data,
         "Parsed create() params"
     );
-    Some(MethodOverlay {
-        game_type: Some(game_type),
-        root_claim: Some(root_claim),
-        extra_data: Some(extra_data),
-        ..MethodOverlay::default()
-    })
+    Ok(MethodOverlay::Create { game_type, root_claim, extra_data })
 }
 
-/// Extracts the recipient from `claimCredit(address)` args — the
+/// Decodes `OPSuccinctFaultDisputeGame.claimCredit(address)` — the
 /// address sits in the low 20 bytes of the single 32-byte word.
-fn extract_recipient(args: &[u8]) -> Option<String> {
+fn decode_claim_credit(args: &[u8]) -> Result<MethodOverlay> {
     if args.len() < 32 {
-        return None;
+        anyhow::bail!("Insufficient calldata for claimCredit(): {} bytes", args.len());
     }
     let recipient = hex_0x(&args[12..32]);
     tracing::info!(%recipient, "Parsed claimCredit() params");
-    Some(recipient)
+    Ok(MethodOverlay::ClaimCredit { recipient })
 }
 
-/// Extracts the inner payload from `prove(bytes)` args, stripping the
-/// 32-byte offset + 32-byte length header.
-fn extract_prove_bytes(args: &[u8]) -> Option<String> {
+/// Decodes `OPSuccinctFaultDisputeGame.prove(bytes)` — strips the
+/// 32-byte offset + 32-byte length header and returns the inner payload.
+fn decode_prove(args: &[u8]) -> Result<MethodOverlay> {
     if args.len() <= 64 {
-        return None;
+        anyhow::bail!("Insufficient calldata for prove(): {} bytes", args.len());
     }
     let length = u64_from_word(&args[32..64]) as usize;
     if args.len() < 64 + length {
-        return None;
+        anyhow::bail!(
+            "prove() declared payload {} bytes, only {} available",
+            length,
+            args.len() - 64,
+        );
     }
-    Some(hex_0x(&args[64..64 + length]))
+    tracing::info!(proof_bytes_len = length, "Parsed prove() params");
+    Ok(MethodOverlay::Prove {
+        proof_bytes: hex_0x(&args[64..64 + length]),
+    })
 }
 
 /// Decodes an ABI dynamic `bytes` value at `offset` inside `args`. The
@@ -557,7 +555,7 @@ impl XLayerRemoteClient {
             max_priority_fee_per_gas: tx.max_priority_fee_per_gas.map(|f| f.to_string()),
             data: Some(hex_0x(data)),
             value: tx.value.map(|v| v.to_string()),
-            overlay: MethodOverlay::from_calldata(data),
+            overlay: MethodOverlay::from_calldata(data)?,
         };
 
         serde_json::to_string(&other_info).context("Failed to serialize OtherInfo")
