@@ -28,6 +28,9 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 gcloud-sdk.workspace = true
 
+# kms
+ok-kms-rust.workspace = true
+
 # xlayer remote signer dependencies
 serde.workspace = true
 serde_json.workspace = true
