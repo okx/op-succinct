@@ -175,12 +175,6 @@ struct XLayerOtherInfo {
     // OPSuccinctFaultDisputeGame.claimCredit business parameter.
     #[serde(skip_serializing_if = "Option::is_none")]
     recipient: Option<String>,
-    // Method discriminator used by the remote signer to route and audit
-    // non-create calls (`resolve`, `claimCredit`, `prove`, `challenge`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    method: Option<String>,
-    // Echoed `operateType` and the inner bytes of `prove(bytes)` — emitted
-    // on `prove`/`challenge` calls only.
     #[serde(skip_serializing_if = "Option::is_none")]
     operate_type: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -477,29 +471,18 @@ impl XLayerRemoteClient {
             (None, None, None, None)
         };
 
-        // Per-method overlays: `method` is set on every non-create call so
-        // the remote signer can route/audit it; `proofBytes` carries the
-        // inner payload of `prove(bytes)`; `operateType` is echoed for
-        // `prove`/`challenge`.
-        let (operate_type, proof_bytes, method) = if data.len() >= 4 {
+        let (operate_type, proof_bytes) = if data.len() >= 4 {
             let method_sig = format!("0x{}", hex::encode(&data[..4]));
             match method_sig.as_str() {
                 METHOD_SIG_PROVE => (
                     Some(OperateType::Prove as i32),
                     Self::extract_prove_bytes(data),
-                    Some("prove".to_string()),
                 ),
-                METHOD_SIG_CHALLENGE => (
-                    Some(OperateType::Challenge as i32),
-                    None,
-                    Some("challenge".to_string()),
-                ),
-                METHOD_SIG_RESOLVE => (None, None, Some("resolve".to_string())),
-                METHOD_SIG_CLAIM_CREDIT => (None, None, Some("claimCredit".to_string())),
-                _ => (None, None, None),
+                METHOD_SIG_CHALLENGE => (Some(OperateType::Challenge as i32), None),
+                _ => (None, None),
             }
         } else {
-            (None, None, None)
+            (None, None)
         };
 
         let other_info = XLayerOtherInfo {
@@ -520,7 +503,6 @@ impl XLayerRemoteClient {
             root_claim,
             extra_data,
             recipient,
-            method,
             operate_type,
             proof_bytes,
         };
@@ -1770,43 +1752,41 @@ mod tests {
         assert!(!client.has_ref_order_id("totally-unrelated-id").await);
     }
 
-    /// Every non-create call carries a `method` discriminator the remote
-    /// signer uses to route/audit. `create` must NOT carry it.
     #[test]
-    fn test_other_info_method_field() {
+    fn test_other_info_overlays() {
         let client = XLayerRemoteClient::new(XLayerConfig::default());
 
-        // create() — no `method`
         let mut tx = TransactionRequest::default();
         tx.to = Some(alloy_primitives::TxKind::Call(address!(
             "1234567890123456789012345678901234567890"
         )));
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
-            hex::decode("82ecf2f6").unwrap(),
-        ));
-        let json = client.build_other_info(&tx).unwrap();
-        assert!(!json.contains("\"method\""), "create must not emit method: {json}");
 
-        // resolve()
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
-            hex::decode("2810e1d6").unwrap(),
-        ));
-        let json = client.build_other_info(&tx).unwrap();
-        assert!(json.contains("\"method\":\"resolve\""), "got: {json}");
+        for selector in ["82ecf2f6", "2810e1d6", "60e27464"] {
+            tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
+                hex::decode(selector).unwrap(),
+            ));
+            let json = client.build_other_info(&tx).unwrap();
+            assert!(!json.contains("\"method\""), "got: {json}");
+            assert!(!json.contains("\"operateType\""), "got: {json}");
+        }
 
-        // claimCredit(address)
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
-            hex::decode("60e27464").unwrap(),
-        ));
-        let json = client.build_other_info(&tx).unwrap();
-        assert!(json.contains("\"method\":\"claimCredit\""), "got: {json}");
-
-        // challenge() — must emit method AND operateType
+        // challenge() — only operateType is echoed.
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
             hex::decode("d2ef7398").unwrap(),
         ));
         let json = client.build_other_info(&tx).unwrap();
-        assert!(json.contains("\"method\":\"challenge\""), "got: {json}");
         assert!(json.contains("\"operateType\":28"), "got: {json}");
+
+        // prove(bytes) — operateType + proofBytes.
+        let mut prove_data = hex::decode("375bfa5d").unwrap();
+        prove_data.extend_from_slice(&[0u8; 24]);
+        prove_data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x20]); // offset
+        prove_data.extend_from_slice(&[0u8; 24]);
+        prove_data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x04]); // length
+        prove_data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(prove_data));
+        let json = client.build_other_info(&tx).unwrap();
+        assert!(json.contains("\"operateType\":27"), "got: {json}");
+        assert!(json.contains("\"proofBytes\":\"0xdeadbeef\""), "got: {json}");
     }
 }
