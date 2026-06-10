@@ -1552,4 +1552,42 @@ mod tests {
             "si/fTWlDg6+V9OFOM3CictCuqtGfUjKZ3keGLwxM/walrXtQaN8K/PnGTvFvc4q6pb/80HtZIy+hjeugAx8VPLmIXmKpJ5H4mbGEVQe7bk4="
         );
     }
+
+    /// Confirms that the `k256` feature on `alloy-rpc-types-eth` is
+    /// enabled and `From<TxEnvelope> for TransactionRequest` populates
+    /// `from` via ECDSA recovery. The `from` checks inside
+    /// `verify_signed_transaction` rely on this — without the feature
+    /// they silently degrade to no-ops.
+    #[test]
+    fn test_envelope_into_request_recovers_from() {
+        use alloy_consensus::{SignableTransaction, TxEip1559};
+        use alloy_eips::Encodable2718;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+
+        let signer = PrivateKeySigner::random();
+        let expected_from = signer.address();
+
+        let tx = TxEip1559 {
+            chain_id: 11_155_111,
+            nonce: 1,
+            gas_limit: 21_000,
+            max_fee_per_gas: 20_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: alloy_primitives::TxKind::Call(address!(
+                "1234567890123456789012345678901234567890"
+            )),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::new(),
+        };
+        let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+        let envelope = TxEnvelope::Eip1559(tx.into_signed(signature));
+
+        let raw = envelope.encoded_2718();
+        let decoded = TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+        let recovered_req: TransactionRequest = decoded.into();
+
+        assert_eq!(recovered_req.from, Some(expected_from));
+    }
 }
