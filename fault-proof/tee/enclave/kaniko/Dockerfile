@@ -15,8 +15,13 @@
 #    to `FROM scratch`.
 #  - --chown=0:0 --chmod=744 fixes uid/gid/perms so the OCI layer is deterministic.
 
-# TODO: replace with YOUR pinned, runtime-lib-containing base image (digest).
-FROM <your-registry>/debian/bookworm-slim
+# Official Debian from Docker Hub, pinned by DIGEST. Get the digest with:
+#   docker buildx imagetools inspect debian:bookworm-slim --format '{{.Manifest.Digest}}'
+# and use the SAME digest on every machine. (To smoke-test you may temporarily drop
+# the @sha256 and use `FROM debian:bookworm-slim` — but that is NOT reproducible.)
+# For an internal mirror use the full host + colon tag, e.g.
+#   FROM your-registry.example.com/okbase/debian:bookworm-slim@sha256:...
+FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb
 
 COPY --chown=0:0 --chmod=744 ./xlayer-tee-enclave /xlayer-tee-enclave
 
