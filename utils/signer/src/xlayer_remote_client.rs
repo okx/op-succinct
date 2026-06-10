@@ -154,10 +154,6 @@ struct XLayerOtherInfo {
     gas_price: Option<String>,
     nonce: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    blob_versioned_hashes: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_fee_per_blob_gas: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     max_fee_per_gas: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_priority_fee_per_gas: Option<String>,
@@ -490,10 +486,6 @@ impl XLayerRemoteClient {
             gas_limit: tx.gas.unwrap_or(0),
             gas_price: tx.gas_price.map(|gp| gp.to_string()),
             nonce: tx.nonce.unwrap_or(0),
-            blob_versioned_hashes: tx.blob_versioned_hashes.as_ref().map(|hashes| {
-                hashes.iter().map(|h| format!("{:?}", h)).collect()
-            }),
-            max_fee_per_blob_gas: tx.max_fee_per_blob_gas.map(|f| f.to_string()),
             max_fee_per_gas: tx.max_fee_per_gas.map(|f| f.to_string()),
             max_priority_fee_per_gas: tx.max_priority_fee_per_gas.map(|f| f.to_string()),
             data: Some(format!("0x{}", hex::encode(data))),
@@ -1152,70 +1144,6 @@ impl XLayerRemoteClient {
                         ));
                     }
                 }
-            }
-            TxEnvelope::Eip4844(signed) => {
-                // Verify chain id
-                if let Some(chain_id) = original_tx.chain_id {
-                    if recovered_req.chain_id != Some(chain_id) {
-                        return Err(anyhow::anyhow!(
-                            "ChainId mismatch in blob tx: expected {:?}, got {:?}",
-                            chain_id,
-                            recovered_req.chain_id
-                        ));
-                    }
-                }
-
-                // Verify from
-                if let Some(expected_from) = original_tx.from {
-                    let actual_from = recovered_req.from;
-                    if actual_from != Some(expected_from) {
-                        return Err(anyhow::anyhow!(
-                            "From mismatch in blob tx: expected {:?}, got {:?}",
-                            expected_from,
-                            actual_from
-                        ));
-                    }
-                }
-
-                // Verify blob transaction basic fields
-                if let Some(nonce) = original_tx.nonce {
-                    if signed.nonce() != nonce {
-                        return Err(anyhow::anyhow!(
-                            "Nonce mismatch in blob tx: expected {}, got {}",
-                            nonce,
-                            signed.nonce()
-                        ));
-                    }
-                }
-
-                // Verify to address
-                if let Some(to) = &original_tx.to {
-                    match to {
-                        alloy_primitives::TxKind::Call(addr) => {
-                            if Some(*addr) != signed.to() {
-                                return Err(anyhow::anyhow!(
-                                    "To address mismatch in blob tx"
-                                ));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Verify value
-                if let Some(value) = original_tx.value {
-                    if signed.value() != value {
-                        return Err(anyhow::anyhow!(
-                            "Value mismatch in blob tx"
-                        ));
-                    }
-                }
-
-                tracing::info!(
-                    "Blob transaction verified successfully: nonce={}, to={:?}",
-                    signed.nonce(),
-                    signed.to()
-                );
             }
             _ => {
                 return Err(anyhow::anyhow!(
