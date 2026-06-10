@@ -4,7 +4,10 @@ use alloy_primitives::{Address, Bytes, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 use std::time::Duration;
+use lru::LruCache;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Custom error types for XLayer remote signer
@@ -38,30 +41,59 @@ pub enum XLayerSignerError {
     ConfigError(String),
 }
 
-/// Contract method signatures (4-byte selectors)
+/// 4-byte selectors of the contract methods this client will sign for.
+/// Calls with any other selector are rejected.
 const METHOD_SIG_DGF_CREATE: &str = "0x82ecf2f6"; // DisputeGameFactory.create
-const METHOD_SIG_RESOLVE_CLAIM: &str = "0x03c2924d"; // FaultDisputeGame.resolveClaim(uint256,uint256)
-const METHOD_SIG_PROVE_TEE: &str = "0x375bfa5d"; // DisputeGame.prove(bytes) — TEE challenger
-const METHOD_SIG_CHALLENGE: &str = "0xd2ef7398"; // DisputeGame.challenge() — TEE challenger
-const METHOD_SIG_RESOLVE: &str = "0x2810e1d6"; // FaultDisputeGame.resolve
-const METHOD_SIG_CLAIM_CREDIT: &str = "0x60e27464"; // FaultDisputeGame.claimCredit
+const METHOD_SIG_PROVE: &str = "0x375bfa5d"; // OPSuccinctFaultDisputeGame.prove(bytes)
+const METHOD_SIG_CHALLENGE: &str = "0xd2ef7398"; // OPSuccinctFaultDisputeGame.challenge()
+const METHOD_SIG_RESOLVE: &str = "0x2810e1d6"; // OPSuccinctFaultDisputeGame.resolve()
+const METHOD_SIG_CLAIM_CREDIT: &str = "0x60e27464"; // OPSuccinctFaultDisputeGame.claimCredit(address)
 
-/// Retry configuration constants
 const MAX_SIGNING_RETRIES: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const SIGN_RESULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const HTTP_STATUS_SUCCESS: u16 = 200;
 
-/// OperateType represents the operation type for XLayer remote signer
+/// Capacity of the LRU that remembers refOrderIDs issued by this client,
+/// so a companion verify-server can answer asset-management callbacks.
+const REF_ORDER_CACHE_CAPACITY: usize = 1000;
+
+const REF_ORDER_ID_PREFIX: &str = "PROPOSER_TZ_";
+
+/// Builds a refOrderID of the form `PROPOSER_TZ_{op}_{unix_ms}_{rand8hex}`.
+/// The 32 bits of randomness come from a v4 UUID to avoid pulling in a
+/// separate `rand` dependency.
+fn generate_ref_order_id(op: OperateType) -> String {
+    let ts_ms = chrono::Utc::now().timestamp_millis();
+    let uuid = uuid::Uuid::new_v4();
+    let rand_bytes = &uuid.as_bytes()[..4];
+    format!(
+        "{prefix}{op}_{ts}_{rand}",
+        prefix = REF_ORDER_ID_PREFIX,
+        op = op as i32,
+        ts = ts_ms,
+        rand = hex::encode(rand_bytes),
+    )
+}
+
+/// Wire-level operation type recognised by the XLayer remote signer.
+/// Variants are named after the contract method they cover; the integer
+/// values are the on-the-wire IDs the service expects.
+///
+/// Do **not** renumber these without a coordinated change on the signing
+/// service.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(i32)]
 pub enum OperateType {
-    Proposer = 20,
-    ChallengerResolveClaim = 21,
-    ChallengerResolve = 22,
-    ChallengerClaimCredit = 23,
-    // TEE challenger variants (mirror of Go OperateTypeProve / OperateTypeChallenge)
+    /// `DisputeGameFactory.create`.
+    Create = 20,
+    /// `OPSuccinctFaultDisputeGame.resolve()`.
+    Resolve = 22,
+    /// `OPSuccinctFaultDisputeGame.claimCredit(address)`.
+    ClaimCredit = 23,
+    /// `OPSuccinctFaultDisputeGame.prove(bytes)`.
     Prove = 27,
+    /// `OPSuccinctFaultDisputeGame.challenge()`.
     Challenge = 28,
 }
 
@@ -106,7 +138,53 @@ struct XLayerQueryRequest {
     project_symbol: i32,
 }
 
-/// XLayerOtherInfo contains transaction parameters for OtherInfo field
+/// Per-method business overlay decoded from calldata. Selectors that
+/// carry no arguments (e.g. `resolve()`) produce an empty overlay.
+/// Flattened into `XLayerOtherInfo`, so absent fields don't appear in
+/// the JSON payload.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum MethodOverlay {
+    /// `DisputeGameFactory.create(uint32, bytes32, bytes)`
+    #[serde(rename_all = "camelCase")]
+    Create {
+        game_type: u32,
+        root_claim: String,
+        extra_data: String,
+    },
+    /// `OPSuccinctFaultDisputeGame.claimCredit(address)`
+    ClaimCredit { recipient: String },
+    /// `OPSuccinctFaultDisputeGame.prove(bytes)`
+    #[serde(rename_all = "camelCase")]
+    Prove { proof_bytes: String },
+    /// `resolve()` / `challenge()` — no business params. The empty struct
+    /// variant serializes to `{}`, which flattens away cleanly inside
+    /// `XLayerOtherInfo`.
+    Empty {},
+}
+
+impl MethodOverlay {
+    /// Dispatches on the calldata selector. `detect_operate_type` runs
+    /// upstream and guarantees `data.len() >= 4` and that the selector
+    /// is one of the five we recognise.
+    fn from_calldata(data: &[u8]) -> Result<Self> {
+        let selector = format!("0x{}", hex::encode(&data[..4]));
+        let args = &data[4..];
+        match selector.as_str() {
+            METHOD_SIG_DGF_CREATE => decode_create(args),
+            METHOD_SIG_CLAIM_CREDIT => decode_claim_credit(args),
+            METHOD_SIG_PROVE => decode_prove(args),
+            METHOD_SIG_RESOLVE | METHOD_SIG_CHALLENGE => Ok(Self::Empty {}),
+            other => unreachable!(
+                "unexpected selector {other:?} reached MethodOverlay::from_calldata; \
+                 detect_operate_type should have rejected it"
+            ),
+        }
+    }
+}
+
+/// JSON payload of the remote signer's `otherInfo` field: tx-level
+/// fields plus the per-method business overlay decoded from calldata.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct XLayerOtherInfo {
@@ -115,10 +193,6 @@ struct XLayerOtherInfo {
     gas_price: Option<String>,
     nonce: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    blob_versioned_hashes: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_fee_per_blob_gas: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     max_fee_per_gas: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_priority_fee_per_gas: Option<String>,
@@ -126,25 +200,88 @@ struct XLayerOtherInfo {
     data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
-    // Business parameters for Proposer
-    #[serde(skip_serializing_if = "Option::is_none")]
-    game_type: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_claim: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    extra_data: Option<String>,
-    // Business parameters for Challenger
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recipient: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    claim_index: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    num_to_resolve: Option<u64>,
-    // TEE-specific fields (Go: buildProposerTeeProveOtherInfo / buildChallengerTeeChallengOtherInfo)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    operate_type: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proof_bytes: Option<String>,
+    #[serde(flatten)]
+    overlay: MethodOverlay,
+}
+
+/// Decodes `DisputeGameFactory.create(uint32, bytes32, bytes)`. The
+/// dynamic `extraData` tail is truncated rather than erroring when its
+/// declared length runs off the end.
+fn decode_create(args: &[u8]) -> Result<MethodOverlay> {
+    if args.len() < 96 {
+        anyhow::bail!("Insufficient calldata for create(): {} bytes", args.len());
+    }
+    let game_type = u32_from_word(&args[0..32]);
+    let root_claim = hex_0x(&args[32..64]);
+    let extra_data_offset = u64_from_word(&args[64..96]) as usize;
+    let extra_data = decode_dyn_bytes(args, extra_data_offset)
+        .unwrap_or_else(|| "0x".to_string());
+
+    tracing::info!(
+        game_type,
+        %root_claim,
+        %extra_data,
+        "Parsed create() params"
+    );
+    Ok(MethodOverlay::Create { game_type, root_claim, extra_data })
+}
+
+/// Decodes `OPSuccinctFaultDisputeGame.claimCredit(address)` — the
+/// address sits in the low 20 bytes of the single 32-byte word.
+fn decode_claim_credit(args: &[u8]) -> Result<MethodOverlay> {
+    if args.len() < 32 {
+        anyhow::bail!("Insufficient calldata for claimCredit(): {} bytes", args.len());
+    }
+    let recipient = hex_0x(&args[12..32]);
+    tracing::info!(%recipient, "Parsed claimCredit() params");
+    Ok(MethodOverlay::ClaimCredit { recipient })
+}
+
+/// Decodes `OPSuccinctFaultDisputeGame.prove(bytes)` — strips the
+/// 32-byte offset + 32-byte length header and returns the inner payload.
+fn decode_prove(args: &[u8]) -> Result<MethodOverlay> {
+    if args.len() <= 64 {
+        anyhow::bail!("Insufficient calldata for prove(): {} bytes", args.len());
+    }
+    let length = u64_from_word(&args[32..64]) as usize;
+    if args.len() < 64 + length {
+        anyhow::bail!(
+            "prove() declared payload {} bytes, only {} available",
+            length,
+            args.len() - 64,
+        );
+    }
+    tracing::info!(proof_bytes_len = length, "Parsed prove() params");
+    Ok(MethodOverlay::Prove {
+        proof_bytes: hex_0x(&args[64..64 + length]),
+    })
+}
+
+/// Decodes an ABI dynamic `bytes` value at `offset` inside `args`. The
+/// offset points at the length word; the payload follows. Truncates
+/// rather than erroring when the declared length runs off the end.
+fn decode_dyn_bytes(args: &[u8], offset: usize) -> Option<String> {
+    let len_word = args.get(offset..offset.checked_add(32)?)?;
+    let length = u64_from_word(len_word) as usize;
+    let start = offset + 32;
+    let end = start.saturating_add(length).min(args.len());
+    Some(hex_0x(&args[start..end]))
+}
+
+/// Reads the low 4 bytes of an ABI 32-byte word as `uint32`.
+fn u32_from_word(word: &[u8]) -> u32 {
+    u32::from_be_bytes(word[28..32].try_into().expect("word is 32 bytes"))
+}
+
+/// Reads the low 8 bytes of an ABI 32-byte word as `u64`. Upper bytes
+/// are ignored — ABI lengths and offsets that fit in 64 bits already
+/// dwarf anything we'd actually try to allocate.
+fn u64_from_word(word: &[u8]) -> u64 {
+    u64::from_be_bytes(word[24..32].try_into().expect("word is 32 bytes"))
+}
+
+fn hex_0x(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
 }
 
 /// XLayerConfig contains configuration for XLayer remote signer
@@ -205,52 +342,80 @@ impl Default for XLayerConfig {
     }
 }
 
-/// XLayerRemoteClient is the client for XLayer remote signing service
+/// Client for the XLayer remote signing service. Safe for concurrent
+/// use — signing requests are serialized internally because the remote
+/// service is not guaranteed to handle parallel calls for the same
+/// operate address.
 #[derive(Debug)]
 pub struct XLayerRemoteClient {
     config: XLayerConfig,
     client: reqwest::Client,
+    /// One in-flight signing request at a time.
+    signing_lock: Mutex<()>,
+    /// refOrderIDs issued by this client, queryable by a companion
+    /// verify-server. Held behind its own mutex so callback lookups
+    /// don't contend with the signing lock.
+    ref_order_cache: Mutex<LruCache<String, ()>>,
 }
 
 impl XLayerRemoteClient {
-    /// Creates a new XLayer remote signing client
     pub fn new(config: XLayerConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
             .expect("Failed to create HTTP client");
 
-        Self { config, client }
+        let cache = LruCache::new(
+            NonZeroUsize::new(REF_ORDER_CACHE_CAPACITY)
+                .expect("REF_ORDER_CACHE_CAPACITY must be > 0"),
+        );
+
+        Self {
+            config,
+            client,
+            signing_lock: Mutex::new(()),
+            ref_order_cache: Mutex::new(cache),
+        }
     }
 
-    /// Gracefully close underlying resources (reqwest cleans up automatically).
-    /// Signs a transaction using XLayer remote signing service
+    /// Reports whether this client has issued the given `refOrderID`.
+    /// Used by asset-management callbacks to vouch for a transfer
+    /// initiated by the remote signer.
+    pub async fn has_ref_order_id(&self, id: &str) -> bool {
+        let mut cache = self.ref_order_cache.lock().await;
+        cache.contains(id)
+    }
+
+    /// Signs `transaction_request` via the XLayer remote signer.
+    /// Concurrent calls are serialized internally.
     pub async fn sign_transaction(
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<Bytes> {
+        // Held across the POST, the poll loop, and signature verification.
+        let _guard = self.signing_lock.lock().await;
+
         tracing::debug!(
-            "Starting XLayer remote signing for transaction: from={:?}, to={:?}, nonce={:?}",
+            "Acquired signing lock: from={:?}, to={:?}, nonce={:?}",
             transaction_request.from,
             transaction_request.to,
             transaction_request.nonce
         );
 
-        // Detect operate type from method signature
         let operate_type = self.detect_operate_type(transaction_request)?;
+        tracing::info!("Detected operate type: {:?}", operate_type);
 
-        tracing::info!(
-            "Detected operate type: {:?} for transaction",
-            operate_type
-        );
-
-        // Build OtherInfo JSON
         let other_info = self.build_other_info(transaction_request)?;
 
-        // Generate unique order ID
-        let ref_order_id = uuid::Uuid::new_v4().to_string();
+        // Register the refOrderID before sending so the verify-server can
+        // answer asset-management callbacks even if the response is delayed
+        // or lost.
+        let ref_order_id = generate_ref_order_id(operate_type);
+        {
+            let mut cache = self.ref_order_cache.lock().await;
+            cache.put(ref_order_id.clone(), ());
+        }
 
-        // Prepare signing request
         let to_address = transaction_request
             .to
             .and_then(|to| match to {
@@ -286,11 +451,12 @@ impl XLayerRemoteClient {
             operate_type
         );
 
-        // Retry logic for pending transaction errors
+        // Retry the "pending transaction" backoff error; let every other
+        // error propagate immediately.
         for attempt in 0..=MAX_SIGNING_RETRIES {
             if attempt > 0 {
                 tracing::warn!(
-                    "Retrying remote signing after pending transaction error: attempt={}/{}",
+                    "Retrying after pending-tx error: attempt={}/{}",
                     attempt,
                     MAX_SIGNING_RETRIES
                 );
@@ -306,8 +472,7 @@ impl XLayerRemoteClient {
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    // Check if error is "pending transaction" related
-                    // XLayer API may return error messages in Chinese or English
+                    // The remote can return either the Chinese or English wording.
                     let is_pending_tx_error = err_str.contains("未完成交易")
                         || err_str.contains("pending transaction")
                         || err_str.contains("相同地址有未完成交易")
@@ -343,12 +508,12 @@ impl XLayerRemoteClient {
         Err(anyhow::anyhow!("Unexpected: exhausted retry attempts"))
     }
 
-    /// Detects operate type from transaction method signature
+    /// Maps the calldata selector to the wire-level `OperateType` the
+    /// remote signer expects.
     fn detect_operate_type(
         &self,
         tx: &TransactionRequest,
     ) -> Result<OperateType> {
-        // Extract method signature
         let empty_bytes = Bytes::new();
         let data = tx.input.input().unwrap_or(&empty_bytes);
         if data.len() < 4 {
@@ -356,18 +521,12 @@ impl XLayerRemoteClient {
         }
 
         let method_sig = format!("0x{}", hex::encode(&data[..4]));
-
-        // Map method signature to operate type
-        // Note: resolve() and claimCredit() can be called by both Proposer and Challenger,
-        // but we use Challenger* types as they are more common. The actual caller is 
-        // determined by which service (proposer.rs or challenger.rs) invokes the signer.
         match method_sig.as_str() {
-            METHOD_SIG_DGF_CREATE => Ok(OperateType::Proposer),
-            METHOD_SIG_RESOLVE_CLAIM => Ok(OperateType::ChallengerResolveClaim),
-            METHOD_SIG_PROVE_TEE => Ok(OperateType::Prove),
+            METHOD_SIG_DGF_CREATE => Ok(OperateType::Create),
+            METHOD_SIG_PROVE => Ok(OperateType::Prove),
             METHOD_SIG_CHALLENGE => Ok(OperateType::Challenge),
-            METHOD_SIG_RESOLVE => Ok(OperateType::ChallengerResolve),
-            METHOD_SIG_CLAIM_CREDIT => Ok(OperateType::ChallengerClaimCredit),
+            METHOD_SIG_RESOLVE => Ok(OperateType::Resolve),
+            METHOD_SIG_CLAIM_CREDIT => Ok(OperateType::ClaimCredit),
             _ => Err(anyhow::anyhow!(
                 "Unknown method signature: refusing to sign transaction (method_sig={}, data_len={})",
                 method_sig,
@@ -376,238 +535,56 @@ impl XLayerRemoteClient {
         }
     }
 
-    /// Builds OtherInfo JSON string with business parameters
+    /// Serializes the tx-level fields plus the per-method business
+    /// overlay (game params, recipient, proof bytes) into the `otherInfo`
+    /// JSON string.
     fn build_other_info(&self, tx: &TransactionRequest) -> Result<String> {
-        let contract_address = tx
-            .to
-            .and_then(|to| match to {
-                alloy_primitives::TxKind::Call(addr) => Some(format!("{:?}", addr)),
-                alloy_primitives::TxKind::Create => None,
-            })
-            .unwrap_or_default();
-
-        let empty_bytes = Bytes::new();
-        let data = tx.input.input().unwrap_or(&empty_bytes);
-
-        // Parse business parameters based on method signature
-        let (game_type, root_claim, extra_data, recipient, claim_index, num_to_resolve) =
-            if data.len() >= 4 {
-                self.parse_business_params(data)?
-            } else {
-                (None, None, None, None, None, None)
-            };
-
-        // TEE-specific fields: operateType + proofBytes (mirror of Go behavior)
-        let (operate_type, proof_bytes) = if data.len() >= 4 {
-            let method_sig = format!("0x{}", hex::encode(&data[..4]));
-            match method_sig.as_str() {
-                METHOD_SIG_PROVE_TEE => {
-                    (Some(OperateType::Prove as i32), Self::extract_prove_bytes(data))
-                }
-                METHOD_SIG_CHALLENGE => (Some(OperateType::Challenge as i32), None),
-                _ => (None, None),
-            }
-        } else {
-            (None, None)
+        let contract_address = match tx.to {
+            Some(alloy_primitives::TxKind::Call(addr)) => format!("{:?}", addr),
+            _ => String::new(),
         };
+        let empty = Bytes::new();
+        let data = tx.input.input().unwrap_or(&empty);
 
         let other_info = XLayerOtherInfo {
             contract_address,
             gas_limit: tx.gas.unwrap_or(0),
             gas_price: tx.gas_price.map(|gp| gp.to_string()),
             nonce: tx.nonce.unwrap_or(0),
-            blob_versioned_hashes: tx.blob_versioned_hashes.as_ref().map(|hashes| {
-                hashes.iter().map(|h| format!("{:?}", h)).collect()
-            }),
-            max_fee_per_blob_gas: tx.max_fee_per_blob_gas.map(|f| f.to_string()),
             max_fee_per_gas: tx.max_fee_per_gas.map(|f| f.to_string()),
             max_priority_fee_per_gas: tx.max_priority_fee_per_gas.map(|f| f.to_string()),
-            data: Some(format!("0x{}", hex::encode(data))),
+            data: Some(hex_0x(data)),
             value: tx.value.map(|v| v.to_string()),
-            // Business parameters
-            game_type,
-            root_claim,
-            extra_data,
-            recipient,
-            claim_index,
-            num_to_resolve,
-            operate_type,
-            proof_bytes,
+            overlay: MethodOverlay::from_calldata(data)?,
         };
 
         serde_json::to_string(&other_info).context("Failed to serialize OtherInfo")
     }
 
-    /// Strip the ABI offset+length headers from a `prove(bytes)` calldata and
-    /// return the inner bytes hex-encoded. Mirrors Go's
-    /// buildProposerTeeProveOtherInfo proofBytes extraction.
-    fn extract_prove_bytes(data: &[u8]) -> Option<String> {
-        // 4 selector + 32 offset + 32 length = 68 bytes minimum before payload.
-        if data.len() <= 4 + 64 {
-            return None;
-        }
-        // Length is the last 8 bytes of the 32-byte big-endian uint256 at [36..68];
-        // higher bytes must be zero (proof is never gigabytes).
-        let length = u64::from_be_bytes(data[60..68].try_into().ok()?) as usize;
-        if data.len() < 68 + length {
-            return None;
-        }
-        Some(format!("0x{}", hex::encode(&data[68..68 + length])))
-    }
-
-    /// Parses business parameters from transaction data based on method signature
-    fn parse_business_params(
-        &self,
-        data: &Bytes,
-    ) -> Result<(Option<u32>, Option<String>, Option<String>, Option<String>, Option<u64>, Option<u64>)> {
-        if data.len() < 4 {
-            return Ok((None, None, None, None, None, None));
-        }
-
-        let method_sig = format!("0x{}", hex::encode(&data[..4]));
-        let params_data = &data[4..];
-
-        match method_sig.as_str() {
-            METHOD_SIG_DGF_CREATE => {
-                // DisputeGameFactory.create(uint32 _gameType, bytes32 _rootClaim, bytes calldata _extraData)
-                if params_data.len() < 96 {
-                    tracing::warn!("Insufficient data for create method");
-                    return Ok((None, None, None, None, None, None));
-                }
-
-                // Parse gameType (uint32, but padded to 32 bytes)
-                let game_type = u32::from_be_bytes([
-                    params_data[28],
-                    params_data[29],
-                    params_data[30],
-                    params_data[31],
-                ]);
-
-                // Parse rootClaim (bytes32, next 32 bytes)
-                let root_claim = format!("0x{}", hex::encode(&params_data[32..64]));
-
-                // Parse extraData (dynamic bytes)
-                // The offset to extraData is at bytes 64-96
-                let extra_data_offset = u64::from_be_bytes([
-                    params_data[88],
-                    params_data[89],
-                    params_data[90],
-                    params_data[91],
-                    params_data[92],
-                    params_data[93],
-                    params_data[94],
-                    params_data[95],
-                ]) as usize;
-
-                let extra_data = if extra_data_offset < params_data.len() {
-                    // Read length of extraData (32 bytes at offset)
-                    if extra_data_offset + 32 <= params_data.len() {
-                        let length = u64::from_be_bytes([
-                            params_data[extra_data_offset + 24],
-                            params_data[extra_data_offset + 25],
-                            params_data[extra_data_offset + 26],
-                            params_data[extra_data_offset + 27],
-                            params_data[extra_data_offset + 28],
-                            params_data[extra_data_offset + 29],
-                            params_data[extra_data_offset + 30],
-                            params_data[extra_data_offset + 31],
-                        ]) as usize;
-
-                        let data_start = extra_data_offset + 32;
-                        if data_start + length <= params_data.len() {
-                            format!("0x{}", hex::encode(&params_data[data_start..data_start + length]))
-                        } else {
-                            format!("0x{}", hex::encode(&params_data[data_start..]))
-                        }
-                    } else {
-                        format!("0x{}", hex::encode(&params_data[extra_data_offset..]))
-                    }
-                } else {
-                    "0x".to_string()
-                };
-
-                tracing::info!(
-                    "Parsed Proposer params: gameType={}, rootClaim={}, extraData={}",
-                    game_type,
-                    root_claim,
-                    extra_data
-                );
-
-                Ok((Some(game_type), Some(root_claim), Some(extra_data), None, None, None))
-            }
-            METHOD_SIG_CLAIM_CREDIT => {
-                // FaultDisputeGame.claimCredit(address _recipient)
-                if params_data.len() >= 32 {
-                    let recipient = format!("0x{}", hex::encode(&params_data[12..32]));
-                    tracing::info!("Parsed ClaimCredit params: recipient={}", recipient);
-                    Ok((None, None, None, Some(recipient), None, None))
-                } else {
-                    Ok((None, None, None, None, None, None))
-                }
-            }
-            METHOD_SIG_RESOLVE_CLAIM => {
-                // resolveClaim(uint256 _claimIndex, uint256 _numToResolve)
-                if params_data.len() >= 64 {
-                    let claim_index =
-                        u64::from_be_bytes(params_data[24..32].try_into().unwrap());
-                    let num_to_resolve =
-                        u64::from_be_bytes(params_data[56..64].try_into().unwrap());
-                    tracing::info!(
-                        "Parsed ResolveClaim params: claimIndex={}, numToResolve={}",
-                        claim_index,
-                        num_to_resolve
-                    );
-                    Ok((None, None, None, None, Some(claim_index), Some(num_to_resolve)))
-                } else {
-                    tracing::warn!("Insufficient data for resolveClaim method");
-                    Ok((None, None, None, None, None, None))
-                }
-            }
-            METHOD_SIG_PROVE_TEE | METHOD_SIG_CHALLENGE | METHOD_SIG_RESOLVE => {
-                // These methods carry no critical business params for OtherInfo:
-                // prove(bytes) - proof bytes handled separately as `proofBytes`
-                // challenge() / resolve() - no params
-                tracing::debug!("Method {} has no critical business params to parse", method_sig);
-                Ok((None, None, None, None, None, None))
-            }
-            _ => {
-                tracing::debug!("Unknown method signature for param parsing: {}", method_sig);
-                Ok((None, None, None, None, None, None))
-            }
-        }
-    }
-
-    /// Converts value to operate amount string
+    /// Wei → `operateAmount` string: an exact ETH decimal with trailing
+    /// zeros and the trailing dot trimmed (e.g. `"1.5"`, `"0.001"`, `"0"`).
     fn convert_value_to_operate_amount(value: U256) -> String {
-        if value.is_zero() {
-            "0".to_string()
-        } else {
-            // Convert to ETH (divide by 10^18)
-            let eth_value = value / U256::from(1_000_000_000_000_000_000u128);
-            eth_value.to_string()
-        }
+        let eth = alloy_primitives::utils::format_ether(value);
+        eth.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 
-    /// Posts sign request and waits for result
+    /// Posts the sign request, then polls until a signed transaction
+    /// comes back or the poll budget is exhausted.
     async fn post_sign_request_and_wait_result(
         &self,
         request: &XLayerSignRequest,
         transaction_request: &TransactionRequest,
     ) -> Result<Bytes> {
-        // 1. Send signing request
         self.post_sign_request(request).await?;
-
-        // 2. Wait for signing result
         let result = self.wait_sign_result(&request.ref_order_id).await?;
 
         tracing::info!(
-            "Received signing result from remote signer: ref_order_id={}, status={}, success={}",
+            "Received signing result: ref_order_id={}, status={}, success={}",
             request.ref_order_id,
             result.status,
             result.success
         );
 
-        // 3. Parse signed transaction hex
         if !result.success || result.data.is_empty() {
             return Err(anyhow::anyhow!(
                 "Signing failed: msg={}, detail={}",
@@ -616,25 +593,20 @@ impl XLayerRemoteClient {
             ));
         }
 
-        // Remove "0x" prefix if present
         let hex_data = result.data.trim_start_matches("0x");
         let signed_tx_bytes = hex::decode(hex_data)
             .context("Failed to decode signed transaction hex")?;
-
-        // 4. Verify signed transaction
         self.verify_signed_transaction(&transaction_request, &signed_tx_bytes)?;
 
         Ok(Bytes::from(signed_tx_bytes))
     }
 
-    /// Posts signing request to remote signer
     async fn post_sign_request(&self, request: &XLayerSignRequest) -> Result<()> {
         let url = format!("{}{}", self.config.endpoint, self.config.request_sign_uri);
 
-        // Serialize request with sorted keys (important for signature verification)
+        // Key order must be canonical so the signature matches server-side.
         let payload = self.sorted_json_marshal(request)?;
 
-        // Build headers; auth is no-op when access_key or secret_key is empty.
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Content-Type", "application/json".parse()?);
         self.add_auth_headers(&mut headers, &[], &payload)?;
@@ -677,7 +649,8 @@ impl XLayerRemoteClient {
         Ok(())
     }
 
-    /// Waits for signing result by polling
+    /// Polls the remote signer until it returns a signed transaction for
+    /// `order_id` or the poll budget runs out (5 minutes).
     async fn wait_sign_result(&self, order_id: &str) -> Result<XLayerSignResponse> {
         let url = format!("{}{}", self.config.endpoint, self.config.query_sign_uri);
 
@@ -687,13 +660,11 @@ impl XLayerRemoteClient {
             project_symbol: self.config.project_symbol,
         };
 
-        // Poll for result (1s interval × 300 attempts = 5 min total)
         let max_attempts = 300;
         for attempt in 0..max_attempts {
             sleep(SIGN_RESULT_POLL_INTERVAL).await;
 
-            // GET request: signature is computed over the sorted URL query
-            // *values*, not a JSON body — matches Go's genAuth.
+            // GET requests sign the sorted URL-query *values*, not a body.
             let user_id_str = query_request.user_id.to_string();
             let project_symbol_str = query_request.project_symbol.to_string();
             let query_params: [(&str, &str); 3] = [
@@ -734,13 +705,11 @@ impl XLayerRemoteClient {
             let query_response: XLayerSignResponse = serde_json::from_str(&body)
                 .with_context(|| format!("Failed to parse query response. Raw body: {body}"))?;
 
-            // Check if signing is complete (matching Optimism implementation)
-            // Only return when success=true AND data is non-empty
+            // Done only when the response carries a non-empty signed tx.
             if query_response.success && !query_response.data.is_empty() {
                 return Ok(query_response);
             }
 
-            // Otherwise continue waiting (no error checking during polling)
             tracing::debug!(
                 "Polling for sign result: attempt={}/{}, success={}, data_len={}",
                 attempt + 1,
@@ -753,14 +722,16 @@ impl XLayerRemoteClient {
         Err(XLayerSignerError::SignatureTimeout(max_attempts).into())
     }
 
-    /// Serializes JSON with sorted keys (required for signature calculation)
+    /// Serializes `data` to JSON with all object keys sorted alphabetically.
+    /// Key order is part of the canonical input the request signature is
+    /// computed over.
     fn sorted_json_marshal<T: Serialize>(&self, data: &T) -> Result<String> {
         let json_value: serde_json::Value = serde_json::to_value(data)?;
         let sorted = Self::sort_json_keys(&json_value);
         serde_json::to_string(&sorted).context("Failed to serialize sorted JSON")
     }
 
-    /// Recursively sorts JSON keys
+    /// Recursively sorts the keys of every JSON object in `value`.
     fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(map) => {
@@ -779,9 +750,8 @@ impl XLayerRemoteClient {
         }
     }
 
-    /// Adds the `accessKey` and `sign` headers to a request, mirroring Go's
-    /// `addAuth`. If either secret_key or access_key is empty, no headers are
-    /// added (Go skips auth entirely in that case).
+    /// Attaches the `accessKey` and `sign` headers. If either credential
+    /// is empty the call goes out unauthenticated.
     fn add_auth_headers(
         &self,
         headers: &mut reqwest::header::HeaderMap,
@@ -797,10 +767,9 @@ impl XLayerRemoteClient {
         Ok(())
     }
 
-    /// Generates the request signature using the same scheme as Go's
-    /// `generateSignature`: sort the URL query *values* lexicographically,
-    /// concatenate them with the body, SHA-256 the result, hex-encode the
-    /// digest, then AES-ECB encrypt with the secret key and base64-encode.
+    /// Computes the request signature: sort URL-query *values* lexically,
+    /// concatenate with the body, SHA-256, hex-encode, AES-ECB-encrypt
+    /// with the secret key, base64.
     fn generate_signature(&self, query_params: &[(&str, &str)], body: &str) -> Result<String> {
         use base64::Engine;
         use sha2::{Digest, Sha256};
@@ -821,7 +790,7 @@ impl XLayerRemoteClient {
     }
 
     /// Encrypts data using AES-ECB with PKCS5 padding. Accepts 16/24/32-byte
-    /// keys (AES-128/192/256), matching Go's `aes.NewCipher` behavior.
+    /// keys (AES-128/192/256).
     fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
         use aes::cipher::generic_array::GenericArray;
         use aes::cipher::{BlockEncrypt, KeyInit};
@@ -860,7 +829,7 @@ impl XLayerRemoteClient {
         Ok(encrypted)
     }
 
-    /// PKCS5 padding implementation
+    /// PKCS#5 / PKCS#7 padding for AES-ECB block alignment.
     fn pkcs5_padding(&self, data: &[u8], block_size: usize) -> Vec<u8> {
         let padding = block_size - (data.len() % block_size);
         let mut result = data.to_vec();
@@ -868,17 +837,16 @@ impl XLayerRemoteClient {
         result
     }
 
-    /// Verifies the signed transaction returned by remote signer
+    /// Sanity-checks the signed bytes the remote signer returned: the
+    /// recovered signer must match `config.address`, and every header
+    /// field the caller specified must round-trip identically.
     fn verify_signed_transaction(
         &self,
         original_tx: &TransactionRequest,
         signed_tx_bytes: &[u8],
     ) -> Result<()> {
-        // Decode signed transaction
         let tx_envelope = TxEnvelope::decode_2718(&mut &signed_tx_bytes[..])
             .context("Failed to decode signed transaction")?;
-
-        // Recover a TransactionRequest (includes recovered signer when available via k256 feature)
         let recovered_req: TransactionRequest = tx_envelope.clone().into();
 
         tracing::debug!(
@@ -887,10 +855,24 @@ impl XLayerRemoteClient {
             original_tx.from
         );
 
-        // Verify basic fields
+        // Without this signer-identity check a compromised or
+        // misconfigured remote could return a transaction signed by some
+        // other key and we'd happily broadcast it.
+        let recovered_signer = recovered_req.from.ok_or_else(|| {
+            XLayerSignerError::VerificationError(
+                "Failed to recover signer from signed transaction".to_string(),
+            )
+        })?;
+        if recovered_signer != self.config.address {
+            return Err(XLayerSignerError::VerificationError(format!(
+                "Signature verification failed: expected signer {:?}, recovered {:?}",
+                self.config.address, recovered_signer
+            ))
+            .into());
+        }
+
         match &tx_envelope {
             TxEnvelope::Eip1559(signed) => {
-                // Verify chain id
                 if let Some(chain_id) = original_tx.chain_id {
                     if recovered_req.chain_id != Some(chain_id) {
                         return Err(anyhow::anyhow!(
@@ -901,7 +883,6 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify from (recover signer)
                 if let Some(expected_from) = original_tx.from {
                     let actual_from = recovered_req.from;
                     if actual_from != Some(expected_from) {
@@ -913,7 +894,6 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify nonce
                 if let Some(nonce) = original_tx.nonce {
                     if signed.nonce() != nonce {
                         return Err(anyhow::anyhow!(
@@ -924,7 +904,6 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify to address
                 if let Some(to) = &original_tx.to {
                     match to {
                         alloy_primitives::TxKind::Call(addr) => {
@@ -947,18 +926,15 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify value
-                if let Some(value) = original_tx.value {
-                    if signed.value() != value {
-                        return Err(anyhow::anyhow!(
-                            "Value mismatch: expected {}, got {}",
-                            value,
-                            signed.value()
-                        ));
-                    }
+                let expected_value = original_tx.value.unwrap_or_default();
+                if signed.value() != expected_value {
+                    return Err(anyhow::anyhow!(
+                        "Value mismatch: expected {}, got {}",
+                        expected_value,
+                        signed.value()
+                    ));
                 }
 
-                // Verify gas limit
                 if let Some(gas) = original_tx.gas {
                     if signed.gas_limit() != gas {
                         return Err(anyhow::anyhow!(
@@ -969,7 +945,6 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify gas fees
                 if let Some(max_fee) = original_tx.max_fee_per_gas {
                     if signed.max_fee_per_gas() != max_fee {
                         return Err(anyhow::anyhow!(
@@ -990,7 +965,6 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify data
                 let empty_data = Bytes::new();
                 let original_data = original_tx.input.input().unwrap_or(&empty_data);
                 if signed.input() != original_data.as_ref() {
@@ -1011,7 +985,6 @@ impl XLayerRemoteClient {
                 );
             }
             TxEnvelope::Legacy(signed) => {
-                // Verify chain id
                 if let Some(chain_id) = original_tx.chain_id {
                     if recovered_req.chain_id != Some(chain_id) {
                         return Err(anyhow::anyhow!(
@@ -1022,7 +995,6 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Verify from
                 if let Some(expected_from) = original_tx.from {
                     let actual_from = recovered_req.from;
                     if actual_from != Some(expected_from) {
@@ -1034,23 +1006,64 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                // Similar verification for legacy transactions
                 if let Some(nonce) = original_tx.nonce {
                     if signed.nonce() != nonce {
                         return Err(anyhow::anyhow!(
-                            "Nonce mismatch: expected {}, got {}",
+                            "Nonce mismatch (legacy): expected {}, got {}",
                             nonce,
                             signed.nonce()
                         ));
                     }
                 }
 
-                // Verify other fields...
+                if let Some(to) = &original_tx.to {
+                    match to {
+                        alloy_primitives::TxKind::Call(addr) => {
+                            if Some(*addr) != signed.to() {
+                                return Err(XLayerSignerError::VerificationError(format!(
+                                    "To address mismatch (legacy): expected {:?}, got {:?}",
+                                    addr,
+                                    signed.to()
+                                ))
+                                .into());
+                            }
+                        }
+                        alloy_primitives::TxKind::Create => {
+                            if signed.to().is_some() {
+                                return Err(anyhow::anyhow!(
+                                    "To address should be None for contract creation (legacy)"
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                let expected_value = original_tx.value.unwrap_or_default();
+                if signed.value() != expected_value {
+                    return Err(anyhow::anyhow!(
+                        "Value mismatch (legacy): expected {}, got {}",
+                        expected_value,
+                        signed.value()
+                    ));
+                }
+
+                if let Some(gas) = original_tx.gas {
+                    if signed.gas_limit() != gas {
+                        return Err(anyhow::anyhow!(
+                            "Gas limit mismatch (legacy): expected {}, got {}",
+                            gas,
+                            signed.gas_limit()
+                        ));
+                    }
+                }
+
                 let empty_data = Bytes::new();
                 let original_data = original_tx.input.input().unwrap_or(&empty_data);
                 if signed.input() != original_data.as_ref() {
                     return Err(anyhow::anyhow!(
-                        "Transaction data mismatch for legacy tx"
+                        "Transaction data mismatch (legacy): expected {} bytes, got {} bytes",
+                        original_data.len(),
+                        signed.input().len()
                     ));
                 }
 
@@ -1063,70 +1076,6 @@ impl XLayerRemoteClient {
                         ));
                     }
                 }
-            }
-            TxEnvelope::Eip4844(signed) => {
-                // Verify chain id
-                if let Some(chain_id) = original_tx.chain_id {
-                    if recovered_req.chain_id != Some(chain_id) {
-                        return Err(anyhow::anyhow!(
-                            "ChainId mismatch in blob tx: expected {:?}, got {:?}",
-                            chain_id,
-                            recovered_req.chain_id
-                        ));
-                    }
-                }
-
-                // Verify from
-                if let Some(expected_from) = original_tx.from {
-                    let actual_from = recovered_req.from;
-                    if actual_from != Some(expected_from) {
-                        return Err(anyhow::anyhow!(
-                            "From mismatch in blob tx: expected {:?}, got {:?}",
-                            expected_from,
-                            actual_from
-                        ));
-                    }
-                }
-
-                // Verify blob transaction basic fields
-                if let Some(nonce) = original_tx.nonce {
-                    if signed.nonce() != nonce {
-                        return Err(anyhow::anyhow!(
-                            "Nonce mismatch in blob tx: expected {}, got {}",
-                            nonce,
-                            signed.nonce()
-                        ));
-                    }
-                }
-
-                // Verify to address
-                if let Some(to) = &original_tx.to {
-                    match to {
-                        alloy_primitives::TxKind::Call(addr) => {
-                            if Some(*addr) != signed.to() {
-                                return Err(anyhow::anyhow!(
-                                    "To address mismatch in blob tx"
-                                ));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Verify value
-                if let Some(value) = original_tx.value {
-                    if signed.value() != value {
-                        return Err(anyhow::anyhow!(
-                            "Value mismatch in blob tx"
-                        ));
-                    }
-                }
-
-                tracing::info!(
-                    "Blob transaction verified successfully: nonce={}, to={:?}",
-                    signed.nonce(),
-                    signed.to()
-                );
             }
             _ => {
                 return Err(anyhow::anyhow!(
@@ -1148,13 +1097,12 @@ mod tests {
     use serde::Serialize;
     use std::time::Duration;
 
-    /// Test operate type detection for Proposer (DisputeGameFactory.create)
+    /// `DisputeGameFactory.create` -> `OperateType::Create`.
     #[test]
-    fn test_detect_proposer_operate_type() {
+    fn test_detect_create_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
-        // DisputeGameFactory.create method signature: 0x82ecf2f6
         let data = hex::decode("82ecf2f6").unwrap();
         let mut tx = TransactionRequest::default();
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
@@ -1165,36 +1113,15 @@ mod tests {
         let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
         let operate_type = result.unwrap();
-        assert_eq!(operate_type as i32, OperateType::Proposer as i32);
+        assert_eq!(operate_type as i32, OperateType::Create as i32);
     }
 
-    /// Test operate type detection for Challenger (resolveClaim)
+    /// `OPSuccinctFaultDisputeGame.challenge` -> `OperateType::Challenge`.
     #[test]
-    fn test_detect_challenger_resolve_claim() {
+    fn test_detect_challenge_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
-        // FaultDisputeGame.resolveClaim method signature: 0x03c2924d
-        let data = hex::decode("03c2924d").unwrap();
-        let mut tx = TransactionRequest::default();
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-        tx.to = Some(alloy_primitives::TxKind::Call(address!(
-            "0000000000000000000000000000000000000002"
-        )));
-
-        let result = client.detect_operate_type(&tx);
-        assert!(result.is_ok());
-        let operate_type = result.unwrap();
-        assert_eq!(operate_type as i32, OperateType::ChallengerResolveClaim as i32);
-    }
-
-    /// Test operate type detection for Challenger (challenge)
-    #[test]
-    fn test_detect_challenger_challenge() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // FaultDisputeGame.challenge method signature: 0xd2ef7398
         let data = hex::decode("d2ef7398").unwrap();
         let mut tx = TransactionRequest::default();
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
@@ -1208,13 +1135,12 @@ mod tests {
         assert_eq!(operate_type as i32, OperateType::Challenge as i32);
     }
 
-    /// Test operate type detection for resolve (can be called by Proposer or Challenger)
+    /// `OPSuccinctFaultDisputeGame.resolve` -> `OperateType::Resolve`.
     #[test]
     fn test_detect_resolve_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
-        // FaultDisputeGame.resolve method signature: 0x2810e1d6
         let data = hex::decode("2810e1d6").unwrap();
         let mut tx = TransactionRequest::default();
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
@@ -1225,16 +1151,15 @@ mod tests {
         let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
         let operate_type = result.unwrap();
-        assert_eq!(operate_type as i32, OperateType::ChallengerResolve as i32);
+        assert_eq!(operate_type as i32, OperateType::Resolve as i32);
     }
 
-    /// Test operate type detection for claimCredit (can be called by Proposer or Challenger)
+    /// `OPSuccinctFaultDisputeGame.claimCredit` -> `OperateType::ClaimCredit`.
     #[test]
     fn test_detect_claim_credit_operate_type() {
         let config = XLayerConfig::default();
         let client = XLayerRemoteClient::new(config);
 
-        // FaultDisputeGame.claimCredit method signature: 0x60e27464
         let data = hex::decode("60e27464").unwrap();
         let mut tx = TransactionRequest::default();
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
@@ -1245,10 +1170,43 @@ mod tests {
         let result = client.detect_operate_type(&tx);
         assert!(result.is_ok());
         let operate_type = result.unwrap();
-        assert_eq!(
-            operate_type as i32,
-            OperateType::ChallengerClaimCredit as i32
-        );
+        assert_eq!(operate_type as i32, OperateType::ClaimCredit as i32);
+    }
+
+    /// `prove(bytes)` (selector 0x375bfa5d) -> `OperateType::Prove`.
+    #[test]
+    fn test_detect_prove_operate_type() {
+        let config = XLayerConfig::default();
+        let client = XLayerRemoteClient::new(config);
+
+        let data = hex::decode("375bfa5d").unwrap();
+        let mut tx = TransactionRequest::default();
+        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
+        tx.to = Some(alloy_primitives::TxKind::Call(address!(
+            "0000000000000000000000000000000000000002"
+        )));
+
+        let result = client.detect_operate_type(&tx);
+        assert!(result.is_ok());
+        let operate_type = result.unwrap();
+        assert_eq!(operate_type as i32, OperateType::Prove as i32);
+    }
+
+    /// `resolveClaim` is no longer supported (not on `OPSuccinctFaultDisputeGame`).
+    #[test]
+    fn test_detect_resolve_claim_rejected() {
+        let config = XLayerConfig::default();
+        let client = XLayerRemoteClient::new(config);
+
+        let data = hex::decode("03c2924d").unwrap();
+        let mut tx = TransactionRequest::default();
+        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
+        tx.to = Some(alloy_primitives::TxKind::Call(address!(
+            "0000000000000000000000000000000000000002"
+        )));
+
+        let err = client.detect_operate_type(&tx).unwrap_err();
+        assert!(err.to_string().contains("Unknown method signature"));
     }
 
     /// Test unknown method signature rejection
@@ -1295,38 +1253,8 @@ mod tests {
             .contains("Transaction data too short"));
     }
 
-    /// Test OtherInfo building
-    #[test]
-    fn test_build_other_info() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        let mut tx = TransactionRequest::default();
-        tx.to = Some(alloy_primitives::TxKind::Call(address!(
-            "1234567890123456789012345678901234567890"
-        )));
-        tx.gas = Some(200000);
-        tx.gas_price = Some(20000000000);
-        tx.nonce = Some(42);
-        tx.max_fee_per_gas = Some(30000000000);
-        tx.max_priority_fee_per_gas = Some(2000000000);
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
-            hex::decode("82ecf2f6").unwrap(),
-        ));
-        tx.value = Some(U256::from(1000000000000000000u128));
-
-        let result = client.build_other_info(&tx);
-        assert!(result.is_ok());
-
-        let other_info = result.unwrap();
-        assert!(other_info.contains("contractAddress"));
-        assert!(other_info.contains("gasLimit"));
-        assert!(other_info.contains("nonce"));
-        assert!(other_info.contains("\"nonce\":42"));
-        assert!(other_info.contains("\"gasLimit\":200000"));
-    }
-
-    /// Test value conversion to operate amount
+/// `operateAmount` must be an exact 18-decimal ETH string with trailing
+    /// zeros and any trailing dot trimmed.
     #[test]
     fn test_convert_value_to_operate_amount() {
         // 0 wei
@@ -1335,7 +1263,7 @@ mod tests {
             "0"
         );
 
-        // 1 ETH = 10^18 wei
+        // 1 ETH = 10^18 wei -> "1"
         assert_eq!(
             XLayerRemoteClient::convert_value_to_operate_amount(U256::from(
                 1_000_000_000_000_000_000u128
@@ -1343,12 +1271,34 @@ mod tests {
             "1"
         );
 
-        // 2.5 ETH (should round down to 2)
+        // 2.5 ETH -> "2.5"
         assert_eq!(
             XLayerRemoteClient::convert_value_to_operate_amount(U256::from(
                 2_500_000_000_000_000_000u128
             )),
-            "2"
+            "2.5"
+        );
+
+        // Sub-ETH: 1 wei -> "0.000000000000000001"
+        assert_eq!(
+            XLayerRemoteClient::convert_value_to_operate_amount(U256::from(1u64)),
+            "0.000000000000000001"
+        );
+
+        // 0.001 ETH -> "0.001"
+        assert_eq!(
+            XLayerRemoteClient::convert_value_to_operate_amount(U256::from(
+                1_000_000_000_000_000u128
+            )),
+            "0.001"
+        );
+
+        // Large amount: 1000 ETH -> "1000"
+        assert_eq!(
+            XLayerRemoteClient::convert_value_to_operate_amount(U256::from(
+                1_000_000_000_000_000_000_000u128
+            )),
+            "1000"
         );
     }
 
@@ -1415,129 +1365,115 @@ mod tests {
         assert!(debug_str.contains("***REDACTED***"));
     }
 
-    /// Test business parameter parsing for DisputeGameFactory.create
-    #[test]
-    fn test_parse_proposer_create_params() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // DisputeGameFactory.create(uint32 gameType, bytes32 rootClaim, bytes extraData)
-        // Method sig: 0x82ecf2f6
-        // gameType: 1 (padded to 32 bytes)
-        // rootClaim: 0x1234...00 (32 bytes)
-        // extraData offset: 96 (0x60)
-        // extraData length: 2
-        // extraData: 0xabcd
-        let mut data = Vec::new();
-        data.extend_from_slice(&hex::decode("82ecf2f6").unwrap()); // method sig
-
-        // gameType = 1 (padded to 32 bytes)
-        data.extend_from_slice(&[0u8; 28]);
-        data.extend_from_slice(&[0, 0, 0, 1]);
-
-        // rootClaim (32 bytes)
-        data.extend_from_slice(&[0x12u8; 32]);
-
-        // extraData offset = 96 (0x60)
-        data.extend_from_slice(&[0u8; 24]);
-        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]);
-
-        // extraData length = 2
-        data.extend_from_slice(&[0u8; 24]);
-        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 2]);
-
-        // extraData = 0xabcd
-        data.extend_from_slice(&[0xab, 0xcd]);
-
-        let result = client.parse_business_params(&Bytes::from(data));
-        assert!(result.is_ok());
-
-        let (game_type, root_claim, extra_data, _, _, _) = result.unwrap();
-        assert_eq!(game_type, Some(1));
-        assert!(root_claim.is_some());
-        assert!(extra_data.is_some());
-        assert_eq!(extra_data.unwrap(), "0xabcd");
-    }
-
-    /// Test business parameter parsing for claimCredit
-    #[test]
-    fn test_parse_challenger_claim_credit_params() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // FaultDisputeGame.claimCredit(address _recipient)
-        // Method sig: 0x60e27464
-        // recipient: 0x1234567890123456789012345678901234567890
-        let mut data = Vec::new();
-        data.extend_from_slice(&hex::decode("60e27464").unwrap()); // method sig
-
-        // address (20 bytes, padded to 32 bytes)
-        data.extend_from_slice(&[0u8; 12]);
-        data.extend_from_slice(
-            &hex::decode("1234567890123456789012345678901234567890").unwrap(),
-        );
-
-        let result = client.parse_business_params(&Bytes::from(data));
-        assert!(result.is_ok());
-
-        let (_, _, _, recipient, _, _) = result.unwrap();
-        assert!(recipient.is_some());
-        assert_eq!(
-            recipient.unwrap(),
-            "0x1234567890123456789012345678901234567890"
-        );
-    }
-
-    /// Test OtherInfo includes business parameters
-    #[test]
-    fn test_other_info_with_business_params() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // Build a create() transaction
+    /// Builds a tx with the given calldata that the dispute-game contracts
+    /// would produce, then returns the resulting `otherInfo` JSON.
+    /// `nonce`/`gasLimit` are fixed across all OtherInfo tests so the
+    /// expected JSON literals can be written by hand.
+    fn build_other_info_for(client: &XLayerRemoteClient, calldata: Vec<u8>) -> String {
         let mut tx = TransactionRequest::default();
         tx.to = Some(alloy_primitives::TxKind::Call(address!(
             "1234567890123456789012345678901234567890"
         )));
-        tx.gas = Some(200000);
+        tx.gas = Some(200_000);
         tx.nonce = Some(42);
-
-        // DisputeGameFactory.create with simple params
-        let mut data = Vec::new();
-        data.extend_from_slice(&hex::decode("82ecf2f6").unwrap());
-        data.extend_from_slice(&[0u8; 28]);
-        data.extend_from_slice(&[0, 0, 0, 1]); // gameType = 1
-        data.extend_from_slice(&[0x12u8; 32]); // rootClaim
-        data.extend_from_slice(&[0u8; 24]);
-        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]); // offset
-        data.extend_from_slice(&[0u8; 32]); // length = 0
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
-
-        let result = client.build_other_info(&tx);
-        assert!(result.is_ok());
-
-        let other_info = result.unwrap();
-        assert!(other_info.contains("gameType"));
-        assert!(other_info.contains("rootClaim"));
-        assert!(other_info.contains("extraData"));
+        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(calldata));
+        client.build_other_info(&tx).unwrap()
     }
 
-    /// Ported from
-    /// okx/xlayer-node `ethtxmanager/custodialassetshttpauth_xlayer_test.go::TestClientGenerateSignature`
-    /// Locks in cross-language signature compatibility: same secret, same
-    /// canonical input, same base64 output.
+    /// `DisputeGameFactory.create(uint32, bytes32, bytes)`. The serialized
+    /// JSON must surface `gameType`/`rootClaim`/`extraData` and nothing
+    /// else from the overlay layer.
     #[test]
-    fn test_generate_signature_compat_with_go() {
+    fn test_other_info_for_create() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+
+        let mut calldata = hex::decode("82ecf2f6").unwrap();
+        calldata.extend_from_slice(&[0u8; 28]);
+        calldata.extend_from_slice(&[0, 0, 0, 1]); // gameType = 1
+        calldata.extend_from_slice(&[0x12u8; 32]); // rootClaim
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]); // extraData offset
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 2]); // extraData length
+        calldata.extend_from_slice(&[0xab, 0xcd]); // extraData payload
+
+        let json = build_other_info_for(&client, calldata);
+        assert_eq!(
+            json,
+            r#"{"contractAddress":"0x1234567890123456789012345678901234567890","gasLimit":200000,"gasPrice":null,"nonce":42,"data":"0x82ecf2f60000000000000000000000000000000000000000000000000000000000000001121212121212121212121212121212121212121212121212121212121212121200000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000002abcd","gameType":1,"rootClaim":"0x1212121212121212121212121212121212121212121212121212121212121212","extraData":"0xabcd"}"#,
+        );
+    }
+
+    /// `OPSuccinctFaultDisputeGame.resolve()` — no calldata args, no overlay.
+    #[test]
+    fn test_other_info_for_resolve() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+        let json = build_other_info_for(&client, hex::decode("2810e1d6").unwrap());
+        assert_eq!(
+            json,
+            r#"{"contractAddress":"0x1234567890123456789012345678901234567890","gasLimit":200000,"gasPrice":null,"nonce":42,"data":"0x2810e1d6"}"#,
+        );
+    }
+
+    /// `OPSuccinctFaultDisputeGame.claimCredit(address)` — recipient comes
+    /// from the low 20 bytes of the 32-byte word.
+    #[test]
+    fn test_other_info_for_claim_credit() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+
+        let mut calldata = hex::decode("60e27464").unwrap();
+        calldata.extend_from_slice(&[0u8; 12]);
+        calldata.extend_from_slice(
+            &hex::decode("1234567890123456789012345678901234567890").unwrap(),
+        );
+
+        let json = build_other_info_for(&client, calldata);
+        assert_eq!(
+            json,
+            r#"{"contractAddress":"0x1234567890123456789012345678901234567890","gasLimit":200000,"gasPrice":null,"nonce":42,"data":"0x60e274640000000000000000000000001234567890123456789012345678901234567890","recipient":"0x1234567890123456789012345678901234567890"}"#,
+        );
+    }
+
+    /// `OPSuccinctFaultDisputeGame.prove(bytes)` — `proofBytes` is the
+    /// inner payload only (ABI offset + length headers stripped).
+    #[test]
+    fn test_other_info_for_prove() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+
+        let mut calldata = hex::decode("375bfa5d").unwrap();
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x20]); // offset = 32
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x04]); // length = 4
+        calldata.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let json = build_other_info_for(&client, calldata);
+        assert_eq!(
+            json,
+            r#"{"contractAddress":"0x1234567890123456789012345678901234567890","gasLimit":200000,"gasPrice":null,"nonce":42,"data":"0x375bfa5d00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000004deadbeef","proofBytes":"0xdeadbeef"}"#,
+        );
+    }
+
+    /// `OPSuccinctFaultDisputeGame.challenge()` — no calldata args, no overlay.
+    #[test]
+    fn test_other_info_for_challenge() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+        let json = build_other_info_for(&client, hex::decode("d2ef7398").unwrap());
+        assert_eq!(
+            json,
+            r#"{"contractAddress":"0x1234567890123456789012345678901234567890","gasLimit":200000,"gasPrice":null,"nonce":42,"data":"0xd2ef7398"}"#,
+        );
+    }
+
+    /// Fixed-input regression for the signature algorithm. The output is the
+    /// canonical base64 the remote signer expects for these inputs; any change
+    /// here means our request bodies will no longer authenticate.
+    #[test]
+    fn test_generate_signature_fixed_vector() {
         let mut config = XLayerConfig::default();
         config.secret_key = "12doxpwjkengkjna".to_string(); // 16-byte AES-128 key
         let client = XLayerRemoteClient::new(config);
 
-        // Same canonical input as the Go test's treeMap:
-        //   "0" -> "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"
-        //   "1" -> "127"
-        //   "2" -> "true"
-        // Our signer sorts by value, but for this fixture sort-by-value and
-        // Go's sort-by-key produce the same concatenation order.
         let params: [(&str, &str); 3] = [
             ("0", "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"),
             ("1", "127"),
@@ -1590,4 +1526,53 @@ mod tests {
 
         assert_eq!(recovered_req.from, Some(expected_from));
     }
+
+    /// refOrderID shape: `PROPOSER_TZ_{operateType}_{ms}_{8 hex}`.
+    #[test]
+    fn test_generate_ref_order_id_shape() {
+        let id = generate_ref_order_id(OperateType::Create);
+        // Prefix
+        assert!(
+            id.starts_with("PROPOSER_TZ_"),
+            "expected PROPOSER_TZ_ prefix, got: {id}"
+        );
+        // Three underscore-separated chunks after the prefix:
+        //   operateType, timestamp, random
+        let tail = id.trim_start_matches("PROPOSER_TZ_");
+        let parts: Vec<&str> = tail.split('_').collect();
+        assert_eq!(parts.len(), 3, "expected op_ts_rand, got: {id}");
+        assert_eq!(parts[0], "20"); // OperateType::Create == 20
+        assert!(parts[1].parse::<i64>().is_ok(), "timestamp not numeric: {id}");
+        assert_eq!(parts[2].len(), 8, "rand must be 8 hex chars: {id}");
+        assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Two consecutive calls must produce distinct IDs even with timestamps in
+    /// the same millisecond — the random suffix is what saves us.
+    #[test]
+    fn test_generate_ref_order_id_unique() {
+        let a = generate_ref_order_id(OperateType::Resolve);
+        let b = generate_ref_order_id(OperateType::Resolve);
+        assert_ne!(a, b);
+    }
+
+    /// `has_ref_order_id` round-trip: an ID becomes known once it's recorded,
+    /// and remains unknown otherwise. This is what the verify server relies
+    /// on to answer asset-management callbacks.
+    #[tokio::test]
+    async fn test_has_ref_order_id_roundtrip() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+
+        let id = generate_ref_order_id(OperateType::Create);
+        assert!(!client.has_ref_order_id(&id).await);
+
+        {
+            let mut cache = client.ref_order_cache.lock().await;
+            cache.put(id.clone(), ());
+        }
+
+        assert!(client.has_ref_order_id(&id).await);
+        assert!(!client.has_ref_order_id("totally-unrelated-id").await);
+    }
+
 }

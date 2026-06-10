@@ -102,10 +102,10 @@ async fn run_sign_flow(label: &str, tx: TransactionRequest) {
     assert!(!signed.is_empty(), "[{label}] signed payload should not be empty");
 }
 
-// 1. DisputeGameFactory.create — Proposer (OperateType::Proposer = 20)
+// 1. DisputeGameFactory.create — OperateType::Create = 20
 #[tokio::test]
 #[ignore]
-async fn test_proposer_create() {
+async fn test_create() {
     let mut data = hex::decode("82ecf2f6").unwrap();
     // gameType = 1 (uint32 padded to 32 bytes)
     data.extend_from_slice(&[0u8; 28]);
@@ -122,50 +122,35 @@ async fn test_proposer_create() {
     data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0x01, 0x00]);
 
     let tx = build_tx(TEST_ADDRESS, 1_000_000, 1, data);
-    run_sign_flow("proposer.create", tx).await;
+    run_sign_flow("create", tx).await;
 }
 
-// 2. FaultDisputeGame.resolveClaim — Challenger (OperateType::ChallengerResolveClaim = 21)
+// 2. OPSuccinctFaultDisputeGame.resolve — OperateType::Resolve = 22
 #[tokio::test]
 #[ignore]
-async fn test_challenger_resolve_claim() {
-    let mut data = hex::decode("03c2924d").unwrap();
-    // claimIndex (uint256) = 0
-    data.extend_from_slice(&[0u8; 32]);
-    // numToResolve (uint256) = 1
-    data.extend_from_slice(&[0u8; 31]);
-    data.extend_from_slice(&[1]);
-
-    let tx = build_tx(TEST_ADDRESS, 1_000_000, 2, data);
-    run_sign_flow("challenger.resolveClaim", tx).await;
-}
-
-// 3. FaultDisputeGame.resolve — Challenger (OperateType::ChallengerResolve = 22)
-#[tokio::test]
-#[ignore]
-async fn test_challenger_resolve() {
+async fn test_resolve() {
     let data = hex::decode("2810e1d6").unwrap();
     let tx = build_tx(TEST_ADDRESS, 500_000, 3, data);
-    run_sign_flow("challenger.resolve", tx).await;
+    run_sign_flow("resolve", tx).await;
 }
 
-// 4. FaultDisputeGame.claimCredit — Challenger (OperateType::ChallengerClaimCredit = 23)
+// 3. OPSuccinctFaultDisputeGame.claimCredit — OperateType::ClaimCredit = 23
 #[tokio::test]
 #[ignore]
-async fn test_challenger_claim_credit() {
+async fn test_claim_credit() {
     let mut data = hex::decode("60e27464").unwrap();
     // recipient address (20 bytes), padded to 32
     data.extend_from_slice(&[0u8; 12]);
     data.extend_from_slice(&hex::decode("1234567890123456789012345678901234567890").unwrap());
 
     let tx = build_tx(TEST_ADDRESS, 500_000, 4, data);
-    run_sign_flow("challenger.claimCredit", tx).await;
+    run_sign_flow("claimCredit", tx).await;
 }
 
-// 5. DisputeGame.prove(bytes) — TEE (OperateType::Prove = 27)
+// 4. OPSuccinctFaultDisputeGame.prove(bytes) — OperateType::Prove = 27
 #[tokio::test]
 #[ignore]
-async fn test_tee_prove() {
+async fn test_prove() {
     let mut data = hex::decode("375bfa5d").unwrap();
     // proofBytes offset = 0x20
     data.extend_from_slice(&[0u8; 24]);
@@ -177,14 +162,14 @@ async fn test_tee_prove() {
     data.extend_from_slice(&[0xCDu8; 128]);
 
     let tx = build_tx(TEST_ADDRESS, 2_000_000, 5, data);
-    run_sign_flow("tee.prove", tx).await;
+    run_sign_flow("prove", tx).await;
 }
 
-// 6. DisputeGame.challenge() — TEE (OperateType::Challenge = 28)
+// 5. OPSuccinctFaultDisputeGame.challenge() — OperateType::Challenge = 28
 #[tokio::test]
 #[ignore]
-async fn test_tee_challenge() {
+async fn test_challenge() {
     let data = hex::decode("d2ef7398").unwrap();
     let tx = build_tx(TEST_ADDRESS, 500_000, 6, data);
-    run_sign_flow("tee.challenge", tx).await;
+    run_sign_flow("challenge", tx).await;
 }
