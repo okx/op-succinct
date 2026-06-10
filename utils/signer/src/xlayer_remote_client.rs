@@ -563,31 +563,11 @@ impl XLayerRemoteClient {
         serde_json::to_string(&other_info).context("Failed to serialize OtherInfo")
     }
 
-    /// Converts a wei value to the `operateAmount` string the remote
-    /// signer expects: zero is `"0"`, otherwise an ETH decimal with up to
-    /// 18 fractional digits and trailing zeros / dots trimmed (e.g.
-    /// `"1.5"`, `"0.001"`). Operates on the integer wei string directly
-    /// so the output is exact for any U256.
+    /// Wei → `operateAmount` string: an exact ETH decimal with trailing
+    /// zeros and the trailing dot trimmed (e.g. `"1.5"`, `"0.001"`, `"0"`).
     fn convert_value_to_operate_amount(value: U256) -> String {
-        if value.is_zero() {
-            return "0".to_string();
-        }
-        // Pad to ≥19 chars so the slice always has one integer digit
-        // before the 18-digit fractional tail.
-        let wei = value.to_string();
-        let padded = if wei.len() < 19 {
-            format!("{:0>19}", wei)
-        } else {
-            wei
-        };
-        let split = padded.len() - 18;
-        let int_part = &padded[..split];
-        let frac_part = padded[split..].trim_end_matches('0');
-        if frac_part.is_empty() {
-            int_part.to_string()
-        } else {
-            format!("{int_part}.{frac_part}")
-        }
+        let eth = alloy_primitives::utils::format_ether(value);
+        eth.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 
     /// Posts the sign request, then polls until a signed transaction
