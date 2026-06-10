@@ -37,6 +37,7 @@ version = "4.4.0"
 
 [workspace.dependencies]
 # general
+ok-kms-rust = { git = "ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git", tag = "v1.0.0" }
 anyhow = { version = "1.0.86", default-features = false }
 thiserror = { version = "2.0.3" }
 cfg-if = "1.0.0"

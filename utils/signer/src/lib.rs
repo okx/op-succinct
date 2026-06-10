@@ -16,6 +16,7 @@ use gcloud_sdk::{
 };
 use tokio::{sync::Mutex, time::Duration};
 
+pub mod kms;
 pub mod xlayer_remote_client;
 pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
 
@@ -102,8 +103,16 @@ impl Signer {
                         .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string()),
                     access_key: std::env::var("XLAYER_ACCESS_KEY")
                         .context("XLAYER_ACCESS_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
-                    secret_key: std::env::var("XLAYER_SECRET_KEY")
-                        .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
+                    secret_key: if kms::is_kms_enabled() {
+                        let key_name = std::env::var("KMS_SECRET_KEY_NAME")
+                            .unwrap_or_else(|_| "XLAYER_SECRET_KEY".to_string());
+                        tracing::info!("Fetching secret_key from KMS (key={})", key_name);
+                        kms::fetch_secret(&key_name)
+                            .context("failed to fetch XLAYER secret_key from KMS")?
+                    } else {
+                        std::env::var("XLAYER_SECRET_KEY")
+                            .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")?
+                    },
                     timeout: Duration::from_secs(
                         std::env::var("XLAYER_TIMEOUT")
                             .unwrap_or_else(|_| "30".to_string())

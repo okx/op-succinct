@@ -21,6 +21,7 @@ echo "==> Rewriting x2 SSH dep (github) to HTTPS gitlab mirror with CI credentia
 # ssh://git@github.com/okx/x2.git is a private repo; the gitlab.okg.com mirror
 # is reachable from office runners using CI_JOB_TOKEN.
 git config --replace-all --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.okg.com/".insteadOf "https://gitlab.okg.com/"
+git config --replace-all --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.okg.com/".insteadOf "ssh://git@gitlab.okg.com/"
 sed -i "s|ssh://git@github\.com/okx/x2\.git|https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.okg.com/xlayer-dex/tradezone.git|g" Cargo.toml Cargo.lock
 
 echo "==> Building tz-proposer"
