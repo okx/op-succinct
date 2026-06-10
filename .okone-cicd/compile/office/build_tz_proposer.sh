@@ -25,7 +25,7 @@ git config --replace-all --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@g
 sed -i "s|ssh://git@github\.com/okx/x2\.git|https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.okg.com/xlayer-dex/tradezone.git|g" Cargo.toml Cargo.lock
 
 echo "==> Building tz-proposer"
-CC=clang CXX=clang++ cargo build --release --features tz --bin tz-proposer
+CC=clang CXX=clang++ cargo build --release --features tz,kms --bin tz-proposer
 
 echo "==> Copying binary to build/"
 mkdir -p build

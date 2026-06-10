@@ -106,3 +106,4 @@ ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
 # for tz: gates the TradeZone (tz) custom L2 chain support module + binaries.
 tz = ["dep:reqwest", "dep:thiserror", "op-succinct-proof-utils/tz"]
+kms = ["op-succinct-signer-utils/kms"]
