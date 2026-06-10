@@ -145,7 +145,54 @@ struct XLayerQueryRequest {
     project_symbol: i32,
 }
 
-/// XLayerOtherInfo contains transaction parameters for OtherInfo field
+/// Per-method business overlay decoded from calldata. Empty for selectors
+/// that carry no extra info (e.g. `resolve()`); flattened into
+/// `XLayerOtherInfo` at serialization time so missing fields simply
+/// disappear from the JSON payload.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MethodOverlay {
+    // DisputeGameFactory.create(uint32, bytes32, bytes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    game_type: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_claim: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_data: Option<String>,
+    // OPSuccinctFaultDisputeGame.claimCredit(address)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recipient: Option<String>,
+    // OPSuccinctFaultDisputeGame.prove(bytes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof_bytes: Option<String>,
+}
+
+impl MethodOverlay {
+    /// Picks the right decoder for the selector at the front of `data`.
+    /// Unknown / under-length selectors return an empty overlay; the
+    /// upstream `detect_operate_type` already rejects unknown selectors,
+    /// so reaching this fallback in practice means an empty calldata.
+    fn from_calldata(data: &[u8]) -> Self {
+        if data.len() < 4 {
+            return Self::default();
+        }
+        let selector = format!("0x{}", hex::encode(&data[..4]));
+        let args = &data[4..];
+        match selector.as_str() {
+            METHOD_SIG_DGF_CREATE => decode_create(args).unwrap_or_default(),
+            METHOD_SIG_CLAIM_CREDIT => decode_claim_credit(args).unwrap_or_default(),
+            METHOD_SIG_PROVE => Self {
+                proof_bytes: extract_prove_bytes(data),
+                ..Self::default()
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
+/// JSON payload sent to the remote signer's `otherInfo` field. Mixes the
+/// tx-level fields the signer always needs with the per-method business
+/// overlay decoded from calldata.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct XLayerOtherInfo {
@@ -161,20 +208,92 @@ struct XLayerOtherInfo {
     data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
-    // DisputeGameFactory.create business parameters.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    game_type: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_claim: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    extra_data: Option<String>,
-    // OPSuccinctFaultDisputeGame.claimCredit business parameter.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recipient: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    operate_type: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proof_bytes: Option<String>,
+    #[serde(flatten)]
+    overlay: MethodOverlay,
+}
+
+/// Decodes `DisputeGameFactory.create(uint32, bytes32, bytes)`. Returns
+/// `None` if the args are obviously too short to hold the three head
+/// words; lenient about the dynamic `bytes` tail (truncates rather than
+/// erroring).
+fn decode_create(args: &[u8]) -> Option<MethodOverlay> {
+    if args.len() < 96 {
+        tracing::warn!("Insufficient calldata for create()");
+        return None;
+    }
+    let game_type = u32_from_word(&args[0..32]);
+    let root_claim = hex_0x(&args[32..64]);
+    let extra_data_offset = u64_from_word(&args[64..96]) as usize;
+    let extra_data = decode_dyn_bytes(args, extra_data_offset)
+        .unwrap_or_else(|| "0x".to_string());
+
+    tracing::info!(
+        game_type,
+        %root_claim,
+        %extra_data,
+        "Parsed create() params"
+    );
+    Some(MethodOverlay {
+        game_type: Some(game_type),
+        root_claim: Some(root_claim),
+        extra_data: Some(extra_data),
+        ..MethodOverlay::default()
+    })
+}
+
+/// Decodes `OPSuccinctFaultDisputeGame.claimCredit(address)`. The single
+/// argument is a 32-byte word with the address in the low 20 bytes.
+fn decode_claim_credit(args: &[u8]) -> Option<MethodOverlay> {
+    if args.len() < 32 {
+        return None;
+    }
+    let recipient = hex_0x(&args[12..32]);
+    tracing::info!(%recipient, "Parsed claimCredit() params");
+    Some(MethodOverlay {
+        recipient: Some(recipient),
+        ..MethodOverlay::default()
+    })
+}
+
+/// Strip the ABI offset+length headers from a `prove(bytes)` calldata
+/// (selector + 32-byte offset + 32-byte length + payload) and return the
+/// inner bytes hex-encoded.
+fn extract_prove_bytes(data: &[u8]) -> Option<String> {
+    if data.len() <= 4 + 64 {
+        return None;
+    }
+    let length = u64_from_word(&data[36..68]) as usize;
+    if data.len() < 68 + length {
+        return None;
+    }
+    Some(hex_0x(&data[68..68 + length]))
+}
+
+/// Decodes a dynamic ABI `bytes` value at `offset` inside `args`. The
+/// offset points at the length word; the payload follows. Silently
+/// truncates if the declared length runs off the end (matches the
+/// historical lenient behavior).
+fn decode_dyn_bytes(args: &[u8], offset: usize) -> Option<String> {
+    let len_word = args.get(offset..offset.checked_add(32)?)?;
+    let length = u64_from_word(len_word) as usize;
+    let start = offset + 32;
+    let end = start.saturating_add(length).min(args.len());
+    Some(hex_0x(&args[start..end]))
+}
+
+/// Reads a `uint32` from an ABI 32-byte word (value right-aligned).
+fn u32_from_word(word: &[u8]) -> u32 {
+    u32::from_be_bytes(word[28..32].try_into().expect("word is 32 bytes"))
+}
+
+/// Reads the low 8 bytes of an ABI `uint256` word — enough for any
+/// length/offset that won't OOM us.
+fn u64_from_word(word: &[u8]) -> u64 {
+    u64::from_be_bytes(word[24..32].try_into().expect("word is 32 bytes"))
+}
+
+fn hex_0x(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
 }
 
 /// XLayerConfig contains configuration for XLayer remote signer
@@ -447,39 +566,17 @@ impl XLayerRemoteClient {
         }
     }
 
-    /// Builds OtherInfo JSON string with business parameters
+    /// Serializes per-call metadata into the `otherInfo` JSON string. The
+    /// tx-level fields come from `TransactionRequest`; the per-method
+    /// business overlay (game params, recipient, proof bytes) is decoded
+    /// from calldata.
     fn build_other_info(&self, tx: &TransactionRequest) -> Result<String> {
-        let contract_address = tx
-            .to
-            .and_then(|to| match to {
-                alloy_primitives::TxKind::Call(addr) => Some(format!("{:?}", addr)),
-                alloy_primitives::TxKind::Create => None,
-            })
-            .unwrap_or_default();
-
-        let empty_bytes = Bytes::new();
-        let data = tx.input.input().unwrap_or(&empty_bytes);
-
-        // Parse business parameters based on method signature
-        let (game_type, root_claim, extra_data, recipient) = if data.len() >= 4 {
-            self.parse_business_params(data)?
-        } else {
-            (None, None, None, None)
+        let contract_address = match tx.to {
+            Some(alloy_primitives::TxKind::Call(addr)) => format!("{:?}", addr),
+            _ => String::new(),
         };
-
-        let (operate_type, proof_bytes) = if data.len() >= 4 {
-            let method_sig = format!("0x{}", hex::encode(&data[..4]));
-            match method_sig.as_str() {
-                METHOD_SIG_PROVE => (
-                    Some(OperateType::Prove as i32),
-                    Self::extract_prove_bytes(data),
-                ),
-                METHOD_SIG_CHALLENGE => (Some(OperateType::Challenge as i32), None),
-                _ => (None, None),
-            }
-        } else {
-            (None, None)
-        };
+        let empty = Bytes::new();
+        let data = tx.input.input().unwrap_or(&empty);
 
         let other_info = XLayerOtherInfo {
             contract_address,
@@ -488,139 +585,12 @@ impl XLayerRemoteClient {
             nonce: tx.nonce.unwrap_or(0),
             max_fee_per_gas: tx.max_fee_per_gas.map(|f| f.to_string()),
             max_priority_fee_per_gas: tx.max_priority_fee_per_gas.map(|f| f.to_string()),
-            data: Some(format!("0x{}", hex::encode(data))),
+            data: Some(hex_0x(data)),
             value: tx.value.map(|v| v.to_string()),
-            // Business parameters
-            game_type,
-            root_claim,
-            extra_data,
-            recipient,
-            operate_type,
-            proof_bytes,
+            overlay: MethodOverlay::from_calldata(data),
         };
 
         serde_json::to_string(&other_info).context("Failed to serialize OtherInfo")
-    }
-
-    /// Strip the ABI offset+length headers from a `prove(bytes)` calldata and
-    /// return the inner bytes hex-encoded.
-    fn extract_prove_bytes(data: &[u8]) -> Option<String> {
-        // 4 selector + 32 offset + 32 length = 68 bytes minimum before payload.
-        if data.len() <= 4 + 64 {
-            return None;
-        }
-        // Length is the last 8 bytes of the 32-byte big-endian uint256 at [36..68];
-        // higher bytes must be zero (proof is never gigabytes).
-        let length = u64::from_be_bytes(data[60..68].try_into().ok()?) as usize;
-        if data.len() < 68 + length {
-            return None;
-        }
-        Some(format!("0x{}", hex::encode(&data[68..68 + length])))
-    }
-
-    /// Parses business parameters from transaction data based on method
-    /// signature. Returns `(game_type, root_claim, extra_data, recipient)`.
-    fn parse_business_params(
-        &self,
-        data: &Bytes,
-    ) -> Result<(Option<u32>, Option<String>, Option<String>, Option<String>)> {
-        if data.len() < 4 {
-            return Ok((None, None, None, None));
-        }
-
-        let method_sig = format!("0x{}", hex::encode(&data[..4]));
-        let params_data = &data[4..];
-
-        match method_sig.as_str() {
-            METHOD_SIG_DGF_CREATE => {
-                // DisputeGameFactory.create(uint32 _gameType, bytes32 _rootClaim, bytes calldata _extraData)
-                if params_data.len() < 96 {
-                    tracing::warn!("Insufficient data for create method");
-                    return Ok((None, None, None, None));
-                }
-
-                // Parse gameType (uint32, but padded to 32 bytes)
-                let game_type = u32::from_be_bytes([
-                    params_data[28],
-                    params_data[29],
-                    params_data[30],
-                    params_data[31],
-                ]);
-
-                // Parse rootClaim (bytes32, next 32 bytes)
-                let root_claim = format!("0x{}", hex::encode(&params_data[32..64]));
-
-                // Parse extraData (dynamic bytes)
-                // The offset to extraData is at bytes 64-96
-                let extra_data_offset = u64::from_be_bytes([
-                    params_data[88],
-                    params_data[89],
-                    params_data[90],
-                    params_data[91],
-                    params_data[92],
-                    params_data[93],
-                    params_data[94],
-                    params_data[95],
-                ]) as usize;
-
-                let extra_data = if extra_data_offset < params_data.len() {
-                    // Read length of extraData (32 bytes at offset)
-                    if extra_data_offset + 32 <= params_data.len() {
-                        let length = u64::from_be_bytes([
-                            params_data[extra_data_offset + 24],
-                            params_data[extra_data_offset + 25],
-                            params_data[extra_data_offset + 26],
-                            params_data[extra_data_offset + 27],
-                            params_data[extra_data_offset + 28],
-                            params_data[extra_data_offset + 29],
-                            params_data[extra_data_offset + 30],
-                            params_data[extra_data_offset + 31],
-                        ]) as usize;
-
-                        let data_start = extra_data_offset + 32;
-                        if data_start + length <= params_data.len() {
-                            format!("0x{}", hex::encode(&params_data[data_start..data_start + length]))
-                        } else {
-                            format!("0x{}", hex::encode(&params_data[data_start..]))
-                        }
-                    } else {
-                        format!("0x{}", hex::encode(&params_data[extra_data_offset..]))
-                    }
-                } else {
-                    "0x".to_string()
-                };
-
-                tracing::info!(
-                    "Parsed create params: gameType={}, rootClaim={}, extraData={}",
-                    game_type,
-                    root_claim,
-                    extra_data
-                );
-
-                Ok((Some(game_type), Some(root_claim), Some(extra_data), None))
-            }
-            METHOD_SIG_CLAIM_CREDIT => {
-                // OPSuccinctFaultDisputeGame.claimCredit(address _recipient)
-                if params_data.len() >= 32 {
-                    let recipient = format!("0x{}", hex::encode(&params_data[12..32]));
-                    tracing::info!("Parsed claimCredit params: recipient={}", recipient);
-                    Ok((None, None, None, Some(recipient)))
-                } else {
-                    Ok((None, None, None, None))
-                }
-            }
-            METHOD_SIG_PROVE | METHOD_SIG_CHALLENGE | METHOD_SIG_RESOLVE => {
-                // These methods carry no critical business params for OtherInfo:
-                // prove(bytes) - proof bytes handled separately as `proofBytes`
-                // challenge() / resolve() - no params
-                tracing::debug!("Method {} has no critical business params to parse", method_sig);
-                Ok((None, None, None, None))
-            }
-            _ => {
-                tracing::debug!("Unknown method signature for param parsing: {}", method_sig);
-                Ok((None, None, None, None))
-            }
-        }
     }
 
     /// Converts a wei value to the `operateAmount` decimal-ETH string used by
@@ -1341,13 +1311,8 @@ mod tests {
         ));
         tx.value = Some(U256::from(1000000000000000000u128));
 
-        let result = client.build_other_info(&tx);
-        assert!(result.is_ok());
-
-        let other_info = result.unwrap();
+        let other_info = client.build_other_info(&tx).unwrap();
         assert!(other_info.contains("contractAddress"));
-        assert!(other_info.contains("gasLimit"));
-        assert!(other_info.contains("nonce"));
         assert!(other_info.contains("\"nonce\":42"));
         assert!(other_info.contains("\"gasLimit\":200000"));
     }
@@ -1464,110 +1429,88 @@ mod tests {
         assert!(debug_str.contains("***REDACTED***"));
     }
 
-    /// Test business parameter parsing for DisputeGameFactory.create
-    #[test]
-    fn test_parse_proposer_create_params() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // DisputeGameFactory.create(uint32 gameType, bytes32 rootClaim, bytes extraData)
-        // Method sig: 0x82ecf2f6
-        // gameType: 1 (padded to 32 bytes)
-        // rootClaim: 0x1234...00 (32 bytes)
-        // extraData offset: 96 (0x60)
-        // extraData length: 2
-        // extraData: 0xabcd
-        let mut data = Vec::new();
-        data.extend_from_slice(&hex::decode("82ecf2f6").unwrap()); // method sig
-
-        // gameType = 1 (padded to 32 bytes)
-        data.extend_from_slice(&[0u8; 28]);
-        data.extend_from_slice(&[0, 0, 0, 1]);
-
-        // rootClaim (32 bytes)
-        data.extend_from_slice(&[0x12u8; 32]);
-
-        // extraData offset = 96 (0x60)
-        data.extend_from_slice(&[0u8; 24]);
-        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]);
-
-        // extraData length = 2
-        data.extend_from_slice(&[0u8; 24]);
-        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 2]);
-
-        // extraData = 0xabcd
-        data.extend_from_slice(&[0xab, 0xcd]);
-
-        let result = client.parse_business_params(&Bytes::from(data));
-        assert!(result.is_ok());
-
-        let (game_type, root_claim, extra_data, _) = result.unwrap();
-        assert_eq!(game_type, Some(1));
-        assert!(root_claim.is_some());
-        assert!(extra_data.is_some());
-        assert_eq!(extra_data.unwrap(), "0xabcd");
-    }
-
-    /// `claimCredit(address)` parses the recipient out of the trailing 20
-    /// bytes of the 32-byte argument slot.
-    #[test]
-    fn test_parse_claim_credit_params() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // recipient: 0x1234567890123456789012345678901234567890
-        let mut data = Vec::new();
-        data.extend_from_slice(&hex::decode("60e27464").unwrap()); // method sig
-
-        // address (20 bytes, padded to 32 bytes)
-        data.extend_from_slice(&[0u8; 12]);
-        data.extend_from_slice(
-            &hex::decode("1234567890123456789012345678901234567890").unwrap(),
-        );
-
-        let result = client.parse_business_params(&Bytes::from(data));
-        assert!(result.is_ok());
-
-        let (_, _, _, recipient) = result.unwrap();
-        assert!(recipient.is_some());
-        assert_eq!(
-            recipient.unwrap(),
-            "0x1234567890123456789012345678901234567890"
-        );
-    }
-
-    /// Test OtherInfo includes business parameters
-    #[test]
-    fn test_other_info_with_business_params() {
-        let config = XLayerConfig::default();
-        let client = XLayerRemoteClient::new(config);
-
-        // Build a create() transaction
+    /// Builds a tx with the given calldata that the dispute-game contracts
+    /// would produce, then returns the resulting `otherInfo` JSON for
+    /// substring assertions.
+    fn build_other_info_for(client: &XLayerRemoteClient, calldata: Vec<u8>) -> String {
         let mut tx = TransactionRequest::default();
         tx.to = Some(alloy_primitives::TxKind::Call(address!(
             "1234567890123456789012345678901234567890"
         )));
-        tx.gas = Some(200000);
+        tx.gas = Some(200_000);
         tx.nonce = Some(42);
+        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(calldata));
+        client.build_other_info(&tx).unwrap()
+    }
 
-        // DisputeGameFactory.create with simple params
-        let mut data = Vec::new();
-        data.extend_from_slice(&hex::decode("82ecf2f6").unwrap());
-        data.extend_from_slice(&[0u8; 28]);
-        data.extend_from_slice(&[0, 0, 0, 1]); // gameType = 1
-        data.extend_from_slice(&[0x12u8; 32]); // rootClaim
-        data.extend_from_slice(&[0u8; 24]);
-        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]); // offset
-        data.extend_from_slice(&[0u8; 32]); // length = 0
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(data));
+    /// `create(uint32, bytes32, bytes)` emits `gameType`, `rootClaim`, and
+    /// `extraData` decoded from calldata.
+    #[test]
+    fn test_other_info_for_create() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
 
-        let result = client.build_other_info(&tx);
-        assert!(result.is_ok());
+        let mut calldata = hex::decode("82ecf2f6").unwrap();
+        // gameType = 1 (uint32 right-aligned in 32-byte word)
+        calldata.extend_from_slice(&[0u8; 28]);
+        calldata.extend_from_slice(&[0, 0, 0, 1]);
+        // rootClaim (bytes32) = 0x12..12
+        calldata.extend_from_slice(&[0x12u8; 32]);
+        // extraData offset = 0x60
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x60]);
+        // extraData length = 2
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 2]);
+        // extraData payload = 0xabcd
+        calldata.extend_from_slice(&[0xab, 0xcd]);
 
-        let other_info = result.unwrap();
-        assert!(other_info.contains("gameType"));
-        assert!(other_info.contains("rootClaim"));
-        assert!(other_info.contains("extraData"));
+        let json = build_other_info_for(&client, calldata);
+        let expected_root = format!("0x{}", "12".repeat(32));
+        assert!(json.contains("\"gameType\":1"), "got: {json}");
+        assert!(json.contains(&format!("\"rootClaim\":\"{expected_root}\"")), "got: {json}");
+        assert!(json.contains("\"extraData\":\"0xabcd\""), "got: {json}");
+        assert!(!json.contains("recipient"), "got: {json}");
+        assert!(!json.contains("proofBytes"), "got: {json}");
+    }
+
+    /// `claimCredit(address)` emits `recipient` from the low 20 bytes of
+    /// the 32-byte argument word; no other overlay fields appear.
+    #[test]
+    fn test_other_info_for_claim_credit() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+
+        let mut calldata = hex::decode("60e27464").unwrap();
+        calldata.extend_from_slice(&[0u8; 12]);
+        calldata.extend_from_slice(
+            &hex::decode("1234567890123456789012345678901234567890").unwrap(),
+        );
+
+        let json = build_other_info_for(&client, calldata);
+        assert!(
+            json.contains("\"recipient\":\"0x1234567890123456789012345678901234567890\""),
+            "got: {json}"
+        );
+        assert!(!json.contains("gameType"), "got: {json}");
+        assert!(!json.contains("proofBytes"), "got: {json}");
+    }
+
+    /// `prove(bytes)` emits `proofBytes` carrying the inner payload only
+    /// (ABI offset + length headers stripped).
+    #[test]
+    fn test_other_info_for_prove() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+
+        let mut calldata = hex::decode("375bfa5d").unwrap();
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x20]); // offset = 32
+        calldata.extend_from_slice(&[0u8; 24]);
+        calldata.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x04]); // length = 4
+        calldata.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let json = build_other_info_for(&client, calldata);
+        assert!(json.contains("\"proofBytes\":\"0xdeadbeef\""), "got: {json}");
+        assert!(!json.contains("recipient"), "got: {json}");
+        assert!(!json.contains("gameType"), "got: {json}");
     }
 
     /// Fixed-input regression for the signature algorithm. The output is the
@@ -1680,8 +1623,11 @@ mod tests {
         assert!(!client.has_ref_order_id("totally-unrelated-id").await);
     }
 
+    /// OtherInfo never carries `method` or `operateType` (both live on the
+    /// outer sign request); `prove(bytes)` still surfaces its decoded
+    /// payload as `proofBytes`.
     #[test]
-    fn test_other_info_overlays() {
+    fn test_other_info_field_presence() {
         let client = XLayerRemoteClient::new(XLayerConfig::default());
 
         let mut tx = TransactionRequest::default();
@@ -1689,7 +1635,8 @@ mod tests {
             "1234567890123456789012345678901234567890"
         )));
 
-        for selector in ["82ecf2f6", "2810e1d6", "60e27464"] {
+        // create / resolve / claimCredit / challenge: nothing redundant.
+        for selector in ["82ecf2f6", "2810e1d6", "60e27464", "d2ef7398"] {
             tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
                 hex::decode(selector).unwrap(),
             ));
@@ -1698,14 +1645,7 @@ mod tests {
             assert!(!json.contains("\"operateType\""), "got: {json}");
         }
 
-        // challenge() — only operateType is echoed.
-        tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(
-            hex::decode("d2ef7398").unwrap(),
-        ));
-        let json = client.build_other_info(&tx).unwrap();
-        assert!(json.contains("\"operateType\":28"), "got: {json}");
-
-        // prove(bytes) — operateType + proofBytes.
+        // prove(bytes): proofBytes carries the inner payload.
         let mut prove_data = hex::decode("375bfa5d").unwrap();
         prove_data.extend_from_slice(&[0u8; 24]);
         prove_data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x20]); // offset
@@ -1714,7 +1654,7 @@ mod tests {
         prove_data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         tx.input = alloy_rpc_types_eth::TransactionInput::new(Bytes::from(prove_data));
         let json = client.build_other_info(&tx).unwrap();
-        assert!(json.contains("\"operateType\":27"), "got: {json}");
+        assert!(!json.contains("\"operateType\""), "got: {json}");
         assert!(json.contains("\"proofBytes\":\"0xdeadbeef\""), "got: {json}");
     }
 }
