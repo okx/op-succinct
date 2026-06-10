@@ -926,14 +926,13 @@ impl XLayerRemoteClient {
                     }
                 }
 
-                if let Some(value) = original_tx.value {
-                    if signed.value() != value {
-                        return Err(anyhow::anyhow!(
-                            "Value mismatch: expected {}, got {}",
-                            value,
-                            signed.value()
-                        ));
-                    }
+                let expected_value = original_tx.value.unwrap_or_default();
+                if signed.value() != expected_value {
+                    return Err(anyhow::anyhow!(
+                        "Value mismatch: expected {}, got {}",
+                        expected_value,
+                        signed.value()
+                    ));
                 }
 
                 if let Some(gas) = original_tx.gas {
@@ -1010,9 +1009,50 @@ impl XLayerRemoteClient {
                 if let Some(nonce) = original_tx.nonce {
                     if signed.nonce() != nonce {
                         return Err(anyhow::anyhow!(
-                            "Nonce mismatch: expected {}, got {}",
+                            "Nonce mismatch (legacy): expected {}, got {}",
                             nonce,
                             signed.nonce()
+                        ));
+                    }
+                }
+
+                if let Some(to) = &original_tx.to {
+                    match to {
+                        alloy_primitives::TxKind::Call(addr) => {
+                            if Some(*addr) != signed.to() {
+                                return Err(XLayerSignerError::VerificationError(format!(
+                                    "To address mismatch (legacy): expected {:?}, got {:?}",
+                                    addr,
+                                    signed.to()
+                                ))
+                                .into());
+                            }
+                        }
+                        alloy_primitives::TxKind::Create => {
+                            if signed.to().is_some() {
+                                return Err(anyhow::anyhow!(
+                                    "To address should be None for contract creation (legacy)"
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                let expected_value = original_tx.value.unwrap_or_default();
+                if signed.value() != expected_value {
+                    return Err(anyhow::anyhow!(
+                        "Value mismatch (legacy): expected {}, got {}",
+                        expected_value,
+                        signed.value()
+                    ));
+                }
+
+                if let Some(gas) = original_tx.gas {
+                    if signed.gas_limit() != gas {
+                        return Err(anyhow::anyhow!(
+                            "Gas limit mismatch (legacy): expected {}, got {}",
+                            gas,
+                            signed.gas_limit()
                         ));
                     }
                 }
@@ -1021,7 +1061,9 @@ impl XLayerRemoteClient {
                 let original_data = original_tx.input.input().unwrap_or(&empty_data);
                 if signed.input() != original_data.as_ref() {
                     return Err(anyhow::anyhow!(
-                        "Transaction data mismatch for legacy tx"
+                        "Transaction data mismatch (legacy): expected {} bytes, got {} bytes",
+                        original_data.len(),
+                        signed.input().len()
                     ));
                 }
 
