@@ -9,7 +9,12 @@
 //! single attestation-derived signer across them, so all sub-tasks must
 //! hit the same enclave.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use alloy_consensus::Header;
 use alloy_primitives::{hex, Address, Bytes, B256};
@@ -17,9 +22,11 @@ use alloy_sol_types::SolValue;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::{Parser, ValueEnum};
+use kona_preimage::PreimageKey;
 use op_succinct_client_utils::{
     boot::BootInfoStruct,
     types::{AggregationInputs, RangeProof},
+    witness::DefaultWitnessData,
 };
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_ethereum_host_utils::host::SingleChainOPSuccinctHost;
@@ -124,6 +131,17 @@ struct Args {
     /// RPC saturates.
     #[arg(long, default_value_t = 4)]
     max_concurrent_witness: usize,
+
+    /// Directory for caching generated witnesses (rkyv bytes, one file per
+    /// range `<start>-<end>.witness.rkyv`). On a cache hit the slow
+    /// `host.fetch + host.run` is skipped. Also enables same-start trimming: a
+    /// cached witness for `[start, B]` is reused to synthesize any `[start, b]`
+    /// with `b <= B` by rewriting only the claim / claim-block boot keys (all
+    /// preimages of the shorter range are a subset of the superset's). Trimming
+    /// requires the same start block; a different start needs boundary preimages
+    /// the superset never collected. Use a per-chain dir. Unset = disabled.
+    #[arg(long)]
+    witness_cache_dir: Option<PathBuf>,
 
     /// tee-host base URL. All chunks are sent to this single instance — the
     /// aggregation guest pins every leaf to a single attestation-derived
@@ -451,6 +469,111 @@ async fn run_all_chunks(
         .collect()
 }
 
+// ---- witness cache: exact reuse + same-start trim (Option A) ---------------
+//
+// kona boot-info local preimage keys (kona crates/proof/proof/src/boot.rs):
+//   1 = L1 head, 2 = agreed L2 output root (pre-state, the dispute boundary),
+//   3 = claimed L2 output root (post-state), 4 = claimed L2 block number.
+// Trimming a [start, B] witness to [start, b<=B] rewrites ONLY keys 3 and 4:
+// key 2 (pre-root) and key 1 (a forward L1 head) stay valid for any sub-range
+// sharing `start`, and the content-addressed preimages needed to execute
+// [start, b] are a subset of those collected for [start, B]. A different start
+// is NOT trimmable — the superset never fetched that interior block's boundary
+// preimages (it computed it in-memory), so we only ever reuse same-start.
+const L2_CLAIM_KEY: u64 = 3;
+const L2_CLAIM_BLOCK_NUMBER_KEY: u64 = 4;
+
+fn witness_cache_path(dir: &Path, start: u64, end: u64) -> PathBuf {
+    dir.join(format!("{start}-{end}.witness.rkyv"))
+}
+
+fn load_cached_witness(dir: &Path, start: u64, end: u64) -> Option<Vec<u8>> {
+    fs::read(witness_cache_path(dir, start, end)).ok()
+}
+
+fn save_cached_witness(dir: &Path, start: u64, end: u64, bytes: &[u8]) -> Result<()> {
+    fs::create_dir_all(dir)
+        .with_context(|| format!("create witness cache dir {}", dir.display()))?;
+    let path = witness_cache_path(dir, start, end);
+    fs::write(&path, bytes).with_context(|| format!("write witness cache {}", path.display()))?;
+    Ok(())
+}
+
+/// Find a cached witness with the SAME start block and an end `>= end` (the
+/// tightest such superset). Returns its end + bytes, or `None` if no same-start
+/// superset is cached.
+fn find_superset_witness(dir: &Path, start: u64, end: u64) -> Result<Option<(u64, Vec<u8>)>> {
+    let Ok(entries) = fs::read_dir(dir) else { return Ok(None) };
+    let mut best: Option<u64> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(stem) = name.strip_suffix(".witness.rkyv") else { continue };
+        let Some((s, e)) = stem.split_once('-') else { continue };
+        let (Ok(s), Ok(e)) = (s.parse::<u64>(), e.parse::<u64>()) else { continue };
+        if s == start && e >= end {
+            best = Some(best.map_or(e, |b| b.min(e)));
+        }
+    }
+    match best {
+        Some(sup_end) => {
+            let bytes = fs::read(witness_cache_path(dir, start, sup_end))
+                .with_context(|| format!("read superset witness {start}-{sup_end}"))?;
+            Ok(Some((sup_end, bytes)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Synthesize a `[start, target_end]` witness from a same-start superset by
+/// rewriting only the claim (key 3 = `target_root`) and claim-block (key 4 =
+/// `target_end`, 8-byte big-endian, matching kona's `u64::from_be_bytes`) boot
+/// keys. `target_root` is the L2 output root at `target_end`; the program
+/// asserts its computed root against it.
+fn trim_witness(superset_bytes: &[u8], target_end: u64, target_root: B256) -> Result<Vec<u8>> {
+    // rkyv validation requires an 8-byte-aligned buffer; `fs::read` gives no
+    // alignment guarantee, so copy into an `AlignedVec` first — same as the
+    // enclave's own witness decode (tee/enclave/src/runner.rs).
+    let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(superset_bytes.len());
+    aligned.extend_from_slice(superset_bytes);
+    let mut witness: DefaultWitnessData =
+        rkyv::from_bytes::<DefaultWitnessData, RkyvError>(&aligned)
+            .context("rkyv-deserialize superset witness")?;
+    let map = &mut witness.preimage_store.preimage_map;
+    map.insert(PreimageKey::new_local(L2_CLAIM_KEY), target_root.0.to_vec());
+    map.insert(
+        PreimageKey::new_local(L2_CLAIM_BLOCK_NUMBER_KEY),
+        target_end.to_be_bytes().to_vec(),
+    );
+    Ok(rkyv::to_bytes::<RkyvError>(&witness).context("rkyv-serialize trimmed witness")?.to_vec())
+}
+
+/// Heavy path: fetch host args + run the witness generator, gated by the
+/// semaphore so concurrent chunks don't saturate the L1/L2/beacon RPCs.
+async fn generate_witness_bytes(
+    args: &Args,
+    host: &SingleChainOPSuccinctHost,
+    chunk_start: u64,
+    chunk_end: u64,
+    witness_sem: &Arc<Semaphore>,
+) -> Result<Vec<u8>> {
+    let _permit =
+        witness_sem.clone().acquire_owned().await.context("witness semaphore closed")?;
+
+    info!(start = chunk_start, end = chunk_end, "chunk: fetching host args");
+    let host_args = host
+        .fetch(chunk_start, chunk_end, args.l1_head, args.safe_db_fallback)
+        .await
+        .with_context(|| format!("host.fetch chunk [{chunk_start}, {chunk_end}]"))?;
+
+    info!(start = chunk_start, end = chunk_end, "chunk: running witness generator");
+    let witness = host
+        .run(&host_args)
+        .await
+        .with_context(|| format!("host.run chunk [{chunk_start}, {chunk_end}]"))?;
+    Ok(rkyv::to_bytes::<RkyvError>(&witness).context("rkyv-serialize witness")?.to_vec())
+}
+
 async fn submit_chunk(
     args: &Args,
     host: &SingleChainOPSuccinctHost,
@@ -459,27 +582,48 @@ async fn submit_chunk(
     witness_sem: &Arc<Semaphore>,
 ) -> Result<ChunkResult> {
     // ---- Phase 1: witness generation (parallel, gated by `witness_sem`) ----
-    // Permit released as soon as witness_bytes is ready, so the next chunk
-    // can start its own witness gen while this one sits at tee-host.
-    let witness_bytes = {
-        let _permit = witness_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .context("witness semaphore closed")?;
-
-        info!(start = chunk_start, end = chunk_end, "chunk: fetching host args");
-        let host_args = host
-            .fetch(chunk_start, chunk_end, args.l1_head, args.safe_db_fallback)
-            .await
-            .with_context(|| format!("host.fetch chunk [{chunk_start}, {chunk_end}]"))?;
-
-        info!(start = chunk_start, end = chunk_end, "chunk: running witness generator");
-        let witness = host
-            .run(&host_args)
-            .await
-            .with_context(|| format!("host.run chunk [{chunk_start}, {chunk_end}]"))?;
-        rkyv::to_bytes::<RkyvError>(&witness).context("rkyv-serialize witness")?.to_vec()
+    // With --witness-cache-dir we try, in order: (1) exact cached witness for
+    // this range, (2) trim a cached same-start superset [start, B>=end] by
+    // rewriting only the claim/claim-block boot keys, (3) generate fresh. Cache
+    // hits skip the heavy host.fetch + host.run entirely (no semaphore needed);
+    // a fresh generation releases its permit as soon as the bytes are ready so
+    // the next chunk can start while this one sits at tee-host.
+    let witness_bytes = match args.witness_cache_dir.as_deref() {
+        Some(dir) => {
+            if let Some(bytes) = load_cached_witness(dir, chunk_start, chunk_end) {
+                info!(start = chunk_start, end = chunk_end, "chunk: witness cache hit (exact)");
+                bytes
+            } else if let Some((sup_end, sup_bytes)) =
+                find_superset_witness(dir, chunk_start, chunk_end)?
+            {
+                info!(
+                    start = chunk_start,
+                    end = chunk_end,
+                    superset_end = sup_end,
+                    "chunk: witness cache hit (trimming same-start superset)"
+                );
+                // The agreed pre-root (boot key 2), L1 head (key 1) and every
+                // content-addressed preimage are already correct for [start, end];
+                // only the claimed post-root (key 3) and claim block (key 4) differ.
+                let target_root = host
+                    .fetcher
+                    .get_l2_output_at_block(chunk_end)
+                    .await
+                    .with_context(|| format!("fetch output root @ {chunk_end} for trim"))?
+                    .output_root;
+                let bytes = trim_witness(&sup_bytes, chunk_end, target_root).with_context(|| {
+                    format!("trim witness [{chunk_start}, {sup_end}] -> [{chunk_start}, {chunk_end}]")
+                })?;
+                save_cached_witness(dir, chunk_start, chunk_end, &bytes)?;
+                bytes
+            } else {
+                let bytes =
+                    generate_witness_bytes(args, host, chunk_start, chunk_end, witness_sem).await?;
+                save_cached_witness(dir, chunk_start, chunk_end, &bytes)?;
+                bytes
+            }
+        }
+        None => generate_witness_bytes(args, host, chunk_start, chunk_end, witness_sem).await?,
     };
 
     // ---- Phase 2: submit + poll (concurrent, throttled at tee-host) ----

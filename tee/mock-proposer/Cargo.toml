@@ -21,6 +21,9 @@ op-succinct-proof-utils.workspace = true
 # Canonical RangeJournal definition (shared with enclave + host)
 xlayer-tee-types.workspace = true
 
+# Boot-info local preimage keys (for same-start witness trimming)
+kona-preimage.workspace = true
+
 # Witness + headers serialization
 rkyv.workspace = true
 serde_cbor.workspace = true

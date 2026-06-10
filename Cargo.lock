@@ -15810,6 +15810,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "hex",
+ "kona-preimage",
  "op-succinct-client-utils",
  "op-succinct-elfs",
  "op-succinct-ethereum-host-utils",
