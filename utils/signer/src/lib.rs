@@ -199,11 +199,11 @@ impl Signer {
 
                 // Fill the transaction request with all of the relevant gas and nonce information.
                 let provider = ProviderBuilder::new().network::<Ethereum>().connect_http(l1_rpc.clone());
-                let _filled_tx = provider.fill(transaction_request.clone()).await?;
+                let filled_tx = provider.fill(transaction_request).await?;
 
                 tracing::info!("Signing transaction with XLayer remote signer");
                 let signed_tx_bytes = client
-                    .sign_transaction(&transaction_request)
+                    .sign_transaction(filled_tx.as_builder().unwrap())
                     .await
                     .context("XLayer remote signing failed")?;
 
