@@ -64,18 +64,28 @@ cargo build $CARGO_MODE_FLAG --locked \
     --bin xlayer-tee-enclave
 
 BIN="target/${MODE}/xlayer-tee-enclave"
-echo "==> ldd (runtime lib deps — the enclave Dockerfile base must provide these):"
-ldd "$BIN" || true
+echo "==> shared lib deps (runtime — the enclave Dockerfile base must provide these):"
+# ldd on Linux (the real build env); otool -L as a courtesy on macOS ad-hoc runs.
+if command -v ldd >/dev/null 2>&1; then
+    ldd "$BIN" || true
+elif command -v otool >/dev/null 2>&1; then
+    otool -L "$BIN" || true
+else
+    echo "    (no ldd/otool available; skipping)"
+fi
 
 cp "$BIN" build/xlayer-tee-enclave
 # Normalise the binary's own mtime so the downstream OCI layer is deterministic.
-touch -hcd "@${SOURCE_DATE_EPOCH}" build/xlayer-tee-enclave
+# GNU touch (Linux) understands -d @EPOCH; BSD touch (macOS) needs -t [[CC]YY]MMDDhhmm[.SS].
+touch -hcd "@${SOURCE_DATE_EPOCH}" build/xlayer-tee-enclave 2>/dev/null \
+    || touch -hct "$(date -u -r "${SOURCE_DATE_EPOCH}" +%Y%m%d%H%M.%S)" build/xlayer-tee-enclave
 
 cp "$SCRIPT_DIR/Dockerfile"     build/Dockerfile
 cp "$SCRIPT_DIR/build_eif.sh"   build/build_eif.sh
 chmod +x build/build_eif.sh
 
-ENCLAVE_MD5="$(md5sum build/xlayer-tee-enclave | awk '{print $1}')"
+# md5sum on Linux/coreutils; md5 -q on macOS.
+ENCLAVE_MD5="$({ md5sum build/xlayer-tee-enclave 2>/dev/null || md5 -q build/xlayer-tee-enclave; } | awk '{print $1}')"
 echo "=========================================================="
 echo " enclave binary md5 = $ENCLAVE_MD5"
 echo " (record this; two builds MUST produce the same md5)"

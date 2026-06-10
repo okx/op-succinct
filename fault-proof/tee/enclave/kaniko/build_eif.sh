@@ -32,6 +32,15 @@ NITRO_TOOL_IMAGE="nitro-cli-pinned:${NITRO_CLI_COMMIT}"
 
 WORKDIR="$(pwd)"
 
+# Must run from the build/ dir (produced by build.sh): it holds the simple
+# enclave Dockerfile + the xlayer-tee-enclave binary. Running from the repo root
+# would make kaniko pick up the repo's main multi-stage Dockerfile by mistake.
+if [ ! -f "$WORKDIR/xlayer-tee-enclave" ] || [ ! -f "$WORKDIR/Dockerfile" ]; then
+    echo "ERROR: run this from the build/ dir (expected ./xlayer-tee-enclave and ./Dockerfile here)." >&2
+    echo "       e.g.  cd build && ./build_eif.sh" >&2
+    exit 1
+fi
+
 # --- [0] Build the pinned nitro-cli tool image (cached by commit) -----------
 if ! docker image inspect "$NITRO_TOOL_IMAGE" >/dev/null 2>&1; then
     echo "==> [0/3] Building pinned nitro-cli ($NITRO_CLI_COMMIT) from source"
