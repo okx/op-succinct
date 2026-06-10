@@ -7395,6 +7395,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ok-kms-rust"
+version = "0.1.0"
+source = "git+ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git?tag=v1.0.0#dda1c2b207877a605163fd3d80b406c0dce8b35b"
+dependencies = [
+ "libloading",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8036,6 +8045,7 @@ dependencies = [
  "gcloud-sdk",
  "hex",
  "hmac",
+ "ok-kms-rust",
  "op-succinct-host-utils",
  "reqwest 0.12.28",
  "rustls 0.23.37",
