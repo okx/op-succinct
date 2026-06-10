@@ -22,6 +22,32 @@ MODE="${1:-release}"
 CARGO_MODE_FLAG=""
 [ "$MODE" = "release" ] && CARGO_MODE_FLAG="--release"
 
+# --- Host-independent build (this is what makes PCR0 reproducible) ----------
+# The enclave binary's bytes feed PCR2 (hence PCR0). Building NATIVELY ties the
+# binary to the host: on macOS `cargo build` targets aarch64-apple-darwin (a
+# Mach-O), which can never match a Linux x86_64 build (e.g. on the Aliyun box)
+# -> different PCR2/PCR0. So compile inside a pinned linux/amd64 image mounted at
+# a FIXED path (/build). The container — not the host — defines the bytes, so the
+# SAME image on Mac / Aliyun / CI yields the SAME binary and the SAME PCR0.
+#
+# IMPORTANT: BUILDER_IMAGE must be byte-for-byte the SAME image everywhere
+# (pin by @sha256 digest). To match an existing Aliyun PCR0, set BUILDER_IMAGE to
+# the exact image Aliyun used; if Aliyun built natively, re-run it with this same
+# script + image so both sides share one environment.
+# Escape hatch: BUILD_ON_HOST=1 builds natively (only correct when the host
+# itself already IS the shared linux/amd64 environment).
+BUILDER_IMAGE="${BUILDER_IMAGE:-rust:1.90-bookworm}"
+if [ -z "${IN_BUILDER:-}" ] && [ "${BUILD_ON_HOST:-0}" != "1" ]; then
+    SCRIPT_REL="${SCRIPT_DIR#"$REPO_ROOT"/}/$(basename "$0")"
+    echo "==> Re-exec inside pinned linux/amd64 builder ($BUILDER_IMAGE) — host-independent binary"
+    echo "    repo mounted at /build; pass BUILD_ON_HOST=1 to compile natively instead"
+    exec docker run --rm --platform=linux/amd64 \
+        -e IN_BUILDER=1 \
+        -v "$REPO_ROOT":/build -w /build \
+        "$BUILDER_IMAGE" \
+        bash "$SCRIPT_REL" "$MODE"
+fi
+
 echo "==> Installing system build deps for native crates (c-kzg/blst/aws-lc-sys/ring/openssl-sys)"
 # NOTE: in the pinned compile image these are usually preinstalled; this block
 # is for ad-hoc/local runs. apt at build time is itself a reproducibility risk —

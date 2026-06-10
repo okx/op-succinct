@@ -51,8 +51,12 @@ if ! docker image inspect "$NITRO_TOOL_IMAGE" >/dev/null 2>&1; then
 FROM ${NITRO_BASE_IMAGE}
 RUN dnf install -y git rust cargo openssl-devel docker && dnf clean all
 RUN git init /src && cd /src \\
+ && git config --global http.version HTTP/1.1 \\
+ && git config --global http.postBuffer 1048576000 \\
  && git remote add origin ${NITRO_CLI_REPO} \\
- && git fetch --depth=1 origin ${NITRO_CLI_COMMIT} \\
+ && ( git fetch --depth=1 origin ${NITRO_CLI_COMMIT} \\
+   || { echo 'fetch retry 1'; sleep 5;  git fetch --depth=1 origin ${NITRO_CLI_COMMIT}; } \\
+   || { echo 'fetch retry 2'; sleep 10; git fetch --depth=1 origin ${NITRO_CLI_COMMIT}; } ) \\
  && git reset --hard FETCH_HEAD \\
  && cargo build --release --locked --bin nitro-cli \\
  && install -Dm755 target/release/nitro-cli /usr/local/bin/nitro-cli \\
