@@ -25,6 +25,7 @@ axum = "0.7"
 hyper = { version = "1", features = ["http1", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1"] }
 http-body-util = "0.1"
+http-body = "1"
 tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

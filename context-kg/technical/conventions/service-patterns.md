@@ -74,6 +74,7 @@ proof_id, proof_output_id, consecutive_poll_failures
 - **No .await inside any mutex guard** — sequential lock-release-reacquire pattern throughout.
 - **Cancellation**: `oneshot::Sender<()>` + `tokio::select! { biased; }` in background delivery coroutine provides immediate preemption on DELETE.
 - **Terminal one-shot**: `set_finished`/`set_failed`/`set_cancelled` are no-ops if task is already terminal.
+- **Resident witness budget**: `AppState.resident_witness_bytes: Arc<AtomicUsize>` tracks total in-flight witness bytes. Pre-check before body read rejects with `BufferFull` when budget exceeded (soft limit, `Ordering::Relaxed`). `ResidentGuard` RAII type increments on create, decrements on drop — held by delivery coroutine, released on coroutine exit (success/failure/cancel).
 
 [Convention] When implementing per-task or per-entity concurrent management with in-memory HashMap, prefer the two-level lock pattern over a single global lock. Heavy computation (ABI encoding, hashing) must happen outside the global lock scope.
 

@@ -1,7 +1,7 @@
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
 #[cfg(all(feature = "vsock", not(target_os = "linux")))]
 compile_error!("xlayer-tee-host: vsock feature requires target_os = linux");
-
-use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -19,9 +19,14 @@ use xlayer_tee_types::{
     wire, DeleteTaskResponse, ErrorKind, ErrorResponse, TaskStateView,
 };
 
-use crate::{config::HostConfig, error::HostError};
+use crate::{config::HostConfig, error::HostError, slice_body::SliceBody};
 
-type SendRequest = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
+type SendRequest = hyper::client::conn::http1::SendRequest<BoxBody>;
+
+fn empty_boxed_body() -> BoxBody {
+    Full::new(Bytes::new()).boxed()
+}
 
 pub struct EnclaveClient {
     sender: Mutex<Option<SendRequest>>,
@@ -66,13 +71,16 @@ impl EnclaveClient {
         Ok(sender)
     }
 
-    async fn execute_request(
+    async fn execute_request<F>(
         &self,
         method: &str,
         uri: &str,
         headers: Vec<(&str, &str)>,
-        body: Bytes,
-    ) -> Result<(u16, Vec<u8>), HostError> {
+        make_body: F,
+    ) -> Result<(u16, Vec<u8>), HostError>
+    where
+        F: Fn() -> BoxBody,
+    {
         let timeout = Duration::from_secs(self.config.enclave.request_timeout_secs);
         let max_attempts = 3u32;
         let mut last_err = HostError::Internal("no attempts made".to_string());
@@ -116,7 +124,7 @@ impl EnclaveClient {
                 builder = builder.header(*k, *v);
             }
             let req = builder
-                .body(Full::new(body.clone()))
+                .body(make_body())
                 .map_err(|e| HostError::Internal(format!("build request: {e}")))?;
 
             let result = tokio::time::timeout(timeout, sender.send_request(req)).await;
@@ -161,14 +169,14 @@ impl EnclaveClient {
     pub async fn post_range_task(
         &self,
         task_id: &str,
-        witness_body: &[u8],
+        witness: SliceBody,
     ) -> Result<(), HostError> {
         let (status, body) = self
             .execute_request(
                 "POST",
                 wire::TASKS_RANGE,
                 vec![(wire::HEADER_TASK_ID, task_id), ("content-type", wire::OCTET_STREAM)],
-                Bytes::copy_from_slice(witness_body),
+                move || witness.clone().boxed(),
             )
             .await?;
 
@@ -182,7 +190,7 @@ impl EnclaveClient {
 
     pub async fn get_task(&self, task_id: &str) -> Result<TaskStateView, HostError> {
         let uri = wire::task_path(task_id);
-        let (status, body) = self.execute_request("GET", &uri, vec![], Bytes::new()).await?;
+        let (status, body) = self.execute_request("GET", &uri, vec![], empty_boxed_body).await?;
 
         if (200..=299).contains(&status) {
             return decode_task_state_view(&body);
@@ -194,7 +202,7 @@ impl EnclaveClient {
 
     pub async fn delete_task(&self, task_id: &str) -> Result<DeleteTaskResponse, HostError> {
         let uri = wire::task_path(task_id);
-        let (status, body) = self.execute_request("DELETE", &uri, vec![], Bytes::new()).await?;
+        let (status, body) = self.execute_request("DELETE", &uri, vec![], empty_boxed_body).await?;
 
         if (200..=299).contains(&status) {
             return decode_delete_task_response(&body);
@@ -206,7 +214,7 @@ impl EnclaveClient {
 
     pub async fn get_attestation(&self) -> Result<Vec<u8>, HostError> {
         let (status, body) =
-            self.execute_request("GET", wire::ATTESTATION, vec![], Bytes::new()).await?;
+            self.execute_request("GET", wire::ATTESTATION, vec![], empty_boxed_body).await?;
 
         if (200..=299).contains(&status) {
             return Ok(body);

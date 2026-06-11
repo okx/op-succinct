@@ -1,13 +1,20 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use alloy_primitives::keccak256;
 use axum::{
-    body::Bytes,
     extract::{Path, State},
     http::HeaderMap,
     response::IntoResponse,
 };
+use bytes::BytesMut;
 use chrono::Utc;
+use http_body_util::BodyExt;
 use serde::Serialize;
 use tokio::{
     sync::{oneshot, Mutex},
@@ -23,6 +30,8 @@ use crate::{
     enclave_client::EnclaveClient,
     error::HostError,
     packager::pack_proof_bytes,
+    resident_guard::ResidentGuard,
+    slice_body::SliceBody,
     task_manager::{format_duration, EnclaveInfo, TaskArgs, TaskManager, TaskMetrics, TaskStatus},
 };
 
@@ -34,6 +43,7 @@ pub struct AppState {
     pub enclave: Arc<EnclaveClient>,
     pub config: Arc<HostConfig>,
     pub attestation_cache: Arc<Mutex<AttestationCache>>,
+    pub resident_witness_bytes: Arc<AtomicUsize>,
 }
 
 pub struct AttestationCache {
@@ -101,23 +111,71 @@ pub struct AttestationData {
 pub async fn create_task(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: Bytes,
+    body: axum::body::Body,
 ) -> impl IntoResponse {
-    if body.is_empty() {
+    let max_bytes = wire::MAX_RANGE_BODY_BYTES;
+    let max_resident = state.config.server.max_resident_witness_bytes as usize;
+
+    // Gate 1: Content-Length pre-check
+    let content_length = headers
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok());
+
+    if let Some(cl) = content_length {
+        if cl > max_bytes {
+            return ApiResponse::<CreateTaskData>::from_error(&HostError::BodyTooLarge {
+                actual: cl,
+                limit: max_bytes,
+            })
+            .into_response();
+        }
+    }
+
+    // Gate 2: Budget pre-check
+    let estimated_size = content_length.unwrap_or(0);
+    let current = state.resident_witness_bytes.load(Ordering::Relaxed);
+    if current + estimated_size > max_resident {
+        return ApiResponse::<CreateTaskData>::from_error(&HostError::BufferFull).into_response();
+    }
+
+    // Gate 3: Stream body into single buffer
+    let mut buf = BytesMut::with_capacity(content_length.unwrap_or(0));
+    let mut stream = body;
+    loop {
+        let frame = match stream.frame().await {
+            Some(Ok(frame)) => frame,
+            Some(Err(e)) => {
+                return ApiResponse::<CreateTaskData>::from_error(&HostError::Internal(format!(
+                    "failed to read request body: {e}"
+                )))
+                .into_response();
+            }
+            None => break,
+        };
+        if let Some(chunk) = frame.data_ref() {
+            if buf.len() + chunk.len() > max_bytes {
+                return ApiResponse::<CreateTaskData>::from_error(&HostError::BodyTooLarge {
+                    actual: buf.len() + chunk.len(),
+                    limit: max_bytes,
+                })
+                .into_response();
+            }
+            buf.extend_from_slice(chunk);
+        }
+    }
+
+    // Gate 4: Empty body check
+    if buf.is_empty() {
         return ApiResponse::<CreateTaskData>::from_error(&HostError::EmptyBody).into_response();
     }
 
-    let max_bytes = wire::MAX_RANGE_BODY_BYTES;
-    if body.len() > max_bytes {
-        return ApiResponse::<CreateTaskData>::from_error(&HostError::BodyTooLarge {
-            actual: body.len(),
-            limit: max_bytes,
-        })
-        .into_response();
-    }
+    let witness: bytes::Bytes = buf.freeze();
+    let witness_size = witness.len();
+    let witness_hash = keccak256(&witness);
 
-    let witness_hash = keccak256(&body);
-    let witness_size = body.len();
+    // Create resident guard with actual received size
+    let guard = ResidentGuard::new(Arc::clone(&state.resident_witness_bytes), witness_size);
 
     let args = TaskArgs {
         start_blk_height: parse_u64_header(&headers, "x-start-blk-height"),
@@ -134,13 +192,15 @@ pub async fn create_task(
 
     if result.is_new {
         let task_id = result.task_id.clone();
-        let witness_body = Arc::new(body);
+        let slice_body = SliceBody::new(witness);
         let enclave = Arc::clone(&state.enclave);
         let tm = Arc::clone(&state.task_manager);
 
         tokio::spawn(async move {
-            deliver_to_enclave(task_id, witness_body, enclave, tm, cancel_rx).await;
+            deliver_to_enclave(task_id, slice_body, enclave, tm, cancel_rx, guard).await;
         });
+    } else {
+        drop(guard);
     }
 
     ApiResponse::ok(CreateTaskData { task_id: result.task_id }).into_response()
@@ -260,10 +320,11 @@ use base64::Engine;
 
 async fn deliver_to_enclave(
     task_id: String,
-    witness_body: Arc<Bytes>,
+    witness: SliceBody,
     enclave: Arc<EnclaveClient>,
     task_manager: Arc<TaskManager>,
     mut cancel_rx: oneshot::Receiver<()>,
+    _guard: ResidentGuard,
 ) {
     tracing::info!(task_id = %task_id, "delivery coroutine started");
 
@@ -279,7 +340,7 @@ async fn deliver_to_enclave(
                 tracing::info!(task_id = %task_id, "delivery cancelled during POST");
                 return;
             }
-            res = enclave.post_range_task(&task_id, &witness_body) => res,
+            res = enclave.post_range_task(&task_id, witness.clone()) => res,
         };
 
         match result {

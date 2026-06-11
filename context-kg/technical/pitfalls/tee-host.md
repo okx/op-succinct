@@ -89,3 +89,43 @@ let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&concrete)?;
 **Source**: TDD summary design decision #3 (XLOP-1090)
 **Date**: 2026-06-04
 **Hit count**: 1
+
+## http_body::Body Retry Requires Manual Clone and Body Factory
+
+[Pitfall] `BoxBody<Bytes, Infallible>` does not implement `Clone`, so a retryable HTTP request cannot simply clone its body between attempts. Additionally, any `http_body::Body` impl that carries an internal read cursor (like `SliceBody { bytes: Bytes, pos: usize }`) must use a **manual `Clone` impl** that resets the cursor to 0 — `#[derive(Clone)]` copies the cursor position, causing retried requests to send zero bytes (cursor already at end after first attempt).
+**Trigger**: adding a new `Body` type for enclave forwarding that needs retry semantics, or using `derive(Clone)` on a cursor-based body type.
+**Correct**: (1) Use a body factory closure `F: Fn() -> BoxBody` in `execute_request` so each retry creates a fresh body. (2) Implement `Clone` manually on cursor-based body types to reset the cursor.
+
+```rust
+// WRONG — BoxBody is not Clone; even if it were, cursor would be consumed
+let body: BoxBody = slice_body.boxed();
+for attempt in 0..max_retries {
+    let req = builder.body(body.clone())?; // compile error or wrong cursor
+}
+
+// CORRECT — factory creates a fresh body per attempt
+fn execute_request<F>(&self, ..., make_body: F) -> Result<()>
+where F: Fn() -> BoxBody
+{
+    for attempt in 0..max_retries {
+        let req = builder.body(make_body())?; // fresh body each time
+    }
+}
+
+// WRONG — derive(Clone) copies pos, retry sends 0 bytes
+#[derive(Clone)]
+struct SliceBody { bytes: Bytes, pos: usize }
+
+// CORRECT — manual Clone resets cursor
+impl Clone for SliceBody {
+    fn clone(&self) -> Self {
+        Self { bytes: self.bytes.clone(), pos: 0 }
+    }
+}
+```
+
+[Rule] When implementing `http_body::Body` types with internal cursors for use in retryable HTTP requests, always write a manual `Clone` impl that resets the read position to 0. Never use `#[derive(Clone)]` on cursor-based body types.
+**Module**: `fault-proof/tee/host/src/slice_body.rs`, `fault-proof/tee/host/src/enclave_client.rs`
+**Source**: Adversarial review finding #1 + TDD implementation (XLOP-1107)
+**Date**: 2026-06-11
+**Hit count**: 1

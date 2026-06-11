@@ -22,7 +22,7 @@ description: "API conventions for op-succinct — inbound REST (xlayer-tee-host)
 | 0 | Success |
 | 10001 | Client error (empty body, oversize, invalid input, non-TaskUnknown enclave errors) |
 | 10004 | Task not found / TaskUnknown |
-| 20001 | Enclave unreachable / server-side enclave error |
+| 20001 | Server-side error: enclave unreachable, enclave error, or host witness buffer full (BufferFull) |
 
 [Convention] All error responses go through `HostError → ApiResponse` — no magic number `ApiResponse::error(10001, ...)` in handlers.
 

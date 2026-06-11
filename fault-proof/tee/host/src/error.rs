@@ -11,6 +11,7 @@ pub enum HostError {
     EnclaveUnreachable(String),
     ConfigError(String),
     Internal(String),
+    BufferFull,
 }
 
 impl HostError {
@@ -36,6 +37,7 @@ impl HostError {
             Self::EnclaveUnreachable(_) => 20001,
             Self::ConfigError(_) => 10001,
             Self::Internal(_) => 20001,
+            Self::BufferFull => 20001,
         }
     }
 
@@ -50,6 +52,7 @@ impl HostError {
             Self::EnclaveUnreachable(msg) => msg.clone(),
             Self::ConfigError(msg) => msg.clone(),
             Self::Internal(msg) => msg.clone(),
+            Self::BufferFull => "host witness buffer full".to_string(),
         }
     }
 
@@ -145,5 +148,15 @@ mod tests {
         let display = format!("{err}");
         assert!(display.contains("10001"));
         assert!(display.contains("empty witness body"));
+    }
+
+    #[test]
+    fn buffer_full_code_and_message() {
+        let err = HostError::BufferFull;
+        assert_eq!(err.code(), 20001);
+        assert_eq!(err.message(), "host witness buffer full");
+        let display = format!("{err}");
+        assert!(display.contains("20001"));
+        assert!(display.contains("host witness buffer full"));
     }
 }

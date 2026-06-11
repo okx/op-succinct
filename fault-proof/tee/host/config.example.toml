@@ -3,6 +3,7 @@ bind_addr = "0.0.0.0:18080"
 # task_retention_secs = 3600
 # dedup_ttl_secs = 300
 # monitor_interval_secs = 30
+# max_resident_witness_bytes = 4294967296  # 4 GiB
 
 [enclave]
 # vsock_cid = 0

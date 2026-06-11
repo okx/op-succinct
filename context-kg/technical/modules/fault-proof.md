@@ -79,14 +79,16 @@ Coordination layer between proposer and Nitro Enclave. Exposes a northbound JSON
 
 | Module | Contents |
 |--------|----------|
-| `server.rs` | 4 REST handlers (POST/GET/DELETE /tee/task, GET /tee/info), background delivery coroutine, monitor, sweeper |
+| `server.rs` | 4 REST handlers (POST/GET/DELETE /tee/task, GET /tee/info), streaming ingestion with 4-gate sequence (CL pre-check → budget pre-check → frame-by-frame read → empty-body post-check), resident witness budget management, background delivery coroutine, monitor, sweeper |
 | `task_manager.rs` | TaskManager registry + dedup, TaskStatus (Running/Finished/Failed/Cancelled), per-task Arc<Mutex<TaskEntry>> |
-| `enclave_client.rs` | hyper HTTP/1.1 keep-alive client, 3-attempt retry with backoff, vsock/TCP compile-time transport switch |
+| `enclave_client.rs` | hyper HTTP/1.1 keep-alive client, `SendRequest<BoxBody>` sender type, `execute_request` with body factory closure for retry, 3-attempt retry with backoff, vsock/TCP compile-time transport switch |
+| `slice_body.rs` | `SliceBody` — zero-copy `http_body::Body` impl; 1 MiB chunked forwarding via `Bytes::slice()`; manual `Clone` resets cursor to 0 for retry semantics |
+| `resident_guard.rs` | `ResidentGuard` — RAII type tracking in-flight witness bytes; `AtomicUsize` `fetch_add` on create, `fetch_sub` on drop (`Ordering::Relaxed`) |
 | `packager.rs` | RangeJournalWire → RangeJournal → `abi_encode_params()` for on-chain compatible proofBytes |
-| `config.rs` | TOML + `TEE_HOST__` env overlay via `config` crate |
-| `error.rs` | HostError enum → 4 numeric codes (0/10001/10004/20001), centralized mapping from ErrorKind |
+| `config.rs` | TOML + `TEE_HOST__` env overlay via `config` crate; `max_resident_witness_bytes` field (default 4 GiB) |
+| `error.rs` | HostError enum → 4 numeric codes (0/10001/10004/20001), centralized mapping from ErrorKind; includes `BufferFull` variant (code 20001, "host witness buffer full") |
 | `api.rs` | ApiResponse<T> JSON envelope |
-| `main.rs` | Entry point, CLI args, tracing init, axum wiring, spawn monitor/sweeper |
+| `main.rs` | Entry point, CLI args, tracing init, axum wiring, `resident_witness_bytes: Arc<AtomicUsize>` in AppState, spawn monitor/sweeper |
 
 [Rule] Host uses `AppState` as a concrete type (not generic). No `trait EnclaveTransport` or mockall — unit tests cover pure logic modules only (packager, config, error, task_manager).
 
