@@ -48,9 +48,13 @@ BIN=target/x86_64-unknown-linux-gnu/release/xlayer-tee-enclave
 
 if [[ "$SKIP_CARGO" -eq 0 ]]; then
   echo "==> [1/3] cargo build (in $RUST_IMAGE)"
+  # rustup-cache volume caches the pinned nightly toolchain across container runs
+  # (rust-toolchain.toml at repo root pins nightly-2025-09-15, ~500MB to download).
   docker run --rm --platform linux/amd64 \
     -v "$(pwd)":/workspace -w /workspace \
     -v cargo-cache:/usr/local/cargo \
+    -v rustup-cache:/usr/local/rustup \
+    -e RUSTUP_HOME=/usr/local/rustup \
     "$RUST_IMAGE" \
     cargo build --offline --release \
       --target x86_64-unknown-linux-gnu \

@@ -38,9 +38,14 @@ BIN=target/x86_64-unknown-linux-gnu/release/xlayer-tee-host
 echo "==> cargo build (in $RUST_IMAGE) ${FEATURES:+with $FEATURES}"
 # Note: not using --offline because the cargo-cache volume may not have host-specific
 # deps (e.g. tower-http) on first run. Cache still works to avoid re-downloading.
+# Mount a rustup-cache volume too: rust-toolchain.toml pins nightly-2025-09-15 so
+# rustup downloads ~500MB on first run; without this volume that download repeats
+# every fresh container.
 docker run --rm --platform linux/amd64 \
   -v "$(pwd)":/workspace -w /workspace \
   -v cargo-cache:/usr/local/cargo \
+  -v rustup-cache:/usr/local/rustup \
+  -e RUSTUP_HOME=/usr/local/rustup \
   "$RUST_IMAGE" \
   bash -c "cargo build --release --target x86_64-unknown-linux-gnu -p xlayer-tee-host $FEATURES"
 
