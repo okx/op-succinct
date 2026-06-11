@@ -15,6 +15,10 @@
 #   # Reuse one cached witness for every run (max throughput test, no witness gen):
 #   MODE=serial MAX_ITERATIONS=50 ANCHOR_BLOCK=8725200 RANGE_SIZE=4000 CHUNK_SIZE=4000 START_STRIDE=0 \
 #     WITNESS_CACHE_DIR=./wcache ./tee-test.sh
+#   # True parallel: same start, different end → witness differs → host won't dedup:
+#   MODE=parallel PARALLELISM=3 MAX_BURSTS=5 ANCHOR_BLOCK=8725200 \
+#     RANGE_SIZE=1000 START_STRIDE=0 END_STRIDE=1000 ./tee-test.sh
+#   # → worker 0: [8725200, 8726200] / worker 1: [8725200, 8727200] / worker 2: [8725200, 8728200]
 #
 # === Required ===
 #   MODE            serial | parallel
@@ -27,7 +31,12 @@
 #                            每个 chunk = 一份 witness = 一个 TEE 任务
 #   START_STRIDE             相邻 run 起点的间隔                   (default: =RANGE_SIZE → 不重叠)
 #                            设为 1 → anchor, anchor+1, anchor+2 ...（范围互相重叠，重复证明）
-#                            设为 0 → 所有 run 都跑同一个 range（适合配合 WITNESS_CACHE_DIR 复用 witness）
+#                            设为 0 → 所有 run 起点相同（搭配 END_STRIDE 让长度递增）
+#   END_STRIDE               相邻 run 终点的额外偏移               (default: 0 → end = start + RANGE_SIZE)
+#                            非 0 时：end = start + RANGE_SIZE + idx * END_STRIDE
+#                            搭配 START_STRIDE=0 → 所有 run 起点相同，终点递增（同 anchor 长度递增）。
+#                            为何重要：host 用 keccak256(witness_body) 去重——同 [start,end] 必去重，
+#                            "假并发"实际只跑 1 个 task。让 end 不同 → witness 不同 → 真并发。
 #   MAX_CONCURRENT_WITNESS   --max-concurrent-witness            (default: 4)
 #   WITNESS_CACHE_DIR        --witness-cache-dir 路径            (default: 空 = 不复用，每次重新生成 witness)
 #                            放置已 prefab 好的 <start>-<end>.witness.rkyv 文件，
@@ -65,6 +74,7 @@ AGG_MODE="${AGG_MODE:-prove}"
 RANGE_SIZE="${RANGE_SIZE:-1000}"                          # 每次 run 的区块跨度 [start,end]
 CHUNK_SIZE="${CHUNK_SIZE:-$RANGE_SIZE}"                   # --chunk-size：把每个 run 再切块（默认 1 chunk/run）
 START_STRIDE="${START_STRIDE:-$RANGE_SIZE}"              # 相邻 run 起点间隔：=RANGE_SIZE 不重叠，=1 则 anchor,anchor+1,...
+END_STRIDE="${END_STRIDE:-0}"                            # 相邻 run 终点的额外偏移（0=固定长度，>0=长度递增）
 MAX_CONCURRENT_WITNESS="${MAX_CONCURRENT_WITNESS:-4}"     # --max-concurrent-witness
 WITNESS_CACHE_DIR="${WITNESS_CACHE_DIR:-}"                # --witness-cache-dir：空字符串=不启用
 TEE_HOST="${TEE_HOST:-http://teexlayer-36134a95d1051793.elb.ap-northeast-1.amazonaws.com:443}"
@@ -98,10 +108,15 @@ case "$AGG_MODE" in skip|prove) ;; *) echo "AGG_MODE must be skip|prove"; exit 1
 [[ "$RANGE_SIZE" -ge 1 ]] || { echo "RANGE_SIZE must be ≥ 1"; exit 1; }
 [[ "$CHUNK_SIZE" -ge 1 ]] || { echo "CHUNK_SIZE must be ≥ 1"; exit 1; }
 [[ "$START_STRIDE" -ge 0 ]] || { echo "START_STRIDE must be ≥ 0"; exit 1; }
+[[ "$END_STRIDE" -ge 0 ]]   || { echo "END_STRIDE must be ≥ 0";   exit 1; }
 [[ "$MAX_CONCURRENT_WITNESS" -ge 1 ]] || { echo "MAX_CONCURRENT_WITNESS must be ≥ 1"; exit 1; }
 (( CHUNK_SIZE > RANGE_SIZE )) && echo "note: CHUNK_SIZE($CHUNK_SIZE) > RANGE_SIZE($RANGE_SIZE) → 每个 run 实际只有 1 个 chunk"
-(( START_STRIDE == 0 )) && echo "note: START_STRIDE=0 → 所有 run 跑同一个 range（用于复用 witness cache 压测）"
+(( START_STRIDE == 0 && END_STRIDE == 0 )) && echo "note: START_STRIDE=0 & END_STRIDE=0 → 所有 run 跑同一个 range（复用 witness cache；host 会按 keccak256(witness) 去重，并发场景下只有 1 个真 task）"
+(( START_STRIDE == 0 && END_STRIDE >  0 )) && echo "note: START_STRIDE=0 & END_STRIDE=$END_STRIDE → 同 start 长度递增，witness 各不同（绕开 host 去重，真并发）"
 (( START_STRIDE > 0 && START_STRIDE < RANGE_SIZE )) && echo "note: START_STRIDE($START_STRIDE) < RANGE_SIZE($RANGE_SIZE) → 各 run 区块范围重叠（重复证明）"
+if [[ -n "$WITNESS_CACHE_DIR" && "$END_STRIDE" -ne 0 ]]; then
+    echo "note: END_STRIDE=$END_STRIDE → 每个 run 的 [start,end] 不同，需要为每条 range 都 prefab <start>-<end>.witness.rkyv，否则会 fallback 现场生成 witness"
+fi
 if [[ -n "$WITNESS_CACHE_DIR" ]]; then
     [[ -d "$WITNESS_CACHE_DIR" ]] || { echo "WITNESS_CACHE_DIR not a directory: $WITNESS_CACHE_DIR"; exit 1; }
     echo "note: WITNESS_CACHE_DIR=$WITNESS_CACHE_DIR → mock-proposer 会尝试复用缓存的 <start>-<end>.witness.rkyv"
@@ -121,7 +136,7 @@ fi
 
 echo "==============================================="
 echo "loadtest: $(date)  MODE=$MODE  AGG_MODE=$AGG_MODE"
-echo "  anchor=$ANCHOR_BLOCK  range=$RANGE_SIZE  stride=$START_STRIDE  chunk=$CHUNK_SIZE  max_witness=$MAX_CONCURRENT_WITNESS  tee_host=$TEE_HOST"
+echo "  anchor=$ANCHOR_BLOCK  range=$RANGE_SIZE  start_stride=$START_STRIDE  end_stride=$END_STRIDE  chunk=$CHUNK_SIZE  max_witness=$MAX_CONCURRENT_WITNESS  tee_host=$TEE_HOST"
 echo "  witness_cache_dir=${WITNESS_CACHE_DIR:-<none>}"
 if [[ "$AGG_MODE" == "prove" ]]; then
     echo "   cluster=$CLUSTER_RPC  proof_mode=$PROOF_MODE  cluster_timeout=${CLUSTER_TIMEOUT}s"
@@ -199,7 +214,7 @@ run_serial() {
     local prev_pid=""
     for ((iter=0; iter<MAX_ITERATIONS; iter++)); do
         local start=$((ANCHOR_BLOCK + iter * START_STRIDE))
-        local end=$((start + RANGE_SIZE))
+        local end=$((start + RANGE_SIZE + iter * END_STRIDE))
         local log="$LOG_DIR/run-$(printf '%03d' $iter).log"
         local proof="$PROOF_DIR/proof-$(printf '%03d' $iter).bin"
         local launch_ts=$(date +%s)
@@ -254,7 +269,7 @@ run_parallel() {
         for ((w=0; w<PARALLELISM; w++)); do
             local global_idx=$((burst * PARALLELISM + w))
             local start=$((ANCHOR_BLOCK + global_idx * START_STRIDE))
-            local end=$((start + RANGE_SIZE))
+            local end=$((start + RANGE_SIZE + global_idx * END_STRIDE))
             local log="$LOG_DIR/burst-$(printf '%02d' $burst)-w$(printf '%02d' $w).log"
             local proof="$PROOF_DIR/proof-b$(printf '%02d' $burst)-w$(printf '%02d' $w).bin"
 
