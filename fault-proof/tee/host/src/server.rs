@@ -22,6 +22,7 @@ use crate::{
     config::HostConfig,
     enclave_client::EnclaveClient,
     error::HostError,
+    mem,
     packager::pack_proof_bytes,
     task_manager::{format_duration, EnclaveInfo, TaskArgs, TaskManager, TaskMetrics, TaskStatus},
 };
@@ -103,6 +104,11 @@ pub async fn create_task(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    // Snapshot RSS as soon as the request lands so we can correlate big bodies
+    // with memory pressure spikes.
+    let rss_on_entry_mib = mem::vm_rss_kb() / 1024;
+    let body_mib = body.len() / 1024 / 1024;
+
     if body.is_empty() {
         return ApiResponse::<CreateTaskData>::from_error(&HostError::EmptyBody).into_response();
     }
@@ -142,6 +148,17 @@ pub async fn create_task(
             deliver_to_enclave(task_id, witness_body, enclave, tm, cancel_rx).await;
         });
     }
+
+    let rss_after_spawn_mib = mem::vm_rss_kb() / 1024;
+    tracing::info!(
+        task_id = %result.task_id,
+        body_mib,
+        rss_on_entry_mib,
+        rss_after_spawn_mib,
+        delta_mib = rss_after_spawn_mib.saturating_sub(rss_on_entry_mib),
+        is_new = result.is_new,
+        "create_task memory profile",
+    );
 
     ApiResponse::ok(CreateTaskData { task_id: result.task_id }).into_response()
 }
@@ -265,7 +282,28 @@ async fn deliver_to_enclave(
     task_manager: Arc<TaskManager>,
     mut cancel_rx: oneshot::Receiver<()>,
 ) {
-    tracing::info!(task_id = %task_id, "delivery coroutine started");
+    let witness_body_mib = witness_body.len() / 1024 / 1024;
+    let rss_start_mib = mem::vm_rss_kb() / 1024;
+    tracing::info!(
+        task_id = %task_id,
+        witness_body_mib,
+        rss_start_mib,
+        "delivery coroutine started",
+    );
+
+    // Capture the task_id before the loop so the final logger doesn't need to clone the parameter.
+    let task_id_for_log = task_id.clone();
+    // Use a defer-style guard so RSS is logged when this function returns (Arc drops here).
+    let _on_exit = OnExit::new(move || {
+        let rss_end_mib = mem::vm_rss_kb() / 1024;
+        tracing::info!(
+            task_id = %task_id_for_log,
+            witness_body_mib,
+            rss_end_mib,
+            rss_released_mib = rss_start_mib.saturating_sub(rss_end_mib),
+            "delivery coroutine done",
+        );
+    });
 
     for attempt in 0..MAX_TOO_MANY_RETRIES {
         if cancel_rx.try_recv().is_ok() {
@@ -502,4 +540,24 @@ fn urlencoding(s: &str) -> String {
             _ => format!("%{:02X}", b),
         })
         .collect()
+}
+
+// -------------------- small RAII helper for end-of-function logging --------------------
+
+struct OnExit<F: FnOnce()> {
+    f: Option<F>,
+}
+
+impl<F: FnOnce()> OnExit<F> {
+    fn new(f: F) -> Self {
+        Self { f: Some(f) }
+    }
+}
+
+impl<F: FnOnce()> Drop for OnExit<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.f.take() {
+            f();
+        }
+    }
 }

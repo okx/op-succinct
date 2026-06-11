@@ -13,6 +13,7 @@ use xlayer_tee_types::wire;
 use xlayer_tee_host::{
     config::load_config,
     enclave_client::EnclaveClient,
+    mem,
     server::{self, AppState, AttestationCache},
     task_manager::TaskManager,
 };
@@ -83,7 +84,18 @@ async fn main() {
         server::run_sweeper(sweeper_state).await;
     });
 
-    tracing::info!(bind_addr = %bind_addr, "xlayer-tee-host starting");
+    // Spawn a periodic RSS logger. Interval comes from env, default 5s.
+    let rss_interval_secs: u64 = std::env::var("TEE_HOST_MEM_LOG_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    mem::spawn_rss_logger(rss_interval_secs);
+
+    tracing::info!(
+        bind_addr = %bind_addr,
+        rss_log_interval_secs = rss_interval_secs,
+        "xlayer-tee-host starting"
+    );
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap_or_else(|e| {
         eprintln!("Failed to bind {bind_addr}: {e}");
