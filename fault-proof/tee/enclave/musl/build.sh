@@ -32,13 +32,51 @@ CARGO_MODE_FLAG=""
 
 TARGET="x86_64-unknown-linux-musl"
 
-echo "==> Ensuring rustup target $TARGET is installed"
-# Honours rust-toolchain.toml (nightly-2025-09-15). No C cross-compiler needed:
-# the enclave has no -sys/cc crates, so rustc's bundled musl is sufficient.
+# --- Pin enforcement --------------------------------------------------------
+# Reproducibility requires the EXACT toolchain, not "whatever nightly is default".
+# Both rustc and the musl rust-std (which provides the statically-linked musl
+# startup objects / libc.a) come from this one immutable snapshot, declared in
+# the repo's rust-toolchain.toml. We READ the expected channel from that file
+# (single source of truth) and ASSERT the running toolchain matches — aborting
+# loudly on drift instead of silently building with the wrong version.
+TOOLCHAIN_FILE="$REPO_ROOT/rust-toolchain.toml"
+EXPECTED_CHANNEL="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$TOOLCHAIN_FILE" | head -n1)"
+if [ -z "$EXPECTED_CHANNEL" ]; then
+    echo "ERROR: could not read channel from $TOOLCHAIN_FILE" >&2; exit 1
+fi
+# nightly-2025-09-15 -> 2025-09-15 ; `rustc --version` for that nightly embeds
+# this date, so it's a reliable equality check across machines.
+EXPECTED_DATE="${EXPECTED_CHANNEL#nightly-}"
+
+echo "==> Enforcing pinned toolchain ($EXPECTED_CHANNEL)"
+RUSTC_VERSION="$(rustc --version 2>/dev/null || true)"
+echo "    rustc: $RUSTC_VERSION"
+case "$RUSTC_VERSION" in
+    *"$EXPECTED_DATE"*) : ;;  # ok: the active rustc is the pinned nightly
+    *)
+        echo "ERROR: active rustc is not the pinned $EXPECTED_CHANNEL (got: $RUSTC_VERSION)." >&2
+        echo "       Run inside the pinned okone compile image, or 'rustup toolchain install $EXPECTED_CHANNEL'." >&2
+        exit 1 ;;
+esac
+
+# The musl target std must already be present (baked into the pinned compile
+# image). It is per-toolchain, so it can only ever match the pinned nightly
+# above — no separate version pin is needed. We do NOT network-install at build
+# time (non-hermetic); local dev can opt in explicitly via ALLOW_RUSTUP_NETWORK.
 if command -v rustup >/dev/null 2>&1; then
-    rustup target add "$TARGET" || true
+    if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
+        if [ "${ALLOW_RUSTUP_NETWORK:-0}" = "1" ]; then
+            echo "==> ALLOW_RUSTUP_NETWORK=1 -> installing $TARGET (non-hermetic; local dev only)"
+            rustup target add "$TARGET"
+        else
+            echo "ERROR: target $TARGET not installed for $EXPECTED_CHANNEL." >&2
+            echo "       It must be pre-baked in the compile image. For local dev, re-run with" >&2
+            echo "       ALLOW_RUSTUP_NETWORK=1 to 'rustup target add $TARGET'." >&2
+            exit 1
+        fi
+    fi
 else
-    echo "    (rustup not found — assuming the pinned compile image already has $TARGET)"
+    echo "    (rustup absent — assuming the pinned compile image already provides $TARGET)"
 fi
 
 echo "==> Reproducibility environment"
@@ -53,9 +91,6 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 # needed here, unlike the kaniko/ variant.) +crt-static is the musl default for
 # bins but we set it explicitly so a fully static link is guaranteed.
 export RUSTFLAGS="--remap-path-prefix=${REPO_ROOT}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo -C target-feature=+crt-static -C strip=symbols"
-
-echo "==> Toolchain"
-rustc --version || true
 
 rm -rf build
 mkdir -p build
