@@ -44,20 +44,29 @@ EXPECTED_CHANNEL="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\(.*
 if [ -z "$EXPECTED_CHANNEL" ]; then
     echo "ERROR: could not read channel from $TOOLCHAIN_FILE" >&2; exit 1
 fi
-# nightly-2025-09-15 -> 2025-09-15 ; `rustc --version` for that nightly embeds
-# this date, so it's a reliable equality check across machines.
-EXPECTED_DATE="${EXPECTED_CHANNEL#nightly-}"
 
 echo "==> Enforcing pinned toolchain ($EXPECTED_CHANNEL)"
-RUSTC_VERSION="$(rustc --version 2>/dev/null || true)"
-echo "    rustc: $RUSTC_VERSION"
-case "$RUSTC_VERSION" in
-    *"$EXPECTED_DATE"*) : ;;  # ok: the active rustc is the pinned nightly
-    *)
-        echo "ERROR: active rustc is not the pinned $EXPECTED_CHANNEL (got: $RUSTC_VERSION)." >&2
-        echo "       Run inside the pinned okone compile image, or 'rustup toolchain install $EXPECTED_CHANNEL'." >&2
-        exit 1 ;;
-esac
+echo "    rustc: $(rustc --version 2>/dev/null || true)"
+if command -v rustup >/dev/null 2>&1; then
+    # Check the ACTIVE TOOLCHAIN NAME, not the `rustc --version` date: a
+    # nightly-YYYY-MM-DD toolchain embeds the *commit* date in `rustc --version`,
+    # which is typically one day earlier than the channel label (e.g.
+    # nightly-2025-09-15 reports "... 2025-09-14"). Matching that date is wrong.
+    # `rustup show active-toolchain` prints the channel label itself.
+    ACTIVE_TOOLCHAIN="$(rustup show active-toolchain 2>/dev/null | head -n1)"
+    echo "    active toolchain: $ACTIVE_TOOLCHAIN"
+    case "$ACTIVE_TOOLCHAIN" in
+        *"$EXPECTED_CHANNEL"*) : ;;  # ok: rust-toolchain.toml's pin is active
+        *)
+            echo "ERROR: active toolchain is not the pinned $EXPECTED_CHANNEL." >&2
+            echo "       Run inside the pinned okone compile image, or 'rustup toolchain install $EXPECTED_CHANNEL'." >&2
+            exit 1 ;;
+    esac
+else
+    # No rustup: the compile image's rustc IS the pin (tradezone-style). Nothing
+    # to assert against a channel label here — trust the pinned image.
+    echo "    (rustup absent — relying on the pinned compile image's rustc)"
+fi
 
 # The musl target std must already be present (baked into the pinned compile
 # image). It is per-toolchain, so it can only ever match the pinned nightly
