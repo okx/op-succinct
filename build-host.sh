@@ -75,6 +75,14 @@ fi
 if grep -aoq 'vsock_cid' build/xlayer-tee-host 2>/dev/null; then
   echo "    ✓ binary contains 'vsock_cid' (vsock support)"
 fi
+if grep -aoq 'host memory snapshot' build/xlayer-tee-host 2>/dev/null; then
+  echo "    ✓ binary contains 'host memory snapshot' (periodic RSS logger)"
+else
+  echo "    ✗ binary missing 'host memory snapshot' — old build (no mem.rs)?"
+fi
+if grep -aoq 'create_task memory profile' build/xlayer-tee-host 2>/dev/null; then
+  echo "    ✓ binary contains 'create_task memory profile' (per-request RSS)"
+fi
 
 echo
 echo "next: scp build/xlayer-tee-host to TEE machine, then restart host process"
