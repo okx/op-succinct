@@ -12,6 +12,9 @@
 #   MODE=parallel ANCHOR_BLOCK=8617400 PARALLELISM=10 ./loadtest.sh
 #   MODE=serial   ANCHOR_BLOCK=8617400 RANGE_SIZE=4000 CHUNK_SIZE=1000 ./loadtest.sh
 #   MODE=parallel ANCHOR_BLOCK=8766000 PARALLELISM=3 START_STRIDE=1 ./loadtest.sh   # 起点 anchor, anchor+1, ...（重叠压测）
+#   # Reuse one cached witness for every run (max throughput test, no witness gen):
+#   MODE=serial MAX_ITERATIONS=50 ANCHOR_BLOCK=8725200 RANGE_SIZE=4000 CHUNK_SIZE=4000 START_STRIDE=0 \
+#     WITNESS_CACHE_DIR=./wcache ./tee-test.sh
 #
 # === Required ===
 #   MODE            serial | parallel
@@ -24,7 +27,12 @@
 #                            每个 chunk = 一份 witness = 一个 TEE 任务
 #   START_STRIDE             相邻 run 起点的间隔                   (default: =RANGE_SIZE → 不重叠)
 #                            设为 1 → anchor, anchor+1, anchor+2 ...（范围互相重叠，重复证明）
+#                            设为 0 → 所有 run 都跑同一个 range（适合配合 WITNESS_CACHE_DIR 复用 witness）
 #   MAX_CONCURRENT_WITNESS   --max-concurrent-witness            (default: 4)
+#   WITNESS_CACHE_DIR        --witness-cache-dir 路径            (default: 空 = 不复用，每次重新生成 witness)
+#                            放置已 prefab 好的 <start>-<end>.witness.rkyv 文件，
+#                            当 [start, end] 跟缓存 chunk 完全一致时跳过 witness gen，直接 POST。
+#                            搭配 START_STRIDE=0 让所有 run 命中同一份缓存，压测纯 enclave 侧负载。
 #   TEE_HOST                 tee-host endpoint                   (default: ELB)
 #   L1_RPC / L1_BEACON_RPC / L2_RPC / L2_NODE_RPC                (TEE-box defaults)
 #   BIN                      path to xlayer-tee-mock-proposer    (default: ./target/release/...)
@@ -58,6 +66,7 @@ RANGE_SIZE="${RANGE_SIZE:-1000}"                          # 每次 run 的区块
 CHUNK_SIZE="${CHUNK_SIZE:-$RANGE_SIZE}"                   # --chunk-size：把每个 run 再切块（默认 1 chunk/run）
 START_STRIDE="${START_STRIDE:-$RANGE_SIZE}"              # 相邻 run 起点间隔：=RANGE_SIZE 不重叠，=1 则 anchor,anchor+1,...
 MAX_CONCURRENT_WITNESS="${MAX_CONCURRENT_WITNESS:-4}"     # --max-concurrent-witness
+WITNESS_CACHE_DIR="${WITNESS_CACHE_DIR:-}"                # --witness-cache-dir：空字符串=不启用
 TEE_HOST="${TEE_HOST:-http://teexlayer-36134a95d1051793.elb.ap-northeast-1.amazonaws.com:443}"
 L1_RPC="${L1_RPC:-http://127.0.0.1:8545}"
 L1_BEACON_RPC="${L1_BEACON_RPC:-http://127.0.0.1:3500}"
@@ -88,10 +97,15 @@ case "$AGG_MODE" in skip|prove) ;; *) echo "AGG_MODE must be skip|prove"; exit 1
 [[ -x "$BIN" ]] || { echo "BIN not executable: $BIN"; exit 1; }
 [[ "$RANGE_SIZE" -ge 1 ]] || { echo "RANGE_SIZE must be ≥ 1"; exit 1; }
 [[ "$CHUNK_SIZE" -ge 1 ]] || { echo "CHUNK_SIZE must be ≥ 1"; exit 1; }
-[[ "$START_STRIDE" -ge 1 ]] || { echo "START_STRIDE must be ≥ 1"; exit 1; }
+[[ "$START_STRIDE" -ge 0 ]] || { echo "START_STRIDE must be ≥ 0"; exit 1; }
 [[ "$MAX_CONCURRENT_WITNESS" -ge 1 ]] || { echo "MAX_CONCURRENT_WITNESS must be ≥ 1"; exit 1; }
 (( CHUNK_SIZE > RANGE_SIZE )) && echo "note: CHUNK_SIZE($CHUNK_SIZE) > RANGE_SIZE($RANGE_SIZE) → 每个 run 实际只有 1 个 chunk"
-(( START_STRIDE < RANGE_SIZE )) && echo "note: START_STRIDE($START_STRIDE) < RANGE_SIZE($RANGE_SIZE) → 各 run 区块范围重叠（重复证明）"
+(( START_STRIDE == 0 )) && echo "note: START_STRIDE=0 → 所有 run 跑同一个 range（用于复用 witness cache 压测）"
+(( START_STRIDE > 0 && START_STRIDE < RANGE_SIZE )) && echo "note: START_STRIDE($START_STRIDE) < RANGE_SIZE($RANGE_SIZE) → 各 run 区块范围重叠（重复证明）"
+if [[ -n "$WITNESS_CACHE_DIR" ]]; then
+    [[ -d "$WITNESS_CACHE_DIR" ]] || { echo "WITNESS_CACHE_DIR not a directory: $WITNESS_CACHE_DIR"; exit 1; }
+    echo "note: WITNESS_CACHE_DIR=$WITNESS_CACHE_DIR → mock-proposer 会尝试复用缓存的 <start>-<end>.witness.rkyv"
+fi
 
 LOG_DIR="tmp/loadtest_${MODE}_${AGG_MODE}_$(date +%Y%m%d-%H%M%S)"
 PROOF_DIR="$LOG_DIR/proofs"
@@ -108,6 +122,7 @@ fi
 echo "==============================================="
 echo "loadtest: $(date)  MODE=$MODE  AGG_MODE=$AGG_MODE"
 echo "  anchor=$ANCHOR_BLOCK  range=$RANGE_SIZE  stride=$START_STRIDE  chunk=$CHUNK_SIZE  max_witness=$MAX_CONCURRENT_WITNESS  tee_host=$TEE_HOST"
+echo "  witness_cache_dir=${WITNESS_CACHE_DIR:-<none>}"
 if [[ "$AGG_MODE" == "prove" ]]; then
     echo "   cluster=$CLUSTER_RPC  proof_mode=$PROOF_MODE  cluster_timeout=${CLUSTER_TIMEOUT}s"
 fi
@@ -138,6 +153,10 @@ run_once() {
         --chunk-size              "$CHUNK_SIZE"
         --max-concurrent-witness  "$MAX_CONCURRENT_WITNESS"
     )
+
+    if [[ -n "$WITNESS_CACHE_DIR" ]]; then
+        args+=( --witness-cache-dir "$WITNESS_CACHE_DIR" )
+    fi
 
     if [[ "$AGG_MODE" == "skip" ]]; then
         args+=( --agg-mode skip )
