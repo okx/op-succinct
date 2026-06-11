@@ -280,7 +280,7 @@ async fn deliver_to_enclave(
     witness_body: Arc<Bytes>,
     enclave: Arc<EnclaveClient>,
     task_manager: Arc<TaskManager>,
-    mut cancel_rx: oneshot::Receiver<()>,
+    cancel_rx: oneshot::Receiver<()>,
 ) {
     let witness_body_mib = witness_body.len() / 1024 / 1024;
     let rss_start_mib = mem::vm_rss_kb() / 1024;
@@ -291,20 +291,40 @@ async fn deliver_to_enclave(
         "delivery coroutine started",
     );
 
-    // Capture the task_id before the loop so the final logger doesn't need to clone the parameter.
-    let task_id_for_log = task_id.clone();
-    // Use a defer-style guard so RSS is logged when this function returns (Arc drops here).
-    let _on_exit = OnExit::new(move || {
-        let rss_end_mib = mem::vm_rss_kb() / 1024;
-        tracing::info!(
-            task_id = %task_id_for_log,
-            witness_body_mib,
-            rss_end_mib,
-            rss_released_mib = rss_start_mib.saturating_sub(rss_end_mib),
-            "delivery coroutine done",
-        );
-    });
+    // Run the delivery work in an inner fn that borrows witness_body.
+    // When this returns, the Arc<Bytes> is still in this outer scope.
+    deliver_to_enclave_inner(
+        &task_id,
+        &witness_body,
+        &enclave,
+        &task_manager,
+        cancel_rx,
+    )
+    .await;
 
+    // Drop the witness body explicitly so we can measure how much memory it released.
+    drop(witness_body);
+    // Yield once so the runtime can run any pending drop / dealloc work.
+    tokio::task::yield_now().await;
+
+    let rss_end_mib = mem::vm_rss_kb() / 1024;
+    tracing::info!(
+        task_id = %task_id,
+        witness_body_mib,
+        rss_start_mib,
+        rss_end_mib,
+        rss_released_mib = rss_start_mib.saturating_sub(rss_end_mib),
+        "delivery coroutine done",
+    );
+}
+
+async fn deliver_to_enclave_inner(
+    task_id: &str,
+    witness_body: &Bytes,
+    enclave: &EnclaveClient,
+    task_manager: &TaskManager,
+    mut cancel_rx: oneshot::Receiver<()>,
+) {
     for attempt in 0..MAX_TOO_MANY_RETRIES {
         if cancel_rx.try_recv().is_ok() {
             tracing::info!(task_id = %task_id, "delivery cancelled before attempt");
@@ -317,12 +337,12 @@ async fn deliver_to_enclave(
                 tracing::info!(task_id = %task_id, "delivery cancelled during POST");
                 return;
             }
-            res = enclave.post_range_task(&task_id, &witness_body) => res,
+            res = enclave.post_range_task(task_id, witness_body) => res,
         };
 
         match result {
             Ok(()) => {
-                task_manager.set_submitted(&task_id).await;
+                task_manager.set_submitted(task_id).await;
                 tracing::info!(task_id = %task_id, "POST accepted by enclave");
                 return;
             }
@@ -333,19 +353,19 @@ async fn deliver_to_enclave(
                     max = MAX_TOO_MANY_RETRIES,
                     "enclave at capacity, retrying"
                 );
-                task_manager.update_running_message(&task_id, "queued; enclave at capacity").await;
+                task_manager.update_running_message(task_id, "queued; enclave at capacity").await;
                 tokio::time::sleep(POST_RETRY_INTERVAL).await;
             }
             Err(e) => {
                 tracing::error!(task_id = %task_id, error = %e, "delivery failed (non-429)");
-                task_manager.set_failed_from_host_error(&task_id, &e).await;
+                task_manager.set_failed_from_host_error(task_id, &e).await;
                 return;
             }
         }
     }
 
     tracing::error!(task_id = %task_id, "429 budget exhausted");
-    task_manager.set_failed_capacity_exhausted(&task_id).await;
+    task_manager.set_failed_capacity_exhausted(task_id).await;
 }
 
 pub async fn run_monitor(state: Arc<AppState>) {
@@ -540,24 +560,4 @@ fn urlencoding(s: &str) -> String {
             _ => format!("%{:02X}", b),
         })
         .collect()
-}
-
-// -------------------- small RAII helper for end-of-function logging --------------------
-
-struct OnExit<F: FnOnce()> {
-    f: Option<F>,
-}
-
-impl<F: FnOnce()> OnExit<F> {
-    fn new(f: F) -> Self {
-        Self { f: Some(f) }
-    }
-}
-
-impl<F: FnOnce()> Drop for OnExit<F> {
-    fn drop(&mut self) {
-        if let Some(f) = self.f.take() {
-            f();
-        }
-    }
 }
