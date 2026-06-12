@@ -23,6 +23,10 @@ members = [
     "tee/prover-mock",
     "tee/mock-proposer",
 ]
+# scripts/loadtests holds shell scripts (tee-test.sh), not a Rust crate, but the
+# `scripts/*` glob above would try to load it as a workspace member and fail
+# (no Cargo.toml). Exclude it so cargo can load the workspace.
+exclude = ["scripts/loadtests"]
 resolver = "2"
 
 [workspace.package]
