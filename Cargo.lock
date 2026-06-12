@@ -14640,7 +14640,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "tz-block-processor"
 version = "0.1.0"
-source = "git+ssh://git@github.com/okx/x2.git?rev=173544d7e8985b738c278cc4b26456569bb13e66#173544d7e8985b738c278cc4b26456569bb13e66"
+source = "git+ssh://git@github.com/okx/x2.git?rev=52a26283d708005ebf5b14b195dd4bd2ada1ee93#52a26283d708005ebf5b14b195dd4bd2ada1ee93"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14659,7 +14659,7 @@ dependencies = [
 [[package]]
 name = "tz-dex"
 version = "0.1.0"
-source = "git+ssh://git@github.com/okx/x2.git?rev=173544d7e8985b738c278cc4b26456569bb13e66#173544d7e8985b738c278cc4b26456569bb13e66"
+source = "git+ssh://git@github.com/okx/x2.git?rev=52a26283d708005ebf5b14b195dd4bd2ada1ee93#52a26283d708005ebf5b14b195dd4bd2ada1ee93"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14684,7 +14684,7 @@ dependencies = [
 [[package]]
 name = "tz-macros"
 version = "0.1.0"
-source = "git+ssh://git@github.com/okx/x2.git?rev=173544d7e8985b738c278cc4b26456569bb13e66#173544d7e8985b738c278cc4b26456569bb13e66"
+source = "git+ssh://git@github.com/okx/x2.git?rev=52a26283d708005ebf5b14b195dd4bd2ada1ee93#52a26283d708005ebf5b14b195dd4bd2ada1ee93"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14694,7 +14694,7 @@ dependencies = [
 [[package]]
 name = "tz-primitives"
 version = "0.1.0"
-source = "git+ssh://git@github.com/okx/x2.git?rev=173544d7e8985b738c278cc4b26456569bb13e66#173544d7e8985b738c278cc4b26456569bb13e66"
+source = "git+ssh://git@github.com/okx/x2.git?rev=52a26283d708005ebf5b14b195dd4bd2ada1ee93#52a26283d708005ebf5b14b195dd4bd2ada1ee93"
 dependencies = [
  "alloy",
  "alloy-primitives",

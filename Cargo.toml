@@ -152,9 +152,9 @@ op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
 # tradezone (range guest deps)
-tz-block-processor = { git = "ssh://git@github.com/okx/x2.git", rev = "173544d7e8985b738c278cc4b26456569bb13e66", features = ["tee"] }
-tz-dex = { git = "ssh://git@github.com/okx/x2.git", rev = "173544d7e8985b738c278cc4b26456569bb13e66", features = ["zkvm"] }
-tz-primitives = { git = "ssh://git@github.com/okx/x2.git", rev = "173544d7e8985b738c278cc4b26456569bb13e66" }
+tz-block-processor = { git = "ssh://git@github.com/okx/x2.git", rev = "52a26283d708005ebf5b14b195dd4bd2ada1ee93", features = ["tee"] }
+tz-dex = { git = "ssh://git@github.com/okx/x2.git", rev = "52a26283d708005ebf5b14b195dd4bd2ada1ee93", features = ["zkvm"] }
+tz-primitives = { git = "ssh://git@github.com/okx/x2.git", rev = "52a26283d708005ebf5b14b195dd4bd2ada1ee93" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
