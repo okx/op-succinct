@@ -15969,6 +15969,7 @@ dependencies = [
  "config",
  "dotenvy",
  "hex",
+ "http-body 1.0.1",
  "http-body-util",
  "hyper 1.10.1",
  "hyper-util",

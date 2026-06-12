@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicUsize, Arc};
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -60,6 +60,7 @@ async fn main() {
         enclave: Arc::clone(&enclave),
         config: Arc::clone(&config),
         attestation_cache: Arc::new(tokio::sync::Mutex::new(AttestationCache::new())),
+        resident_witness_bytes: Arc::new(AtomicUsize::new(0)),
     });
 
     let body_limit = wire::MAX_RANGE_BODY_BYTES + 1024;

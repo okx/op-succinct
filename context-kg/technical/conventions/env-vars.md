@@ -70,6 +70,15 @@ CloudHSM and Web3Signer are not auto-detected from env — they must be configur
 |----------|----------|---------|
 | `PRIVATE_KEY` | Yes | Hex-encoded private key (dev/test only) |
 
+## TEE Host (`fault-proof/tee/host/src/config.rs`)
+
+Config uses the `config` crate with `TEE_HOST__` env prefix (double underscore = nested section separator).
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `TEE_HOST__SERVER__BIND_ADDR` | No | (from TOML) | Server bind address |
+| `TEE_HOST__SERVER__MAX_RESIDENT_WITNESS_BYTES` | No | 4294967296 (4 GiB) | Process-level in-flight witness byte budget; requests exceeding this are rejected with `BufferFull` (code 20001) |
+
 ## Prover Mode (`utils/proof/src/lib.rs`)
 
 | Variable | Default | Purpose |

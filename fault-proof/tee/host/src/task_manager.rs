@@ -386,6 +386,7 @@ mod tests {
                 task_retention_secs: 1,
                 dedup_ttl_secs: 1,
                 monitor_interval_secs: 30,
+                max_resident_witness_bytes: 4 * 1024 * 1024 * 1024,
             },
             enclave: crate::config::EnclaveConfig::default(),
             attestation: crate::config::AttestationConfig::default(),

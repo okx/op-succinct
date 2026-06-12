@@ -3,5 +3,7 @@ pub mod config;
 pub mod enclave_client;
 pub mod error;
 pub mod packager;
+pub mod resident_guard;
 pub mod server;
+pub mod slice_body;
 pub mod task_manager;

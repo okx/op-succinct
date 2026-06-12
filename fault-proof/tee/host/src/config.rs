@@ -9,6 +9,9 @@ fn default_dedup_ttl() -> u64 {
 fn default_monitor_interval() -> u64 {
     30
 }
+fn default_max_resident_witness_bytes() -> u64 {
+    4 * 1024 * 1024 * 1024 // 4 GiB
+}
 fn default_tcp_addr() -> String {
     "127.0.0.1:7878".to_string()
 }
@@ -37,6 +40,8 @@ pub struct ServerConfig {
     pub dedup_ttl_secs: u64,
     #[serde(default = "default_monitor_interval")]
     pub monitor_interval_secs: u64,
+    #[serde(default = "default_max_resident_witness_bytes")]
+    pub max_resident_witness_bytes: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -155,5 +160,26 @@ cache_ttl_secs = 120
     fn attestation_config_defaults() {
         let att = AttestationConfig::default();
         assert_eq!(att.cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn max_resident_witness_bytes_default_is_4gib() {
+        let toml_str = r#"
+[server]
+bind_addr = "0.0.0.0:18080"
+"#;
+        let cfg: HostConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.server.max_resident_witness_bytes, 4_294_967_296);
+    }
+
+    #[test]
+    fn max_resident_witness_bytes_explicit_value() {
+        let toml_str = r#"
+[server]
+bind_addr = "0.0.0.0:18080"
+max_resident_witness_bytes = 1073741824
+"#;
+        let cfg: HostConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.server.max_resident_witness_bytes, 1_073_741_824);
     }
 }
