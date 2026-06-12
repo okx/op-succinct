@@ -1128,9 +1128,18 @@ where
             let this = self.clone();
             async move {
                 tracing::info!("Generating Range Proof for blocks {start} to {end}");
+
+                tracing::info!(stage = "witness", event = "start", pt = "ZK", range_start = start, range_end = end, "[STAGE]");
+                let stage_start = std::time::Instant::now();
                 let sp1_stdin = this.range_proof_stdin(start, end, l1_head_hash.into()).await?;
+                tracing::info!(stage = "witness", event = "end", pt = "ZK", range_start = start, range_end = end, duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
+
+                tracing::info!(stage = "range_proof", event = "start", pt = "ZK", range_start = start, range_end = end, "[STAGE]");
+                let stage_start = std::time::Instant::now();
                 let (range_proof, inst_cycles, sp1_gas) =
                     this.prover.generate_range_proof(sp1_stdin).await?;
+                tracing::info!(stage = "range_proof", event = "end", pt = "ZK", range_start = start, range_end = end, duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
+
                 Ok::<_, anyhow::Error>((idx, range_proof, inst_cycles, sp1_gas))
             }
         });
@@ -1178,6 +1187,8 @@ where
 
         let latest_l1_head = boot_infos.last().context("No boot infos generated")?.l1Head;
 
+        tracing::info!(stage = "agg_prepare", event = "start", pt = "ZK", "[STAGE]");
+        let stage_start = std::time::Instant::now();
         let headers = match self.fetcher.get_header_preimages(&boot_infos, latest_l1_head).await {
             Ok(headers) => headers,
             Err(e) => {
@@ -1201,8 +1212,12 @@ where
                 bail!("Failed to get agg proof stdin: {e}");
             }
         };
+        tracing::info!(stage = "agg_prepare", event = "end", pt = "ZK", duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
+        tracing::info!(stage = "agg_proof", event = "start", pt = "ZK", "[STAGE]");
+        let stage_start = std::time::Instant::now();
         let agg_proof = self.prover.generate_agg_proof(sp1_stdin).await?;
+        tracing::info!(stage = "agg_proof", event = "end", pt = "ZK", duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
         // Prepend ZK type prefix (0x01)
         let mut proof_bytes = vec![0x01u8];
@@ -1219,6 +1234,8 @@ where
             "prove calldata"
         );
 
+        tracing::info!(stage = "tx_submit", event = "start", pt = "ZK", "[STAGE]");
+        let stage_start = std::time::Instant::now();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
@@ -1227,6 +1244,7 @@ where
                 self.config.tx_confirmation_timeout,
             )
             .await?;
+        tracing::info!(stage = "tx_submit", event = "end", pt = "ZK", tx_hash = ?receipt.transaction_hash, tx_status = receipt.status(), duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
         if !receipt.status() {
             bail!("{TX_REVERTED_PREFIX} {receipt:?}");
@@ -1269,6 +1287,8 @@ where
             async move {
                 tracing::info!("Generating TEE range proof for blocks {start} to {end}");
 
+                tracing::info!(stage = "witness", event = "start", pt = "TEE", range_start = start, range_end = end, "[STAGE]");
+                let stage_start = std::time::Instant::now();
                 let host_args = this
                     .host
                     .fetch(start, end, Some(l1_head_hash.into()), this.config.safe_db_fallback)
@@ -1282,9 +1302,22 @@ where
                         .context("Failed to generate witness")?;
                     witness_data.to_rkyv_bytes()?
                 };
+                tracing::info!(stage = "witness", event = "end", pt = "TEE", range_start = start, range_end = end, duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
+                tracing::info!(stage = "range_proof", event = "start", pt = "TEE", range_start = start, range_end = end, "[STAGE]");
+                let range_proof_start = std::time::Instant::now();
+
+                tracing::info!(stage = "range_request", event = "start", pt = "TEE", range_start = start, range_end = end, "[STAGE]");
+                let stage_start = std::time::Instant::now();
                 let task_id = tee_client.submit_task(&witness_bytes, start, end).await?;
+                tracing::info!(stage = "range_request", event = "end", pt = "TEE", range_start = start, range_end = end, task_id = %task_id, duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
+
+                tracing::info!(stage = "range_wait", event = "start", pt = "TEE", range_start = start, range_end = end, task_id = %task_id, "[STAGE]");
+                let stage_start = std::time::Instant::now();
                 let proof_bytes = tee_client.wait_for_proof(&task_id).await?;
+                tracing::info!(stage = "range_wait", event = "end", pt = "TEE", range_start = start, range_end = end, task_id = %task_id, duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
+
+                tracing::info!(stage = "range_proof", event = "end", pt = "TEE", range_start = start, range_end = end, duration_s = range_proof_start.elapsed().as_secs_f64(), "[STAGE]");
 
                 let (journal, signature) = unpack_proof_bytes(&proof_bytes)?;
                 let boot_info = journal_to_boot_info(&journal);
@@ -1300,6 +1333,9 @@ where
 
         let (boot_infos, tee_signatures): (Vec<_>, Vec<_>) =
             results.into_iter().map(|(_, b, s)| (b, s)).unzip();
+
+        tracing::info!(stage = "agg_prepare", event = "start", pt = "TEE", "[STAGE]");
+        let stage_start = std::time::Instant::now();
 
         let attestation_bytes = tee_client.get_attestation().await?;
 
@@ -1319,8 +1355,12 @@ where
             latest_l1_head,
             self.signer.address(),
         )?;
+        tracing::info!(stage = "agg_prepare", event = "end", pt = "TEE", duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
+        tracing::info!(stage = "agg_proof", event = "start", pt = "TEE", "[STAGE]");
+        let stage_start = std::time::Instant::now();
         let agg_proof = self.prover.generate_agg_proof(sp1_stdin).await?;
+        tracing::info!(stage = "agg_proof", event = "end", pt = "TEE", duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
         let mut proof_bytes = vec![0x00u8];
         proof_bytes.extend_from_slice(&agg_proof.bytes());
@@ -1336,6 +1376,8 @@ where
             "prove calldata"
         );
 
+        tracing::info!(stage = "tx_submit", event = "start", pt = "TEE", "[STAGE]");
+        let stage_start = std::time::Instant::now();
         let receipt = self
             .signer
             .send_transaction_request_with_timeout(
@@ -1344,6 +1386,7 @@ where
                 self.config.tx_confirmation_timeout,
             )
             .await?;
+        tracing::info!(stage = "tx_submit", event = "end", pt = "TEE", tx_hash = ?receipt.transaction_hash, tx_status = receipt.status(), duration_s = stage_start.elapsed().as_secs_f64(), "[STAGE]");
 
         if !receipt.status() {
             bail!("{TX_REVERTED_PREFIX} {receipt:?}");
