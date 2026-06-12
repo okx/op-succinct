@@ -157,6 +157,16 @@ struct Args {
     #[arg(long, default_value_t = 600)]
     poll_timeout_secs: u64,
 
+    /// Max RETRIES when POST /tee/task fails with a timeout / transient transport
+    /// error / 5xx. Safe: the host dedups identical witnesses, so a resend returns
+    /// the same task_id instead of starting a duplicate task. 0 disables retry.
+    #[arg(long, default_value_t = 5)]
+    post_max_retries: u32,
+
+    /// Wait between POST /tee/task retries (seconds).
+    #[arg(long, default_value_t = 5)]
+    post_retry_interval_secs: u64,
+
     /// Fall back to timestamp-based L1 head when the L2 node has no SafeDB.
     #[arg(long, default_value_t = true)]
     safe_db_fallback: bool,
@@ -713,37 +723,78 @@ async fn post_witness(
     chunk_end: u64,
     body: Vec<u8>,
 ) -> Result<String> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?;
-    let resp = client
-        .post(format!("{}/tee/task", args.tee_host.trim_end_matches('/')))
-        .header("content-type", "application/octet-stream")
-        .header("x-start-blk-height", chunk_start.to_string())
-        .header("x-end-blk-height", chunk_end.to_string())
-        .body(body)
-        .send()
-        .await
-        .context("POST /tee/task")?;
-    let status = resp.status();
-    let text = resp.text().await.context("read POST response body")?;
-    let json: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            // Non-JSON usually means axum 413 (witness > MAX_RANGE_BODY_BYTES).
-            let preview: String = text.chars().take(256).collect();
-            bail!(
-                "tee-host returned non-JSON response: status={status} body=\"{preview}\" \
-                 (json parse error: {e}). 413 means witness exceeds MAX_RANGE_BODY_BYTES; \
-                 reduce --chunk-size."
-            );
+    // 10-minute per-request timeout: POSTing a large witness + host-side
+    // intake can take well over a minute. (Drop `.timeout(..)` for no limit.)
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(600)).build()?;
+    let url = format!("{}/tee/task", args.tee_host.trim_end_matches('/'));
+    let attempts = args.post_max_retries.saturating_add(1); // total tries incl. the first
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for attempt in 1..=attempts {
+        let send_result = client
+            .post(&url)
+            .header("content-type", "application/octet-stream")
+            .header("x-start-blk-height", chunk_start.to_string())
+            .header("x-end-blk-height", chunk_end.to_string())
+            .body(body.clone()) // clone so we can resend on retry
+            .send()
+            .await;
+
+        let resp = match send_result {
+            Ok(r) => r,
+            Err(e) => {
+                // Retry only transient transport failures (timeout / connect / send).
+                // Resending is safe: the host dedups identical witnesses.
+                if e.is_timeout() || e.is_connect() || e.is_request() {
+                    tracing::warn!(attempt, attempts, error = %e, "POST /tee/task transport error; will retry");
+                    last_err = Some(anyhow::Error::new(e).context("POST /tee/task"));
+                    if attempt < attempts {
+                        tokio::time::sleep(Duration::from_secs(args.post_retry_interval_secs)).await;
+                    }
+                    continue;
+                }
+                return Err(anyhow::Error::new(e).context("POST /tee/task"));
+            }
+        };
+
+        let status = resp.status();
+        let text = resp.text().await.context("read POST response body")?;
+
+        // Transient server-side errors (5xx): retry. Dedup makes the resend idempotent.
+        if status.is_server_error() {
+            tracing::warn!(attempt, attempts, %status, "tee-host 5xx on POST /tee/task; will retry");
+            last_err = Some(anyhow::anyhow!("tee-host {status} on POST: {text}"));
+            if attempt < attempts {
+                tokio::time::sleep(Duration::from_secs(args.post_retry_interval_secs)).await;
+            }
+            continue;
         }
-    };
-    if !status.is_success() || json["code"].as_i64() != Some(0) {
-        bail!("tee-host rejected POST: {}", json);
+
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                // Non-JSON usually means axum 413 (witness > MAX_RANGE_BODY_BYTES).
+                // This is NOT transient — do not retry, fail fast.
+                let preview: String = text.chars().take(256).collect();
+                bail!(
+                    "tee-host returned non-JSON response: status={status} body=\"{preview}\" \
+                     (json parse error: {e}). 413 means witness exceeds MAX_RANGE_BODY_BYTES; \
+                     reduce --chunk-size."
+                );
+            }
+        };
+        // Business rejection (4xx / code != 0): not transient, do not retry.
+        if !status.is_success() || json["code"].as_i64() != Some(0) {
+            bail!("tee-host rejected POST: {}", json);
+        }
+        return json["data"]["taskId"]
+            .as_str()
+            .map(str::to_string)
+            .context("missing data.taskId in POST response");
     }
-    json["data"]["taskId"]
-        .as_str()
-        .map(str::to_string)
-        .context("missing data.taskId in POST response")
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("POST /tee/task failed")))
+        .with_context(|| format!("POST /tee/task failed after {attempts} attempt(s)"))
 }
 
 async fn poll_until_terminal(args: &Args, task_id: &str) -> Result<serde_json::Value> {
