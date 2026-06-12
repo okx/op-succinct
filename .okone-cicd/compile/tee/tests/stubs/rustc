@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Stub: rustc — returns configurable version string
-STUB_LOG="${STUB_LOG_DIR}/rustc.log"
-echo "rustc $*" >> "${STUB_LOG}"
-echo "rustc ${RUSTC_STUB_VERSION:-1.82.0-nightly (nightly-2025-09-15)}"

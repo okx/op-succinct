@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-# Stub: pgrep
-STUB_LOG="${STUB_LOG_DIR}/pgrep.log"
-echo "pgrep $*" >> "${STUB_LOG}"
-if [ "${HOST_RUNNING:-false}" = "true" ]; then
-    echo "${HOST_STUB_PID:-99999}"
-else
-    exit 1
-fi
