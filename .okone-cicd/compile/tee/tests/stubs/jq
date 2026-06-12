@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stub: jq
+STUB_LOG="${STUB_LOG_DIR}/jq.log"
+echo "jq $*" >> "${STUB_LOG}"
+# Read from stdin and use real jq behavior if available, otherwise parse manually
+if [ "${NITRO_ENCLAVE_RUNNING:-false}" = "true" ]; then
+    echo "i-test-enclave"
+else
+    echo ""
+fi

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stub: md5sum
+STUB_LOG="${STUB_LOG_DIR}/md5sum.log"
+echo "md5sum $*" >> "${STUB_LOG}"
+echo "d41d8cd98f00b204e9800998ecf8427e  $1"

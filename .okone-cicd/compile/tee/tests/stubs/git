@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stub: git
+STUB_LOG="${STUB_LOG_DIR}/git.log"
+echo "git $*" >> "${STUB_LOG}"
+if [[ "$1" == "rev-parse" && "$2" == "--show-toplevel" ]]; then
+    echo "/build/repo"
+elif [[ "$1" == "clone" ]]; then
+    mkdir -p "$2/blobs/x86_64" "$2/target/release" 2>/dev/null || true
+    echo "dummy-nitro-cli" > "$2/target/release/nitro-cli"
+    chmod +x "$2/target/release/nitro-cli"
+elif [[ "$1" == "checkout" ]]; then
+    : # no-op
+fi
