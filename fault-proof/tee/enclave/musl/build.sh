@@ -70,19 +70,15 @@ fi
 
 # The musl target std must already be present (baked into the pinned compile
 # image). It is per-toolchain, so it can only ever match the pinned nightly
-# above — no separate version pin is needed. We do NOT network-install at build
-# time (non-hermetic); local dev can opt in explicitly via ALLOW_RUSTUP_NETWORK.
+# above — no separate version pin is needed. The musl std for the pinned
+# $EXPECTED_CHANNEL is an IMMUTABLE artifact, so `rustup target add` fetches
+# byte-identical std on every machine -> deterministic (unlike apt). Safe to
+# auto-install when missing. (It needs network at build time; pre-bake it into
+# the compile image for a fully offline/hermetic build.)
 if command -v rustup >/dev/null 2>&1; then
     if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
-        if [ "${ALLOW_RUSTUP_NETWORK:-0}" = "1" ]; then
-            echo "==> ALLOW_RUSTUP_NETWORK=1 -> installing $TARGET (non-hermetic; local dev only)"
-            rustup target add "$TARGET"
-        else
-            echo "ERROR: target $TARGET not installed for $EXPECTED_CHANNEL." >&2
-            echo "       It must be pre-baked in the compile image. For local dev, re-run with" >&2
-            echo "       ALLOW_RUSTUP_NETWORK=1 to 'rustup target add $TARGET'." >&2
-            exit 1
-        fi
+        echo "==> Installing $TARGET std for $EXPECTED_CHANNEL (immutable for the pinned toolchain)"
+        rustup target add "$TARGET"
     fi
 else
     echo "    (rustup absent — assuming the pinned compile image already provides $TARGET)"
@@ -120,11 +116,13 @@ cp "$BIN" build/xlayer-tee-enclave
 # Normalise the binary's own mtime so the downstream OCI layer is deterministic.
 touch -hcd "@${SOURCE_DATE_EPOCH}" build/xlayer-tee-enclave
 
-# Ship the scratch Dockerfile + the SHARED build_eif.sh (kaniko + pinned
-# nitro-cli). build_eif.sh is base-agnostic, so the musl/scratch path reuses it
-# verbatim — only the Dockerfile differs from the kaniko/ variant.
-cp "$SCRIPT_DIR/Dockerfile"              build/Dockerfile
-cp "$SCRIPT_DIR/../kaniko/build_eif.sh"  build/build_eif.sh
+# Ship the scratch Dockerfile (declarative reference) + the musl/scratch
+# build_eif.sh. Unlike the kaniko/ variant, this build_eif.sh is kaniko-free:
+# it assembles the image with `tar` + `docker import` (no kaniko image) and
+# prefers a pinned host nitro-cli (no builder image). The Dockerfile is kept as
+# the human-readable spec of the same image build_eif.sh produces imperatively.
+cp "$SCRIPT_DIR/Dockerfile"     build/Dockerfile
+cp "$SCRIPT_DIR/build_eif.sh"   build/build_eif.sh
 chmod +x build/build_eif.sh
 
 ENCLAVE_MD5="$(md5sum build/xlayer-tee-enclave | awk '{print $1}')"
