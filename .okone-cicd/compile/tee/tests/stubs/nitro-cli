@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Stub: nitro-cli
+STUB_LOG="${STUB_LOG_DIR}/nitro-cli.log"
+echo "nitro-cli $*" >> "${STUB_LOG}"
+if [[ "$1" == "--version" ]]; then
+    echo "nitro-cli ${NITRO_CLI_STUB_VERSION:-1.3.3}"
+elif [[ "$1" == "build-enclave" ]]; then
+    touch enclave.eif
+    echo '{"Measurements": {"PCR0": "abc123def456", "PCR1": "789012345678", "PCR2": "fedcba987654"}}'
+elif [[ "$1" == "run-enclave" ]]; then
+    echo '{"EnclaveID": "i-test-enclave", "EnclaveCID": 4}'
+elif [[ "$1" == "describe-enclaves" ]]; then
+    if [ "${NITRO_ENCLAVE_RUNNING:-false}" = "true" ]; then
+        echo '[{"EnclaveID": "i-test-enclave", "EnclaveCID": 4, "State": "RUNNING"}]'
+    else
+        echo '[]'
+    fi
+elif [[ "$1" == "terminate-enclave" ]]; then
+    echo "Successfully terminated enclave"
+fi
