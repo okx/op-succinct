@@ -5,10 +5,10 @@ PROFILE="${1:-release}"
 EXPECTED_TOOLCHAIN="nightly-2025-09-15"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Step 1 — Toolchain assertion
-ACTUAL_VERSION="$(rustc --version)"
-if [[ "${ACTUAL_VERSION}" != *"${EXPECTED_TOOLCHAIN}"* ]]; then
-    echo "ERROR: expected toolchain ${EXPECTED_TOOLCHAIN}, got: ${ACTUAL_VERSION}" >&2
+ACTUAL_TOOLCHAIN="$(rustup show active-toolchain 2>/dev/null | head -n1)"
+if [[ "${ACTUAL_TOOLCHAIN}" != *"${EXPECTED_TOOLCHAIN}"* ]]; then
+    echo "ERROR: expected toolchain ${EXPECTED_TOOLCHAIN}, active: ${ACTUAL_TOOLCHAIN:-<none>}" >&2
+    echo "       (run inside the repo so rust-toolchain.toml pins it, or 'rustup default ${EXPECTED_TOOLCHAIN}')" >&2
     exit 1
 fi
 
