@@ -7,7 +7,7 @@ use alloy_op_evm::{
 };
 use op_revm::{L1BlockInfo, OpBuilder, OpHaltReason, OpSpecId, OpTransaction};
 use revm::{
-    context::{BlockEnv, CfgEnv, result::EVMError},
+    context::{result::EVMError, BlockEnv, CfgEnv},
     inspector::NoOpInspector,
     Context, Inspector, MainContext,
 };
