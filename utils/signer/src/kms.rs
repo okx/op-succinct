@@ -7,7 +7,7 @@
 //!
 //! # Environment variables
 //! - `ENABLE_KMS`          – set to `"true"` to fetch `secret_key` from KMS instead of env var.
-//! - `KMS_SECRET_KEY_NAME` – KMS key name for `secret_key`; defaults to `"XLAYER_SECRET_KEY"`.
+//! - `KMS_SECRET_KEY_NAME` – KMS key name for `secret_key`; required when `ENABLE_KMS=true`.
 //!
 //! # Singleton note (kms feature on)
 //! `ok-kms-rust` loads a Go CGO `.so` at init time. Dropping `KmsClient` would trigger

@@ -28,7 +28,7 @@ pub const TIMEOUT_SECONDS: u64 = 60;
 fn resolve_xlayer_secret_key() -> Result<String> {
     if kms::is_kms_enabled() {
         let key_name = std::env::var("KMS_SECRET_KEY_NAME")
-            .unwrap_or_else(|_| "XLAYER_SECRET_KEY".to_string());
+            .context("KMS_SECRET_KEY_NAME is required when ENABLE_KMS=true")?;
         tracing::info!(kms_key = %key_name, "Fetching XLayer secret_key from KMS");
         kms::fetch_secret(&key_name).context("failed to fetch XLAYER secret_key from KMS")
     } else {
