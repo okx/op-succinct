@@ -2,3 +2,7 @@
 # Groth16 is a ZK-SNARK proof scheme named after cryptographer Jens Groth
 Groth = "Groth"
 groth = "groth"
+# deposite_address mirrors the XLayer API's JSON field "depositeAddress" (upstream typo preserved for wire compatibility)
+deposite = "deposite"
+# testBOdy is intentional test fixture data in xlayer_remote_client.rs tests
+Ody = "Ody"
