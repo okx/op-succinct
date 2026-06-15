@@ -4,6 +4,16 @@ set -euo pipefail
 NITRO_CLI_VERSION="${NITRO_CLI_VERSION:-1.3.3}"
 NITRO_CLI_COMMIT="${NITRO_CLI_COMMIT:-afb7264}"
 NITRO_CLI_MODE="${NITRO_CLI_MODE:-auto}"
+# Expected sha256 of the blobs/ directory contents. When set, every build asserts
+# the actual blobs hash matches this value — that is what guarantees byte-level
+# reproducibility of PCR0 across hosts. Bootstrap workflow: run once with this
+# unset (or with STRICT_BLOBS_HASH=0), copy the printed "blobs hash:" into your
+# CI config, then enforce.
+EXPECTED_BLOBS_HASH="${EXPECTED_BLOBS_HASH:-}"
+# When STRICT_BLOBS_HASH=1 (default), an unset EXPECTED_BLOBS_HASH is a hard
+# error in host-bin / auto modes. Set STRICT_BLOBS_HASH=0 to bootstrap and
+# discover the hash, then turn it back on in CI.
+STRICT_BLOBS_HASH="${STRICT_BLOBS_HASH:-1}"
 
 # Guard 1 — Binary presence
 if [ ! -f ./xlayer-tee-enclave ]; then
@@ -89,6 +99,28 @@ assert_nitro_cli_blobs_pinned() {
         | awk '{print $1}')"
     echo "NITRO_CLI_BLOBS: ${NITRO_CLI_BLOBS}"
     echo "blobs hash:      ${BLOBS_HASH}"
+
+    if [ -n "${EXPECTED_BLOBS_HASH}" ]; then
+        if [ "${BLOBS_HASH}" != "${EXPECTED_BLOBS_HASH}" ]; then
+            echo "ERROR: blobs hash mismatch — PCR0 will not reproduce." >&2
+            echo "       expected: ${EXPECTED_BLOBS_HASH}" >&2
+            echo "       actual:   ${BLOBS_HASH}" >&2
+            echo "       This host's kernel/init blobs differ from the pinned ones." >&2
+            echo "       Either update EXPECTED_BLOBS_HASH after auditing the change," >&2
+            echo "       or rerun with NITRO_CLI_MODE=host-src to use commit-pinned blobs." >&2
+            exit 1
+        fi
+        echo "blobs hash verified against EXPECTED_BLOBS_HASH"
+    elif [ "${STRICT_BLOBS_HASH}" = "1" ]; then
+        echo "ERROR: EXPECTED_BLOBS_HASH not set and STRICT_BLOBS_HASH=1." >&2
+        echo "       Without a pinned hash, PCR0 reproducibility cannot be enforced." >&2
+        echo "       Bootstrap: rerun once with STRICT_BLOBS_HASH=0, copy the printed" >&2
+        echo "       'blobs hash:' value into EXPECTED_BLOBS_HASH (in CI config), then" >&2
+        echo "       re-enable strict mode." >&2
+        exit 1
+    else
+        echo "WARN: EXPECTED_BLOBS_HASH not set; blobs hash NOT verified (STRICT_BLOBS_HASH=0)."
+    fi
 }
 
 # Step 5 — Select nitro-cli binary
