@@ -1,0 +1,33 @@
+# GitLab mirror configuration for internal (OKG intranet) builds.
+#
+# Usage:
+#   cargo build --config ./.cargo/config.gitlab.toml
+#   cargo prove build --config ./.cargo/config.gitlab.toml
+#
+# The workspace Cargo.toml references github.com/okx/optimism (default, external).
+# This file patches those dependencies to use the internal GitLab mirror
+# (gitlab.okg.com/github/optimism, branch xl/gasless-n2), which carries
+# our additional XLayerEvmFactory refactor on top of po/gasless_v1.
+
+[patch."https://github.com/okx/optimism"]
+kona-mpt             = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-derive          = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-driver          = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-preimage        = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-executor        = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-proof           = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-client          = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-host            = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-providers-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-protocol        = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-registry        = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+kona-genesis         = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-alloy-consensus       = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-alloy-rpc-types       = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-alloy-network         = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-alloy-provider        = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-alloy                 = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+alloy-op-evm         = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+alloy-op-hardforks   = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+op-revm              = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
