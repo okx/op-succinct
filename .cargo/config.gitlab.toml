@@ -31,3 +31,8 @@ op-alloy                 = { git = "https://gitlab.okg.com/github/optimism", bra
 alloy-op-evm         = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
 alloy-op-hardforks   = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
 op-revm              = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2" }
+
+[patch."https://github.com/okx/sp1-cluster"]
+sp1-cluster-artifact = { git = "https://gitlab.okg.com/github/sp1-cluster", branch = "xl/gasless-n2" }
+sp1-cluster-common   = { git = "https://gitlab.okg.com/github/sp1-cluster", branch = "xl/gasless-n2" }
+sp1-cluster-utils    = { git = "https://gitlab.okg.com/github/sp1-cluster", branch = "xl/gasless-n2" }

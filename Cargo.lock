@@ -10600,7 +10600,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-artifact"
 version = "2.1.2"
-source = "git+https://github.com/succinctlabs/sp1-cluster.git?tag=v2.1.2#78ed97999cf28cb56dae14da74aa96fe81a29e17"
+source = "git+https://github.com/okx/sp1-cluster?branch=xl%2Fgasless-n2#f3995e8aba652f3c27547eaed63fd276ea169ec2"
 dependencies = [
  "anyhow",
  "async-scoped",
@@ -10626,7 +10626,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-common"
 version = "2.1.2"
-source = "git+https://github.com/succinctlabs/sp1-cluster.git?tag=v2.1.2#78ed97999cf28cb56dae14da74aa96fe81a29e17"
+source = "git+https://github.com/okx/sp1-cluster?branch=xl%2Fgasless-n2#f3995e8aba652f3c27547eaed63fd276ea169ec2"
 dependencies = [
  "backoff",
  "chrono",
@@ -10654,7 +10654,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-utils"
 version = "2.1.2"
-source = "git+https://github.com/succinctlabs/sp1-cluster.git?tag=v2.1.2#78ed97999cf28cb56dae14da74aa96fe81a29e17"
+source = "git+https://github.com/okx/sp1-cluster?branch=xl%2Fgasless-n2#f3995e8aba652f3c27547eaed63fd276ea169ec2"
 dependencies = [
  "eyre",
  "sp1-cluster-artifact",
