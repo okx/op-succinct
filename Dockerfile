@@ -27,18 +27,12 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# Builder stage: Build dependencies then project
+# Builder stage: Build project
 FROM chef AS builder
-
-# Copy recipe and build dependencies (this layer will be cached)
-COPY --from=planner /app/recipe.json recipe.json
-
-RUN cargo chef cook --release --bin proposer --bin challenger --bin fetch-fault-dispute-game-config --recipe-path recipe.json
 
 # Copy source code and build binaries
 COPY . .
 
-# Build all binaries (dependencies already built, only project code will compile)
 RUN cargo build --release --bin proposer && \
     cargo build --release --bin challenger && \
     cargo build --release --bin fetch-fault-dispute-game-config
