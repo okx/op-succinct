@@ -183,6 +183,7 @@ alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/ga
 revm = { version = "38.0.0", default-features = false, features = [
     "bn",
 ] }
+revm-precompile = { version = "34.0.0", default-features = false }
 op-revm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-n2", default-features = false }
 
 # SP1 v6.1.0 (Hypercube)
@@ -204,7 +205,7 @@ kzg-rs = { version = "0.2.8", features = ["rkyv", "serde"] }
 c-kzg = { version = "2.0.0", default-features = false }
 
 # Cloud dependencies
-gcloud-sdk = "0.27"
+gcloud-sdk = { version = "0.29", default-features = false, features = ["google-cloud-kms-v1", "google-longrunning", "tls-webpki-roots"] }
 
 [profile.release-client-lto]
 inherits = "release"
