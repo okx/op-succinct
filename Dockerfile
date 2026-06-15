@@ -30,8 +30,13 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Builder stage: Build dependencies then project
 FROM chef AS builder
 
-# Copy recipe and build dependencies (this layer will be cached)
+# Copy recipe and .cargo config for dependency fetch stage
 COPY --from=planner /app/recipe.json recipe.json
+COPY .cargo/ .cargo/
+
+# Activate GitLab mirror so git deps resolve to gitlab.okg.com/github/optimism.
+# This is the intranet build path; external builds use the default GitHub source.
+RUN cp .cargo/config.gitlab.toml .cargo/config.toml
 
 RUN cargo chef cook --release --bin proposer --bin challenger --bin fetch-fault-dispute-game-config --recipe-path recipe.json
 
