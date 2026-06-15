@@ -61,6 +61,36 @@ build_nitro_cli_from_source() {
     cd - > /dev/null
 }
 
+# Require an explicit NITRO_CLI_BLOBS when using a host-installed nitro-cli.
+# The kernel + init under blobs/ are an input to PCR0: same nitro-cli --version
+# on two hosts can ship different blob bytes (AMI vintage, repackaging, kernel
+# patch level), so PCR0 won't reproduce unless the blobs path is pinned. host-src
+# mode already pins this via the cloned commit; host-bin / auto must declare it.
+assert_nitro_cli_blobs_pinned() {
+    if [ -z "${NITRO_CLI_BLOBS:-}" ]; then
+        echo "ERROR: NITRO_CLI_BLOBS must be set when using host-installed nitro-cli." >&2
+        echo "       The kernel + init under blobs/ are part of PCR0; different hosts" >&2
+        echo "       with the same nitro-cli --version can ship different bytes, so the" >&2
+        echo "       blobs path must be pinned explicitly." >&2
+        echo "       Options:" >&2
+        echo "         - export NITRO_CLI_BLOBS=/path/to/pinned/blobs/x86_64" >&2
+        echo "         - or rerun with NITRO_CLI_MODE=host-src to build nitro-cli + blobs" >&2
+        echo "           from the pinned commit (${NITRO_CLI_COMMIT})." >&2
+        exit 1
+    fi
+    if [ ! -d "${NITRO_CLI_BLOBS}" ]; then
+        echo "ERROR: NITRO_CLI_BLOBS=${NITRO_CLI_BLOBS} is not a directory." >&2
+        exit 1
+    fi
+    BLOBS_HASH="$(find "${NITRO_CLI_BLOBS}" -type f -print0 \
+        | LC_ALL=C sort -z \
+        | xargs -0 sha256sum \
+        | sha256sum \
+        | awk '{print $1}')"
+    echo "NITRO_CLI_BLOBS: ${NITRO_CLI_BLOBS}"
+    echo "blobs hash:      ${BLOBS_HASH}"
+}
+
 # Step 5 — Select nitro-cli binary
 case "${NITRO_CLI_MODE}" in
     host-bin)
@@ -73,6 +103,7 @@ case "${NITRO_CLI_MODE}" in
             echo "ERROR: host nitro-cli version ${ACTUAL} != pinned ${NITRO_CLI_VERSION}" >&2
             exit 1
         fi
+        assert_nitro_cli_blobs_pinned
         NITRO_CLI=nitro-cli
         ;;
     host-src)
@@ -85,6 +116,7 @@ case "${NITRO_CLI_MODE}" in
                 echo "ERROR: host nitro-cli version ${ACTUAL} != pinned ${NITRO_CLI_VERSION}" >&2
                 exit 1
             fi
+            assert_nitro_cli_blobs_pinned
             NITRO_CLI=nitro-cli
         else
             build_nitro_cli_from_source
