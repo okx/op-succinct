@@ -7,8 +7,8 @@ edition.workspace = true
 [dependencies]
 
 # local
-op-succinct-celestia-host-utils = { workspace = true, optional = true }
-op-succinct-eigenda-host-utils = { workspace = true, optional = true }
+# op-succinct-celestia-host-utils excluded (not used by XLayer)
+# op-succinct-eigenda-host-utils excluded (not used by XLayer)
 op-succinct-elfs.workspace = true
 op-succinct-ethereum-host-utils = { workspace = true, optional = true }
 op-succinct-host-utils.workspace = true
@@ -30,6 +30,5 @@ tracing.workspace = true
 
 [features]
 default = ["ethereum"]
-celestia = ["op-succinct-celestia-host-utils"]
-eigenda = ["op-succinct-eigenda-host-utils"]
+# celestia/eigenda features excluded (DA backends not used by XLayer)
 ethereum = ["op-succinct-ethereum-host-utils"]

@@ -3,15 +3,18 @@ members = [
     "utils/client",
     "utils/host",
     "utils/build",
-    "utils/celestia/client",
-    "utils/celestia/host",
-    "utils/eigenda/client",
-    "utils/eigenda/host",
+    # "utils/celestia/client",  # Not used by XLayer; excluded to avoid hana dependency
+    # "utils/celestia/host",
+    # "utils/eigenda/client",   # Not used by XLayer; excluded to avoid hokulea dependency
+    # "utils/eigenda/host",
     "utils/proof",
     "utils/signer",
     "utils/ethereum/client",
     "utils/ethereum/host",
-    "programs/range/*",
+    "programs/range/ethereum",
+    "programs/range/utils",
+    # "programs/range/celestia",  # Not used by XLayer
+    # "programs/range/eigenda",   # Not used by XLayer
     "programs/aggregation",
     "scripts/*",
     "validity",
@@ -85,42 +88,27 @@ vergen = "=9.0.4"
 vergen-git2 = "=1.0.5"
 
 # kona
-kona-mpt = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-derive = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
-kona-driver = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-preimage = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", features = [
+kona-mpt = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+kona-derive = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
+kona-driver = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+kona-preimage = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", features = [
     "rkyv",
     "serde",
 ] }
-kona-executor = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-proof = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
+kona-executor = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+kona-proof = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
 
-kona-client = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-host = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-providers-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
+kona-client = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+kona-host = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+kona-providers-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
 # Note: kona-rpc is NOT included to avoid rollup-boost -> reth-optimism-primitives dependency
-# which causes alloy version conflicts with hokulea v1.1.4. RPC types are defined locally in
+# which causes alloy version conflicts. RPC types are defined locally in
 # utils/host/src/rpc_types.rs instead.
-kona-protocol = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
-kona-registry = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
-kona-genesis = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
+kona-protocol = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
+kona-registry = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
+kona-genesis = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
 
-# hana
-hana-blobstream = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-hana-celestia = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-hana-host = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-hana-oracle = { git = "https://github.com/celestiaorg/hana", tag = "v1.6.0-mocha" }
-
-# hokulea
-hokulea-compute-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-eigenda = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-host-bin = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-proof = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-witgen = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-hokulea-zkvm-verification = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-canoe-sp1-cc-host = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-canoe-sp1-cc-verifier = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
-canoe-verifier-address-fetcher = { git = "https://github.com/Layr-Labs/hokulea", tag = "hokulea-client/v1.1.7" }
+# hana / hokulea (Celestia/EigenDA DA backends) — not used by XLayer; excluded from workspace
 
 # op-succinct
 op-succinct-prove = { path = "scripts/prove" }
@@ -132,10 +120,7 @@ op-succinct-validity = { path = "validity" }
 op-succinct-fp = { path = "fault-proof" }
 op-succinct-ethereum-client-utils = { path = "utils/ethereum/client" }
 op-succinct-ethereum-host-utils = { path = "utils/ethereum/host" }
-op-succinct-celestia-client-utils = { path = "utils/celestia/client" }
-op-succinct-celestia-host-utils = { path = "utils/celestia/host" }
-op-succinct-eigenda-client-utils = { path = "utils/eigenda/client" }
-op-succinct-eigenda-host-utils = { path = "utils/eigenda/host" }
+# op-succinct-celestia-*/eigenda-* excluded (not used by XLayer)
 op-succinct-proof-utils = { path = "utils/proof" }
 op-succinct-signer-utils = { path = "utils/signer" }
 op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
@@ -185,14 +170,14 @@ alloy-sol-macro = { version = "1.5.6", default-features = false }
 alloy-chains = { version = "0.2.30", default-features = false }
 
 # OP Alloy - from the optimism monorepo to match kona v1.2.13
-op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
-op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
-op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
-op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client", default-features = false }
+op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
+op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
+op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
+op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
 
 # Execution
 alloy-evm = { version = "0.27.2", default-features = false }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27", default-features = false }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof", default-features = false }
 # Use kzg-rs and substrate-bn for the zkVM.
 # Versions aligned with kona v1.2.13
 revm = { version = "34.0.0", default-features = false, features = [
@@ -236,21 +221,22 @@ p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p2
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-6.0.0" }
 tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-6.0.0" }
 
-# XLayer gasless: use OKX revm fork which adds OpTransaction::is_gasless support
-op-revm = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-bytecode = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-context = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-context-interface = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-database = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-database-interface = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-handler = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-inspector = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-interpreter = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-precompile = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-primitives = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-revm-state = { git = "https://github.com/okx/revm", rev = "544a2ad5de83ae0dd9e2ae6ceea095017f34ce13" }
-alloy-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
+# XLayer gasless: use GitLab revm fork (proof-fix) which adds OpTransaction::is_gasless
+# support with refund accounting aligned to the author's po/gasless_v1 vendored op-revm.
+op-revm = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-bytecode = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-context = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-context-interface = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-database = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-database-interface = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-handler = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-inspector = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-interpreter = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-precompile = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-primitives = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+revm-state = { git = "https://gitlab.okg.com/github/revm.git", rev = "7eb8b219f5dc10d35ec72176932a2f6716549bb2" }
+alloy-evm = { git = "https://gitlab.okg.com/github/evm", rev = "0de280055ac2ba413713fa17687e330172e2e309" }
 
 # Patch sp1 crates to add gateway proxy support (only sp1-sdk is modified,
 # but all sp1/slop crates must be patched to avoid duplicate crate versions
@@ -302,52 +288,13 @@ slop-uni-stark = { git = "https://github.com/okx/sp1", branch = "feat/gateway-pr
 slop-utils = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 slop-whir = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v6.1.0" }
 
-# Patch op-alloy and alloy-op-evm to use the optimism monorepo versions
-# Required because kona v1.2.13 uses path deps from the monorepo, and hokulea's
-# own [patch] section doesn't propagate when used as a git dependency.
-op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-provider = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
-alloy-op-hardforks = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-
-# Redirect all GitHub ethereum-optimism/optimism deps (pulled in by hokulea) to our GitLab fork.
-# hokulea declares kona deps from GitHub; [patch] here overrides them workspace-wide.
-# Redirect alloy-op-evm from the GitLab optimism monorepo to our EVM fork.
-# kona crates use alloy-op-evm as a workspace member of the monorepo; without this
-# patch, we end up with two alloy-op-evm instances (0.26.3 vs 0.26.4) making the
-# OpTxEnv traits incompatible.
-[patch."https://gitlab.okg.com/github/optimism"]
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
-
-[patch."https://github.com/ethereum-optimism/optimism"]
-kona-cli = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-client = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-derive = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-driver = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-executor = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-genesis = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-hardforks = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-host = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-interop = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-macros = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-mpt = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-preimage = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-proof = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-proof-interop = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-protocol = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-providers-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-registry = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-std-fpvm = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-kona-std-fpvm-proc = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-provider = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-alloy-op-hardforks = { git = "https://gitlab.okg.com/github/optimism", branch = "feat/xlayer-gasless-kona-client" }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/evm", branch = "feat/xlayer-gasless-alloy-evm-0.27" }
+# Patch op-alloy and alloy-op-evm to use the optimism monorepo versions.
+# Required because kona v1.2.13 uses path deps from the monorepo.
+op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+op-alloy-provider = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+alloy-op-hardforks = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
+op-alloy = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/gasless-kona-1.2.13-proof" }
