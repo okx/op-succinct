@@ -1,0 +1,4 @@
+[default.extend-words]
+# Groth16 is a ZK-SNARK proof scheme named after cryptographer Jens Groth
+Groth = "Groth"
+groth = "groth"
