@@ -23,6 +23,20 @@ pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
 
+/// Resolve the XLayer remote signer secret key from either KMS (when
+/// `ENABLE_KMS=true`) or the `XLAYER_SECRET_KEY` env var.
+fn resolve_xlayer_secret_key() -> Result<String> {
+    if kms::is_kms_enabled() {
+        let key_name = std::env::var("KMS_SECRET_KEY_NAME")
+            .context("KMS_SECRET_KEY_NAME is required when ENABLE_KMS=true")?;
+        tracing::info!(kms_key = %key_name, "Fetching XLayer secret_key from KMS");
+        kms::fetch_secret(&key_name).context("failed to fetch XLAYER secret_key from KMS")
+    } else {
+        std::env::var("XLAYER_SECRET_KEY")
+            .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")
+    }
+}
+
 #[derive(Clone, Debug)]
 /// The type of signer to use for signing transactions.
 pub enum Signer {
@@ -103,16 +117,7 @@ impl Signer {
                         .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string()),
                     access_key: std::env::var("XLAYER_ACCESS_KEY")
                         .context("XLAYER_ACCESS_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
-                    secret_key: if kms::is_kms_enabled() {
-                        let key_name = std::env::var("KMS_SECRET_KEY_NAME")
-                            .unwrap_or_else(|_| "XLAYER_SECRET_KEY".to_string());
-                        tracing::info!("Fetching secret_key from KMS (key={})", key_name);
-                        kms::fetch_secret(&key_name)
-                            .context("failed to fetch XLAYER secret_key from KMS")?
-                    } else {
-                        std::env::var("XLAYER_SECRET_KEY")
-                            .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")?
-                    },
+                    secret_key: resolve_xlayer_secret_key()?,
                     timeout: Duration::from_secs(
                         std::env::var("XLAYER_TIMEOUT")
                             .unwrap_or_else(|_| "30".to_string())
