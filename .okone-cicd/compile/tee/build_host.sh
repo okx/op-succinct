@@ -47,7 +47,7 @@ docker run --rm --platform linux/amd64 \
   -v "$(pwd)":/workspace -w /workspace \
   -v cargo-cache:/usr/local/cargo \
   "${RUST_IMAGE}" \
-  bash -c "cargo build --release --target x86_64-unknown-linux-gnu -p xlayer-tee-host ${FEATURES}"
+  bash -c "cargo build --release --locked --target x86_64-unknown-linux-gnu -p xlayer-tee-host ${FEATURES}"
 
 if [[ ! -f "${BIN}" ]]; then
   echo "ERROR: ${BIN} not found." >&2
