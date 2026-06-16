@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Enclave CID must match between start.sh and stop.sh (and the vsock CID the
+# host process connects to). Override only if you genuinely run more than one
+# enclave on the same host.
+ENCLAVE_CID="${ENCLAVE_CID:-4}"
+
 # Step 1 — Validate arguments
 if [ $# -lt 2 ]; then
     echo "Usage: start.sh <CPU_COUNT> <MEMORY_MB>" >&2
@@ -15,8 +20,8 @@ nitro-cli run-enclave \
     --eif-path enclave.eif \
     --cpu-count "${CPU_COUNT}" \
     --memory "${MEMORY_MB}" \
-    --enclave-cid 4
-echo "enclave started (cid=4)"
+    --enclave-cid "${ENCLAVE_CID}"
+echo "enclave started (cid=${ENCLAVE_CID})"
 
 # Step 3 — Validate host binary
 if [ ! -x ./xlayer-tee-host ]; then
@@ -25,7 +30,7 @@ if [ ! -x ./xlayer-tee-host ]; then
 fi
 
 # [A-15 Finding #2] Set default vsock CID/port env vars if not already set
-export TEE_HOST__ENCLAVE__VSOCK_CID="${TEE_HOST__ENCLAVE__VSOCK_CID:-4}"
+export TEE_HOST__ENCLAVE__VSOCK_CID="${TEE_HOST__ENCLAVE__VSOCK_CID:-${ENCLAVE_CID}}"
 export TEE_HOST__ENCLAVE__VSOCK_PORT="${TEE_HOST__ENCLAVE__VSOCK_PORT:-7878}"
 
 # Step 4 — Start host

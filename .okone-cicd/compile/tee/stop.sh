@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Must match start.sh.
+ENCLAVE_CID="${ENCLAVE_CID:-4}"
+
 GRACE_PERIOD=1800
 
 # Step 1 — Terminate enclave
-ENCLAVE_ID="$(nitro-cli describe-enclaves | jq -r '.[] | select(.EnclaveCID == 4) | .EnclaveID' || true)"
+ENCLAVE_ID="$(nitro-cli describe-enclaves \
+    | jq -r --argjson cid "${ENCLAVE_CID}" '.[] | select(.EnclaveCID == $cid) | .EnclaveID' \
+    || true)"
 if [ -n "${ENCLAVE_ID}" ]; then
     nitro-cli terminate-enclave --enclave-id "${ENCLAVE_ID}"
     echo "enclave terminated: ${ENCLAVE_ID}"
 else
-    echo "no enclave with cid=4 found"
+    echo "no enclave with cid=${ENCLAVE_CID} found"
 fi
 
 # Step 2 — Stop host gracefully
