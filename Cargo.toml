@@ -276,7 +276,5 @@ op-alloy-consensus = { git = "https://github.com/okx/optimism", branch = "xl/gas
 op-alloy-network = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
 op-alloy-rpc-types = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
 op-alloy-rpc-types-engine = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
-op-alloy-provider = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
 alloy-op-evm = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
-op-alloy = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
 op-revm = { git = "https://github.com/okx/optimism", branch = "xl/gasless-n2" }
