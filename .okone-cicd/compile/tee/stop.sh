@@ -17,24 +17,39 @@ else
     echo "no enclave with cid=${ENCLAVE_CID} found"
 fi
 
-# Step 2 — Stop host gracefully
-HOST_PID="$(pgrep -f xlayer-tee-host || true)"
-if [ -n "${HOST_PID}" ]; then
-    kill -TERM "${HOST_PID}"
-    echo "SIGTERM sent to xlayer-tee-host (pid=${HOST_PID}), waiting up to ${GRACE_PERIOD}s..."
+# Step 2 — Stop host gracefully.
+# pgrep can return multiple PIDs (e.g. a dev instance running alongside prod).
+# Keep the unquoted expansion below so each PID becomes its own argument to
+# kill; quoting "${HOST_PIDS}" would pass a single multi-line string and bash
+# kill would reject it as a bad pid.
+HOST_PIDS="$(pgrep -f xlayer-tee-host || true)"
+if [ -n "${HOST_PIDS}" ]; then
+    # shellcheck disable=SC2086
+    kill -TERM ${HOST_PIDS}
+    echo "SIGTERM sent to xlayer-tee-host pids: ${HOST_PIDS}; waiting up to ${GRACE_PERIOD}s..."
 
     ELAPSED=0
-    while kill -0 "${HOST_PID}" 2>/dev/null && [ "${ELAPSED}" -lt "${GRACE_PERIOD}" ]; do
+    # Loop until every PID is gone or we hit the grace period.
+    while [ "${ELAPSED}" -lt "${GRACE_PERIOD}" ]; do
+        STILL_ALIVE=""
+        for pid in ${HOST_PIDS}; do
+            if kill -0 "${pid}" 2>/dev/null; then
+                STILL_ALIVE="${STILL_ALIVE} ${pid}"
+            fi
+        done
+        [ -z "${STILL_ALIVE}" ] && break
         sleep 5
         ELAPSED=$((ELAPSED + 5))
     done
 
-    if kill -0 "${HOST_PID}" 2>/dev/null; then
-        kill -9 "${HOST_PID}"
-        echo "xlayer-tee-host force-killed after ${GRACE_PERIOD}s"
-    else
-        echo "xlayer-tee-host exited gracefully"
-    fi
+    # Anyone still alive after the grace period gets SIGKILL.
+    for pid in ${HOST_PIDS}; do
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -9 "${pid}"
+            echo "xlayer-tee-host (pid=${pid}) force-killed after ${GRACE_PERIOD}s"
+        fi
+    done
+    echo "xlayer-tee-host shutdown complete"
 else
     echo "xlayer-tee-host not running"
 fi
