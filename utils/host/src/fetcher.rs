@@ -887,6 +887,7 @@ impl OPSuccinctDataFetcher {
             ),
             l1_beacon_address,
             data_dir: None, // Use in-memory key-value store.
+            data_format: Default::default(),
             native: false,
             server: true,
             rollup_config_path: self.rollup_config_path.clone(),
