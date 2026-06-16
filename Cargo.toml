@@ -207,9 +207,6 @@ c-kzg = { version = "2.0.0", default-features = false }
 # Cloud dependencies
 gcloud-sdk = { version = "0.29", default-features = false, features = ["google-cloud-kms-v1", "google-longrunning", "tls-webpki-roots"] }
 
-[profile.release]
-trim-paths = "none"
-
 [profile.release-client-lto]
 inherits = "release"
 panic = "abort"
