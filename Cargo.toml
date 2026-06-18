@@ -314,3 +314,8 @@ op-alloy-provider = { git = "https://github.com/ethereum-optimism/optimism", tag
 alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
 alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
 op-alloy = { git = "https://github.com/ethereum-optimism/optimism", tag = "kona-client/v1.2.14" }
+
+[patch."https://github.com/succinctlabs/sp1-cluster.git"]
+sp1-cluster-artifact = { git = "https://github.com/okx/sp1-cluster.git", branch = "xl/v2.1.2-chunk-size-env" }
+sp1-cluster-common = { git = "https://github.com/okx/sp1-cluster.git", branch = "xl/v2.1.2-chunk-size-env" }
+sp1-cluster-utils = { git = "https://github.com/okx/sp1-cluster.git", branch = "xl/v2.1.2-chunk-size-env" }
