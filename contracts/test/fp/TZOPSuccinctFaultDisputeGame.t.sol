@@ -89,7 +89,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
     uint256 constant CHAL_BOND = 1 ether;
 
     // ===================== setUp =====================
-    function setUp() public {
+    function setUp() public virtual {
         // Deploy ProxyAdmin with this test contract as owner.
         proxyAdmin = new ProxyAdmin(address(this));
 
