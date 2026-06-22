@@ -42,9 +42,11 @@ import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol"
 // Contracts
 import {AccessManager} from "src/fp/AccessManager.sol";
 
-/// @title OPSuccinctFaultDisputeGame
-/// @notice An implementation of the `IFaultDisputeGame` interface.
-contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
+/// @title TZOPSuccinctFaultDisputeGame
+/// @notice TradeZone fault-proof dispute game; baseline copied from OPSuccinctFaultDisputeGame.
+///         Subsequent commits modify this baseline per SPEC_GAME_V2_CALLDATA.md
+///         (multi-segment + multi-challenger + variable batch + early-finalize overload).
+contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
     //                         Enums                              //
     ////////////////////////////////////////////////////////////////
@@ -265,8 +267,8 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             }
 
             startingOutputRoot = Proposal({
-                l2SequenceNumber: OPSuccinctFaultDisputeGame(address(proxy)).l2SequenceNumber(),
-                root: Hash.wrap(OPSuccinctFaultDisputeGame(address(proxy)).rootClaim().raw())
+                l2SequenceNumber: TZOPSuccinctFaultDisputeGame(address(proxy)).l2SequenceNumber(),
+                root: Hash.wrap(TZOPSuccinctFaultDisputeGame(address(proxy)).rootClaim().raw())
             });
 
             // INVARIANT: The parent game must be a valid game.
