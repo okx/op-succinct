@@ -693,66 +693,81 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         }
     }
 
-    /// @notice Resolves the game after the clock expires.
-    ///         `DEFENDER_WINS` when no one has challenged the proposer's claim and `MAX_CHALLENGE_DURATION` has passed
-    ///         or there is a challenge but the prover has provided a valid proof within the `MAX_PROVE_DURATION`.
-    ///         `CHALLENGER_WINS` when the proposer's claim has been challenged, but the proposer has not proven
-    ///         its claim within the `MAX_PROVE_DURATION`.
+    /// @notice Resolves the game per SPEC §6 Phase 3 — 4-state machine + parent-CHW propagation.
+    /// @dev    Bond push at resolve:
+    ///           - DW path (3 sub-states converge): proposer gets CREATE_BOND back to normalModeCredit.
+    ///             L-bonds are NOT pushed here — they were already credited to provers in prove() Step 4.
+    ///           - CHW path (clock-CHW): no immediate push; CREATE_BOND + non-lowest S-bonds settled
+    ///             lazily in claimCredit() (SPEC §6.4.2, §9.5).
+    ///           - parent-CHW path + totalCountered == 0: CREATE_BOND burned to address(0), flag set
+    ///             to suppress duplicate distribution in claimCredit (SPEC §9.4.b).
+    ///           - parent-CHW path + totalCountered > 0: no immediate push; CREATE_BOND goes to
+    ///             lowest-S challenger via lazy claimCredit (same as clock-CHW).
     function resolve() external returns (GameStatus) {
-        // INVARIANT: Resolution cannot occur if the game has already been resolved.
+        // First-check (SPEC §11.9 Inv 31): resolve uses V1's ClaimAlreadyResolved alias here,
+        // not the new GameAlreadyResolved error used by challenge/prove (deliberate V1 alignment).
         if (status != GameStatus.IN_PROGRESS) revert ClaimAlreadyResolved();
 
-        // INVARIANT: Cannot resolve a game if the parent game has not been resolved.
+        // Parent integrity (UNCHANGED from V1):
+        //   parent IN_PROGRESS → revert (must wait); CHW → propagate; DW → normal path.
         GameStatus parentGameStatus = getParentGameStatus();
         if (parentGameStatus == GameStatus.IN_PROGRESS) revert ParentGameNotResolved();
 
-        // INVARIANT: If the parent game's claim is invalid, then the current game's claim is invalid.
         if (parentGameStatus == GameStatus.CHALLENGER_WINS) {
-            // Parent game is invalid so this game is invalid too. Therefore the challenger wins and gets all bonds.
-            // If the game has not been challenged then there will not be any challenger address and the bond is burned.
+            // SPEC §9.4.b parent-forced CHW:
+            //   This game's startingOutputRoot derives from an invalid parent chain → game is doomed.
+            //   Override outcome to CHW regardless of internal state (incl. FullProved); bypass gameOver().
             status = GameStatus.CHALLENGER_WINS;
-            normalModeCredit[claimData.counteredBy] = address(this).balance;
-        } else {
-            // INVARIANT: Game must be completed either by clock expiration or valid proof.
-            if (!gameOver()) revert GameNotOver();
 
-            // Determine status based on claim status.
-            if (claimData.status == ProposalStatus.Unchallenged) {
-                // Claim is unchallenged, defender wins, game creator gets everything.
-                status = GameStatus.DEFENDER_WINS;
-                normalModeCredit[gameCreator()] = address(this).balance;
-            } else if (claimData.status == ProposalStatus.Challenged) {
-                // Claim is challenged, challenger wins, challenger wins everything
-                status = GameStatus.CHALLENGER_WINS;
-                normalModeCredit[claimData.counteredBy] = address(this).balance;
-            } else if (claimData.status == ProposalStatus.UnchallengedAndValidProofProvided) {
-                // Claim is unchallenged but a valid proof was provided, defender wins, game
-                // creator gets everything. Note that the prover does not receive any reward in
-                // this particular case.
-                status = GameStatus.DEFENDER_WINS;
-                normalModeCredit[gameCreator()] = address(this).balance;
-            } else if (claimData.status == ProposalStatus.ChallengedAndValidProofProvided) {
-                // Claim is challenged but a valid proof was provided, defender wins, prover gets
-                // the challenger's bond and the game creator gets everything else.
-                status = GameStatus.DEFENDER_WINS;
-
-                // If the prover is same as the proposer, the proposer takes the entire bond.
-                if (claimData.prover == gameCreator()) {
-                    normalModeCredit[claimData.prover] = address(this).balance;
-                }
-                // If the prover is different from the proposer, the proposer gets the initial bond back,
-                // and the prover gets the challenger's bond.
-                else {
-                    normalModeCredit[claimData.prover] = CHALLENGER_BOND;
-                    normalModeCredit[gameCreator()] = address(this).balance - CHALLENGER_BOND;
-                }
-            } else {
-                // This edge case shouldn't be reached, sanity check just in case.
-                revert InvalidProposalStatus();
+            // Sub-case totalCountered == 0 (Unchallenged OR FullProved): no challenger to receive
+            // CREATE_BOND → burn to address(0); flag claimCredit() to skip its lowest-S lazy push.
+            // Sub-case totalCountered > 0: CREATE_BOND will be pushed to lowest-S challenger by
+            // lazy compute in claimCredit() (same path as clock-CHW).
+            if (totalCountered == 0) {
+                // CREATE_BOND amount = the proposer's initial deposit recorded in refundModeCredit
+                // (factory's initBonds enforced exact value at initialize).
+                normalModeCredit[address(0)] += refundModeCredit[gameCreator()];
+                createBondPushedAtResolve = true;
             }
+
+            resolvedAt = Timestamp.wrap(uint64(block.timestamp));
+            claimData.status = ProposalStatus.Resolved;
+            emit Resolved(GameStatus.CHALLENGER_WINS);
+            return GameStatus.CHALLENGER_WINS;
         }
 
-        // Mark the game as resolved.
+        // Parent DEFENDER_WINS → normal path. Game must be over (challenge/prove phase closed).
+        if (!gameOver()) revert GameNotOver();
+
+        // SPEC §6 Phase 3: 4-state branch on claimData.status.
+        // CREATE_BOND amount used by DW branches (== refundModeCredit[gameCreator()] by initialize).
+        if (claimData.status == ProposalStatus.Unchallenged) {
+            // gameOver() ensured block.timestamp >= challengeEnd() (clock-expiration DW).
+            status = GameStatus.DEFENDER_WINS;
+            normalModeCredit[gameCreator()] += refundModeCredit[gameCreator()];
+        } else if (claimData.status == ProposalStatus.FullProved) {
+            // gameOver() short-circuit on FullProved triggers immediate resolve eligibility
+            // (no need to wait challengeEnd). Bond flow identical to Unchallenged-clock path.
+            status = GameStatus.DEFENDER_WINS;
+            normalModeCredit[gameCreator()] += refundModeCredit[gameCreator()];
+        } else if (claimData.status == ProposalStatus.Challenged) {
+            // gameOver() ensured block.timestamp >= proveDeadline.
+            if (totalProved == totalCountered) {
+                // All challenged segments proved → DW; CREATE_BOND to proposer.
+                // L-bonds already pushed to provers in prove() Step 4.
+                status = GameStatus.DEFENDER_WINS;
+                normalModeCredit[gameCreator()] += refundModeCredit[gameCreator()];
+            } else {
+                // ≥1 unproved → CHW. CREATE_BOND held in contract until claimCredit() lazy compute
+                // picks the lowest-S challenger (SPEC §6.4.2, §9.4.a winner-takes-all).
+                status = GameStatus.CHALLENGER_WINS;
+            }
+        } else {
+            // Resolved status is impossible here (first-check already rejected); sanity revert.
+            revert InvalidProposalStatus();
+        }
+
+        // Mark the game as resolved (final state).
         claimData.status = ProposalStatus.Resolved;
         resolvedAt = Timestamp.wrap(uint64(block.timestamp));
         emit Resolved(status);
