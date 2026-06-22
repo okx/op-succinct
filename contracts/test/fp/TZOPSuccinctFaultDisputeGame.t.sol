@@ -1,0 +1,522 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.15;
+
+// Testing
+import "forge-std/Test.sol";
+import {Proxy} from "@optimism/src/universal/Proxy.sol";
+import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
+
+// Libraries
+import {Claim, Duration, GameStatus, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
+import {
+    BadAuth,
+    IncorrectBondAmount,
+    AlreadyInitialized,
+    UnexpectedRootClaim,
+    NoCreditToClaim,
+    GameNotResolved,
+    GameNotFinalized,
+    ClaimAlreadyResolved,
+    ClockTimeExceeded
+} from "src/dispute/lib/Errors.sol";
+import {
+    ParentGameNotResolved,
+    InvalidParentGame,
+    ClaimAlreadyChallenged,
+    GameNotOver,
+    IncorrectDisputeGameFactory,
+    InvalidProposalStatus
+} from "src/fp/lib/Errors.sol";
+import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
+
+// Contracts under test
+import {TZOPSuccinctFaultDisputeGame} from "src/fp/TZOPSuccinctFaultDisputeGame.sol";
+
+// Infrastructure
+import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
+import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {AnchorStateRegistry} from "src/dispute/AnchorStateRegistry.sol";
+import {AccessManager} from "src/fp/AccessManager.sol";
+
+// Interfaces
+import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
+import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
+import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
+import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
+
+// Utils
+import {MockOptimismPortal2} from "../../src/utils/MockOptimismPortal2.sol";
+import {MockSystemConfig} from "../../src/utils/MockSystemConfig.sol";
+
+/// @title TZOPSuccinctFaultDisputeGameTest
+/// @notice Unit + integration tests for the TZ multi-segment + multi-challenger fault dispute game
+///         per SPEC_GAME_V2_CALLDATA.md. Test file structure follows V1 test conventions.
+contract TZOPSuccinctFaultDisputeGameTest is Test {
+    // ===================== Events (mirror those in TZOPSuccinctFaultDisputeGame) =====================
+    event Challenged(address indexed challenger, uint64 indexed segment);
+    event Proved(address indexed prover, uint64 indexed segment);
+    event FullProved(address indexed prover);
+    event Resolved(GameStatus indexed status);
+
+    // ===================== Infrastructure =====================
+    DisputeGameFactory factory;
+    Proxy factoryProxy;
+    ProxyAdmin proxyAdmin;
+
+    TZOPSuccinctFaultDisputeGame gameImpl;
+    TZOPSuccinctFaultDisputeGame parentGame;
+
+    AnchorStateRegistry anchorStateRegistry;
+    AccessManager accessManager;
+    MockOptimismPortal2 portal;
+    SP1MockVerifier sp1Verifier;
+
+    // ===================== Test actors =====================
+    address proposer = address(0x123);
+    address challenger = address(0x456);
+    address challenger2 = address(0x457);
+    address prover = address(0x789);
+
+    uint256 disputeGameFinalityDelaySeconds = 1000;
+
+    // ===================== Game parameters =====================
+    GameType gameType = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
+    Duration maxChallengeDuration = Duration.wrap(12 hours);
+    Duration maxProveDuration = Duration.wrap(3 days);
+    Claim rootClaim = Claim.wrap(keccak256("rootClaim"));
+    uint256 constant CREATE_BOND = 1 ether;
+    uint256 constant CHAL_BOND = 1 ether;
+
+    // ===================== setUp =====================
+    function setUp() public {
+        // Deploy ProxyAdmin with this test contract as owner.
+        proxyAdmin = new ProxyAdmin(address(this));
+
+        // Deploy the implementation contract for DisputeGameFactory.
+        DisputeGameFactory factoryImpl = new DisputeGameFactory();
+
+        // Deploy an Optimism Proxy pointing to ProxyAdmin.
+        factoryProxy = new Proxy(address(proxyAdmin));
+
+        // Initialize the factory through ProxyAdmin.
+        proxyAdmin.upgradeAndCall(
+            payable(address(factoryProxy)),
+            address(factoryImpl),
+            abi.encodeWithSelector(DisputeGameFactory.initialize.selector, address(this))
+        );
+        factory = DisputeGameFactory(address(factoryProxy));
+
+        // Create a mock SP1 verifier (always succeeds; cross-game replay separately tested).
+        sp1Verifier = new SP1MockVerifier();
+
+        // Create the anchor state registry.
+        MockSystemConfig mockSystemConfig = new MockSystemConfig(address(this));
+        portal = new MockOptimismPortal2(gameType, disputeGameFinalityDelaySeconds);
+        Proposal memory startingAnchorRoot = Proposal({root: Hash.wrap(keccak256("genesis")), l2SequenceNumber: 0});
+
+        AnchorStateRegistry registryImpl = new AnchorStateRegistry(disputeGameFinalityDelaySeconds);
+        Proxy registryProxy = new Proxy(address(proxyAdmin));
+        proxyAdmin.upgradeAndCall(
+            payable(address(registryProxy)),
+            address(registryImpl),
+            abi.encodeCall(
+                AnchorStateRegistry.initialize,
+                (
+                    ISystemConfig(address(mockSystemConfig)),
+                    IDisputeGameFactory(address(factory)),
+                    startingAnchorRoot,
+                    gameType
+                )
+            )
+        );
+        anchorStateRegistry = AnchorStateRegistry(address(registryProxy));
+
+        // AccessManager: allow proposer & challenger.
+        accessManager = new AccessManager(2 weeks, IDisputeGameFactory(address(factory)));
+        accessManager.setProposer(proposer, true);
+        accessManager.setChallenger(challenger, true);
+        accessManager.setChallenger(challenger2, true);
+
+        // Deploy the TZ game implementation.
+        gameImpl = new TZOPSuccinctFaultDisputeGame(
+            maxChallengeDuration,
+            maxProveDuration,
+            IDisputeGameFactory(address(factory)),
+            ISP1Verifier(address(sp1Verifier)),
+            bytes32(0), // rollupConfigHash (= 0 for TZ)
+            bytes32(0), // aggregationVkey
+            bytes32(0), // rangeVkeyCommitment
+            CHAL_BOND, // challenger bond
+            IAnchorStateRegistry(address(anchorStateRegistry)),
+            accessManager
+        );
+
+        // Register impl under the game type.
+        factory.setInitBond(gameType, CREATE_BOND);
+        factory.setImplementation(gameType, IDisputeGame(address(gameImpl)));
+
+        // Warp past respectedGameTypeUpdatedAt for ASR semantics.
+        vm.warp(block.timestamp + 1000);
+
+        // Create a parent game (N=1, no intermediate roots — byte-identical extraData to V1).
+        vm.startPrank(proposer);
+        vm.deal(proposer, 100 ether);
+        parentGame = TZOPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: CREATE_BOND}(
+                    gameType,
+                    Claim.wrap(keccak256("genesis-1")),
+                    _encodeExtraDataN1(1000, type(uint32).max)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        // Finalize the parent game so children can use it as their parent.
+        vm.warp(parentGame.challengeEnd().raw() + 1 seconds);
+        parentGame.resolve();
+        // Wait past ASR finality delay so closeGame() can succeed.
+        vm.warp(parentGame.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1 seconds);
+    }
+
+    // ===================== Helpers =====================
+
+    /// @notice Encode N=1 extraData: just l2SequenceNumber + parentIndex (36 bytes, V1-compatible).
+    function _encodeExtraDataN1(uint256 l2Seq, uint32 parentIdx) internal pure returns (bytes memory) {
+        return abi.encodePacked(l2Seq, parentIdx);
+    }
+
+    /// @notice Encode multi-segment extraData: l2SequenceNumber + parentIndex + (numSegments-1) × 32-byte roots.
+    function _encodeExtraData(uint256 l2Seq, uint32 parentIdx, bytes32[] memory intermediateRoots)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        bytes memory result = abi.encodePacked(l2Seq, parentIdx);
+        for (uint256 i = 0; i < intermediateRoots.length; i++) {
+            result = abi.encodePacked(result, intermediateRoots[i]);
+        }
+        return result;
+    }
+
+    /// @notice Create a child game with N segments. Caller must be a whitelisted proposer.
+    /// @param  numSegs       segment count (1..256)
+    /// @param  l2Seq         l2SequenceNumber for the child (must be > parent's l2Seq and = parent.l2Seq + batchSize)
+    /// @param  parentIdx     parent game's factory index
+    /// @param  childClaim    rootClaim for the new game
+    /// @return childGame     the deployed TZOPSuccinctFaultDisputeGame proxy
+    function _createChildGame(uint64 numSegs, uint256 l2Seq, uint32 parentIdx, Claim childClaim)
+        internal
+        returns (TZOPSuccinctFaultDisputeGame childGame)
+    {
+        bytes32[] memory roots = new bytes32[](numSegs - 1);
+        for (uint256 i = 0; i < roots.length; i++) {
+            // Mock intermediate roots — content doesn't matter for tests that don't exercise prove paths.
+            roots[i] = keccak256(abi.encodePacked("seg", i));
+        }
+        bytes memory extraData = _encodeExtraData(l2Seq, parentIdx, roots);
+        return _createChildGameWithExtraData(extraData, childClaim);
+    }
+
+    function _createChildGameWithExtraData(bytes memory extraData, Claim childClaim)
+        internal
+        returns (TZOPSuccinctFaultDisputeGame)
+    {
+        return TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, childClaim, extraData))
+        );
+    }
+
+    /// @notice Destructure claimData() into named locals (TZ ClaimData has 5 fields).
+    function _readClaimData(TZOPSuccinctFaultDisputeGame g)
+        internal
+        view
+        returns (
+            address prover_,
+            Timestamp proveDeadline_,
+            uint32 parentIndex_,
+            TZOPSuccinctFaultDisputeGame.ProposalStatus status_,
+            Claim claim_
+        )
+    {
+        (prover_, proveDeadline_, parentIndex_, status_, claim_) = g.claimData();
+    }
+
+    // ===================== §2.2 initialize() Happy Paths =====================
+
+    function test_init_happyPath_N1() public {
+        vm.startPrank(proposer);
+        // N=1: parentIdx=0 (parentGame), l2Seq=2000 (= parent.l2Seq + 1000 batchSize).
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: CREATE_BOND}(
+                    gameType, rootClaim, _encodeExtraDataN1(2000, 0)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        assertEq(g.numSegments(), 1);
+        assertEq(g.batchSize(), 1000); // 2000 - 1000 (parent's l2Seq)
+        assertEq(g.lowestSIndex(), type(uint64).max); // sentinel set
+        assertEq(g.totalCountered(), 0);
+        assertEq(g.totalProved(), 0);
+        assertFalse(g.createBondPushedAtResolve());
+
+        (address pv, Timestamp pd, uint32 pi, TZOPSuccinctFaultDisputeGame.ProposalStatus s, Claim c) = _readClaimData(g);
+        assertEq(pv, address(0)); // prover unset
+        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.Unchallenged));
+        assertEq(pi, 0);
+        assertEq(Claim.unwrap(c), Claim.unwrap(rootClaim));
+        // proveDeadline = createdAt + MAX_CHAL + MAX_PROVE (absolute time)
+        uint64 expectedDeadline = uint64(g.createdAt().raw()) + maxChallengeDuration.raw() + maxProveDuration.raw();
+        assertEq(pd.raw(), expectedDeadline);
+
+        // refundModeCredit equals CREATE_BOND (proposer's deposit).
+        assertEq(g.refundModeCredit(proposer), CREATE_BOND);
+        // normalModeCredit empty until resolve.
+        assertEq(g.normalModeCredit(proposer), 0);
+    }
+
+    function test_init_happyPath_N4_segmentSizeOk() public {
+        vm.startPrank(proposer);
+        // N=4: l2Seq=2000, batchSize=1000, SEGMENT_SIZE=250.
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        vm.stopPrank();
+
+        assertEq(g.numSegments(), 4);
+        assertEq(g.batchSize(), 1000);
+        assertEq(g.segmentSize(), 250);
+    }
+
+    function test_init_happyPath_N256() public {
+        vm.startPrank(proposer);
+        // N=256: batchSize must be a multiple of 256. Use batchSize = 256*4 = 1024.
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(256, 1000 + 1024, 0, rootClaim);
+        vm.stopPrank();
+
+        assertEq(g.numSegments(), 256);
+        assertEq(g.batchSize(), 1024);
+        assertEq(g.segmentSize(), 4);
+    }
+
+    function test_init_anchorRootFallback() public {
+        // Create a game with parentIndex == uint32.max (first game / retirement recovery).
+        // ASR has anchor at l2Seq=0, root=keccak("genesis").
+        vm.startPrank(proposer);
+        // Need to deploy a totally fresh factory to allow uint32.max parent (parent already used above).
+        // Simpler: just create a game with parentIndex=type(uint32).max and verify it uses anchorRoot.
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(
+                factory.create{value: CREATE_BOND}(
+                    gameType,
+                    Claim.wrap(keccak256("anchorChild")),
+                    _encodeExtraDataN1(500, type(uint32).max)
+                )
+            )
+        );
+        vm.stopPrank();
+
+        // startingOutputRoot should come from the anchor (genesis).
+        // Public auto-getter returns (Hash, uint256) per struct field order.
+        (Hash root, uint256 seqNum) = g.startingOutputRoot();
+        assertEq(Hash.unwrap(root), keccak256("genesis"));
+        assertEq(seqNum, 0);
+    }
+
+    // ===================== §2.2 initialize() Revert Paths =====================
+
+    function test_init_revert_AlreadyInitialized() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+
+        // Second initialize() call reverts.
+        vm.expectRevert(AlreadyInitialized.selector);
+        g.initialize();
+    }
+
+    function test_init_revert_IncorrectDisputeGameFactory() public {
+        // Direct call to the implementation (not via factory clone) → msg.sender != DISPUTE_GAME_FACTORY.
+        vm.expectRevert(IncorrectDisputeGameFactory.selector);
+        gameImpl.initialize();
+    }
+
+    function test_init_revert_BadAuth() public {
+        // Try create from an unauthorized proposer.
+        address badProposer = address(0xdead);
+        vm.deal(badProposer, 100 ether);
+        vm.prank(badProposer);
+        vm.expectRevert(BadAuth.selector);
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0));
+    }
+
+    function test_init_revert_BadExtraData_lengthNotMultiple() public {
+        // extraData of 0x24 + 0x10 (not multiple of 0x20 after the fixed 0x24 header) → BadExtraData.
+        // Total calldata = 4 (selector) + 0x78 (fixed CWIA) + 0x10 (malformed) + 2 (CWIA suffix) = 0x8E.
+        // (calldatasize - 0x7E) % 0x20 = 0x10 % 0x20 = 0x10 != 0 → revert.
+        bytes memory malformedExtra = abi.encodePacked(uint256(2000), uint32(0), bytes16(uint128(0xdead)));
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.BadExtraData.selector);
+        vm.prank(proposer);
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, malformedExtra);
+    }
+
+    function test_init_revert_InvalidNumSegments_overflow() public {
+        // numSegments = 257 (one above MAX_NUM_SEGMENTS=256). extraData = 0x24 + 0x20*256 = 0x2024.
+        bytes32[] memory tooManyRoots = new bytes32[](256); // intermediates for N=257
+        bytes memory extra = _encodeExtraData(2000, 0, tooManyRoots);
+        vm.expectRevert(abi.encodeWithSelector(TZOPSuccinctFaultDisputeGame.InvalidNumSegments.selector, uint64(257)));
+        vm.prank(proposer);
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, extra);
+    }
+
+    function test_init_revert_UnexpectedRootClaim() public {
+        // l2SequenceNumber <= startingOutputRoot.l2SequenceNumber (parent.l2Seq == 1000).
+        vm.prank(proposer);
+        vm.expectRevert(abi.encodeWithSelector(UnexpectedRootClaim.selector, rootClaim));
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(1000, 0));
+    }
+
+    function test_init_revert_UnexpectedRootClaim_below() public {
+        // l2SequenceNumber < parent.l2Seq.
+        vm.prank(proposer);
+        vm.expectRevert(abi.encodeWithSelector(UnexpectedRootClaim.selector, rootClaim));
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(500, 0));
+    }
+
+    function test_init_revert_InvalidBatchSize() public {
+        // numSegments=4, batchSize=1001 → 1001 % 4 != 0.
+        // l2Seq = 1000 + 1001 = 2001. extraData has 3 intermediate roots (for N=4).
+        bytes32[] memory roots = new bytes32[](3);
+        for (uint256 i = 0; i < roots.length; i++) {
+            roots[i] = keccak256(abi.encodePacked("seg", i));
+        }
+        vm.prank(proposer);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.InvalidBatchSize.selector);
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraData(2001, 0, roots));
+    }
+
+    function test_init_revert_InvalidParentGame_staleParent() public {
+        // Create a child whose parent.l2Seq <= anchor.l2Seq. The anchor is at seq=0 from genesis.
+        // We need to push the anchor forward first via successful child claim of parentGame.
+        // Then attempt to create another game using parentGame as parent (parentGame.l2Seq=1000 <= anchor.l2Seq=1000).
+        vm.prank(proposer);
+        parentGame.claimCredit(proposer); // closeGame() will try setAnchorState(parentGame).
+
+        // Now anchor.l2Seq == 1000 (parent's l2Seq). Creating a new game with parent=parentGame should fail
+        // because startingOutputRoot.l2SequenceNumber (= 1000) <= anchor.l2SequenceNumber (= 1000).
+        vm.prank(proposer);
+        vm.expectRevert(InvalidParentGame.selector);
+        factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0));
+    }
+
+    // ===================== §2.9 View Function Tests =====================
+
+    function test_view_version() public {
+        assertEq(gameImpl.version(), "2.0.0-tz-segment");
+    }
+
+    function test_view_maxClockDuration_equalsMaxChallengeDuration() public {
+        // SPEC alignment with V1: maxClockDuration() returns MAX_CHALLENGE_DURATION.
+        assertEq(gameImpl.maxClockDuration().raw(), gameImpl.maxChallengeDuration().raw());
+        assertEq(gameImpl.maxClockDuration().raw(), maxChallengeDuration.raw());
+    }
+
+    function test_view_segmentSize_N4() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        assertEq(g.segmentSize(), 250); // 1000 / 4
+    }
+
+    function test_view_intermediateRoots_emptyForN1() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+        assertEq(g.intermediateRoots().length, 0);
+    }
+
+    function test_view_intermediateRoots_packedForN4() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        bytes memory roots = g.intermediateRoots();
+        assertEq(roots.length, 32 * 3); // 3 intermediate roots for N=4
+
+        // Decode and check first/last root.
+        bytes32 root0;
+        bytes32 root2;
+        assembly {
+            root0 := mload(add(roots, 0x20))
+            root2 := mload(add(roots, 0x60))
+        }
+        assertEq(root0, keccak256(abi.encodePacked("seg", uint256(0))));
+        assertEq(root2, keccak256(abi.encodePacked("seg", uint256(2))));
+    }
+
+    function test_view_intermediateRoot_validIndices() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        // Valid: k ∈ [0, 2] (numSegments - 2 = 2)
+        assertEq(g.intermediateRoot(0), keccak256(abi.encodePacked("seg", uint256(0))));
+        assertEq(g.intermediateRoot(1), keccak256(abi.encodePacked("seg", uint256(1))));
+        assertEq(g.intermediateRoot(2), keccak256(abi.encodePacked("seg", uint256(2))));
+    }
+
+    function test_view_intermediateRoot_revert_outOfRange_N4_k3() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        // k = numSegments - 1 = 3 → out of range (intermediateRoot only goes up to N-2 = 2).
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        g.intermediateRoot(3);
+    }
+
+    function test_view_intermediateRoot_revert_outOfRange_N1() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+        // N=1 → no intermediate roots; any k reverts.
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        g.intermediateRoot(0);
+    }
+
+    function test_view_challengeEnd() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        // challengeEnd = createdAt + MAX_CHAL_DUR (absolute time, never updated).
+        uint64 expected = uint64(g.createdAt().raw()) + maxChallengeDuration.raw();
+        assertEq(g.challengeEnd().raw(), expected);
+    }
+
+    function test_view_gameOver_Unchallenged_beforeChallengeEnd() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        // Right after creation, before challengeEnd → not gameOver.
+        assertFalse(g.gameOver());
+    }
+
+    function test_view_gameOver_Unchallenged_afterChallengeEnd() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        vm.warp(g.challengeEnd().raw() + 1);
+        assertTrue(g.gameOver());
+    }
+
+    function test_view_extraData_lengthN1() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+        // extraData length = 0x24 + 0x20 × (N-1) = 0x24 + 0 = 0x24 = 36 bytes.
+        assertEq(g.extraData().length, 36);
+    }
+
+    function test_view_extraData_lengthN4() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+        // N=4 → 0x24 + 0x20 × 3 = 0x24 + 0x60 = 0x84 = 132 bytes.
+        assertEq(g.extraData().length, 132);
+    }
+}
