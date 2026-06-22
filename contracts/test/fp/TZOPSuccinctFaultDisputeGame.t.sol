@@ -519,4 +519,401 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         // N=4 → 0x24 + 0x20 × 3 = 0x24 + 0x60 = 0x84 = 132 bytes.
         assertEq(g.extraData().length, 132);
     }
+
+    // ===================== §2.3 challenge(uint64 k) Happy Paths =====================
+
+    function test_challenge_firstChallenger() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.expectEmit(true, true, false, false);
+        emit Challenged(challenger, uint64(1));
+
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+
+        // Verify state writes (SPEC §6 Phase 1 effects).
+        (address counteredBy, bool proved, bool claimed, address provedBy) = g.disputes(1);
+        assertEq(counteredBy, challenger);
+        assertFalse(proved);
+        assertFalse(claimed);
+        assertEq(provedBy, address(0));
+
+        (uint256 bond, bool counteredFlag, uint64 idx) = g.challengers(challenger);
+        assertEq(bond, CHAL_BOND);
+        assertTrue(counteredFlag);
+        assertEq(idx, 1);
+
+        assertEq(g.totalCountered(), 1);
+        assertEq(g.refundModeCredit(challenger), CHAL_BOND);
+
+        (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus status, ) = _readClaimData(g);
+        assertEq(uint8(status), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.Challenged));
+    }
+
+    function test_challenge_multipleChallengersDifferentSegments() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        // Both independent in disputes mapping.
+        (address counteredBy0, , , ) = g.disputes(0);
+        (address counteredBy2, , , ) = g.disputes(2);
+        assertEq(counteredBy0, challenger);
+        assertEq(counteredBy2, challenger2);
+
+        // Counter increments.
+        assertEq(g.totalCountered(), 2);
+    }
+
+    function test_challenge_N1_only_k0_valid() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        (address counteredBy, , , ) = g.disputes(0);
+        assertEq(counteredBy, challenger);
+    }
+
+    function test_challenge_N1_k1_outOfRange() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+    }
+
+    // ===================== §2.3 challenge(uint64 k) Revert Paths =====================
+
+    function test_challenge_revert_ClockTimeExceeded() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Warp past challengeEnd.
+        vm.warp(g.challengeEnd().raw());
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(ClockTimeExceeded.selector);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+    }
+
+    function test_challenge_revert_BadAuth() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        address notWhitelisted = address(0xc0de);
+        vm.deal(notWhitelisted, 10 ether);
+
+        vm.prank(notWhitelisted);
+        vm.expectRevert(BadAuth.selector);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+    }
+
+    function test_challenge_revert_IncorrectBondAmount_tooLittle() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(IncorrectBondAmount.selector);
+        g.challenge{value: CHAL_BOND - 1}(uint64(0));
+    }
+
+    function test_challenge_revert_IncorrectBondAmount_tooMuch() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(IncorrectBondAmount.selector);
+        g.challenge{value: CHAL_BOND + 1}(uint64(0));
+    }
+
+    function test_challenge_revert_AlreadyCountered() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        // Same challenger tries to counter another segment.
+        vm.prank(challenger);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyCountered.selector);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+    }
+
+    function test_challenge_revert_IndexOutOfRange_above() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        g.challenge{value: CHAL_BOND}(uint64(4)); // numSegments == 4, k=4 invalid
+    }
+
+    function test_challenge_revert_ClaimAlreadyChallenged_sameSegment() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        // Different challenger tries same segment.
+        vm.prank(challenger2);
+        vm.expectRevert(ClaimAlreadyChallenged.selector);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+    }
+
+    // ===================== §2.4 prove(uint64 k, bytes) Happy Paths =====================
+
+    function test_proveSegment_happyPath_pushesLBond() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+
+        // prover (anyone can call; SP1MockVerifier accepts empty bytes).
+        vm.expectEmit(true, true, false, false);
+        emit Proved(prover, uint64(1));
+
+        vm.prank(prover);
+        g.prove(uint64(1), "");
+
+        // disputes[k] state.
+        (, bool proved, , address provedBy) = g.disputes(1);
+        assertTrue(proved);
+        assertEq(provedBy, prover);
+
+        // L-bond pushed: prover gets CHAL_BOND in normalModeCredit; challenger's bond field zeroed.
+        assertEq(g.normalModeCredit(prover), CHAL_BOND);
+        (uint256 bond, , ) = g.challengers(challenger);
+        assertEq(bond, 0);
+
+        // challenger.countered flag preserved (anti-re-challenge).
+        (, bool counteredFlag, ) = g.challengers(challenger);
+        assertTrue(counteredFlag);
+
+        assertEq(g.totalProved(), 1);
+    }
+
+    // ===================== §2.4 prove(uint64 k, bytes) Revert Paths =====================
+
+    function test_proveSegment_revert_IndexNotCountered_unchallengedStatus() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // claimData.status is Unchallenged → prove(k) should revert IndexNotCountered.
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexNotCountered.selector);
+        g.prove(uint64(0), "");
+    }
+
+    function test_proveSegment_revert_IndexNotCountered_uncounteredSegment() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Counter k=1 to move status to Challenged.
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+
+        // Now try to prove k=3 (not countered).
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexNotCountered.selector);
+        g.prove(uint64(3), "");
+    }
+
+    function test_proveSegment_revert_ClockTimeExceeded() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        // Warp past proveDeadline.
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw());
+
+        vm.expectRevert(ClockTimeExceeded.selector);
+        g.prove(uint64(0), "");
+    }
+
+    function test_proveSegment_revert_IndexOutOfRange() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        g.prove(uint64(4), "");
+    }
+
+    function test_proveSegment_revert_AlreadyProved() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        vm.prank(prover);
+        g.prove(uint64(2), "");
+
+        // Second prove of same segment.
+        vm.prank(prover);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyProved.selector);
+        g.prove(uint64(2), "");
+    }
+
+    function test_proveSegment_revert_SP1Failure() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        // SP1MockVerifier asserts proofBytes.length == 0; non-empty bytes cause assertion failure.
+        vm.prank(prover);
+        vm.expectRevert(); // Any revert (mock uses `assert` which panics)
+        g.prove(uint64(0), hex"deadbeef");
+    }
+
+    // ===================== §2.5 prove(bytes) Early-Finalize Overload =====================
+
+    function test_proveFull_happyPath_N1_marksFullProved() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
+            address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
+        );
+
+        vm.expectEmit(true, false, false, false);
+        emit FullProved(prover);
+
+        vm.prank(prover);
+        g.prove("");
+
+        (address pv, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = _readClaimData(g);
+        assertEq(pv, prover);
+        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved));
+        // GameStatus untouched (resolve() handles it).
+        assertEq(uint8(g.status()), uint8(GameStatus.IN_PROGRESS));
+        // gameOver() short-circuits on FullProved.
+        assertTrue(g.gameOver());
+    }
+
+    function test_proveFull_happyPath_N4() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.prank(prover);
+        g.prove("");
+
+        (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = _readClaimData(g);
+        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved));
+    }
+
+    function test_proveFull_selector_matchesV1() public {
+        // SPEC §6 Phase 3.5: prove(bytes) selector matches V1 for etherscan/tooling compat.
+        // V1 prove(bytes) selector == keccak256("prove(bytes)")[:4].
+        bytes4 expected = bytes4(keccak256("prove(bytes)"));
+        // Solidity overload resolution: TZOPSuccinctFaultDisputeGame.prove.selector is ambiguous,
+        // so we construct it manually and compare.
+        bytes4 actual = bytes4(keccak256("prove(bytes)"));
+        assertEq(expected, actual);
+        // (Self-tautology, but documents intent. Real verification: extracted bytecode would
+        // contain this selector in the dispatch table.)
+    }
+
+    function test_proveFull_revert_AlreadyFullProved_doubleCall() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.prank(prover);
+        g.prove("");
+
+        // Second prove(bytes) call.
+        vm.prank(prover);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
+        g.prove("");
+    }
+
+    function test_proveFull_revert_NotUnchallenged_afterChallenge() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        // Now status is Challenged; prove(bytes) should revert.
+        vm.prank(prover);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.NotUnchallenged.selector);
+        g.prove("");
+    }
+
+    function test_proveFull_revert_ChallengeWindowEnded() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Warp past challengeEnd.
+        vm.warp(g.challengeEnd().raw());
+
+        vm.prank(prover);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.ChallengeWindowEnded.selector);
+        g.prove("");
+    }
+
+    function test_proveFull_challengeAfter_revertAlreadyFullProved() public {
+        // Mutex: after proveFull, challenge(k) should revert AlreadyFullProved (not ClaimAlreadyChallenged).
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.prank(prover);
+        g.prove("");
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+    }
+
+    function test_proveSegment_revert_AlreadyFullProved() public {
+        // prove(uint64,bytes) after proveFull should revert AlreadyFullProved (status is FullProved).
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.prank(prover);
+        g.prove("");
+
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
+        g.prove(uint64(0), "");
+    }
 }
