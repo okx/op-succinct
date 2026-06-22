@@ -114,6 +114,22 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     event GameClosed(BondDistributionMode bondDistributionMode);
 
     ////////////////////////////////////////////////////////////////
+    //          Errors (TZ-spec additions per SPEC §12.4)         //
+    //   (will be consolidated into lib/Errors.sol in a later commit)
+    ////////////////////////////////////////////////////////////////
+
+    /// @notice Thrown when the CWIA calldata length is not `0x7E + 0x20 * (numSegments - 1)`.
+    /// @dev    Matches the selector V1 uses via inline assembly (`0x9824bdab`).
+    error BadExtraData();
+
+    /// @notice Thrown when derived numSegments is outside `[1, MAX_NUM_SEGMENTS]`.
+    /// @param  actual Derived numSegments value from CWIA calldata length.
+    error InvalidNumSegments(uint64 actual);
+
+    /// @notice Thrown when `batchSize % numSegments != 0` (SEGMENT_SIZE would not be a positive integer).
+    error InvalidBatchSize();
+
+    ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
     ////////////////////////////////////////////////////////////////
 
@@ -287,27 +303,23 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // INVARIANT: The proposer must be whitelisted.
         if (!ACCESS_MANAGER.isAllowedProposer(gameCreator())) revert BadAuth();
 
-        // Revert if the calldata size is not the expected length.
+        // SPEC §6 Phase 0: dynamic CWIA length + numSegments derivation.
         //
-        // This is to prevent adding extra or omitting bytes from to `extraData` that result in a different game UUID
-        // in the factory, but are not used by the game, which would allow for multiple dispute games for the same
-        // output proposal to be created.
+        // CWIA total calldata = 0x7E + 0x20 × (numSegments - 1), so:
+        //   - 0x7E minimum  (N=1: no intermediate roots; byte-identical to V1)
+        //   - extraRootsLen = calldatasize - 0x7E must be a multiple of 0x20
+        //   - numSegments = (extraRootsLen / 0x20) + 1, capped at MAX_NUM_SEGMENTS
         //
-        // Expected length: 0x7E
-        // - 0x04 selector
-        // - 0x14 creator address
-        // - 0x20 root claim
-        // - 0x20 l1 head
-        // - 0x20 extraData (l2BlockNumber)
-        // - 0x04 extraData (parentIndex)
-        // - 0x02 CWIA bytes
-        assembly {
-            if iszero(eq(calldatasize(), 0x7E)) {
-                // Store the selector for `BadExtraData()` & revert
-                mstore(0x00, 0x9824bdab)
-                revert(0x1C, 0x04)
-            }
-        }
+        // The strict length match prevents factory-UUID grief described in V1's comment
+        // (same proposal cannot be re-created with extra/omitted bytes), while still
+        // permitting per-game variable numSegments via the length-→-N derivation.
+        uint256 cz;
+        assembly { cz := calldatasize() }
+        if (cz < 0x7E) revert BadExtraData();
+        uint256 extraRootsLen = cz - 0x7E;
+        if (extraRootsLen % 0x20 != 0) revert BadExtraData();
+        uint64 _numSegments = uint64(extraRootsLen / 0x20) + 1;
+        if (_numSegments > MAX_NUM_SEGMENTS) revert InvalidNumSegments(_numSegments);
 
         // The first game is initialized with a parent index of uint32.max
         if (parentIndex() != type(uint32).max) {
@@ -355,14 +367,22 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             revert UnexpectedRootClaim(rootClaim());
         }
 
-        // Set the root claim
+        // SPEC §6 Phase 0: batchSize derivation + integer divisibility check.
+        // batchSize / numSegments must be a positive integer (= SEGMENT_SIZE).
+        uint64 _batchSize = uint64(l2SequenceNumber() - startingOutputRoot.l2SequenceNumber);
+        if (_batchSize % _numSegments != 0) revert InvalidBatchSize();
+
+        // Set the root claim.
+        // SPEC §8.1: proveDeadline is absolute time (never updated), unlike V1's rolling deadline.
+        // ClaimData has 5 fields (V1 had 6); `counteredBy` removed (now in disputes[k]).
         claimData = ClaimData({
-            parentIndex: parentIndex(),
-            counteredBy: address(0),
             prover: address(0),
-            claim: rootClaim(),
+            proveDeadline: Timestamp.wrap(uint64(
+                block.timestamp + MAX_CHALLENGE_DURATION.raw() + MAX_PROVE_DURATION.raw()
+            )),
+            parentIndex: parentIndex(),
             status: ProposalStatus.Unchallenged,
-            deadline: Timestamp.wrap(uint64(block.timestamp + MAX_CHALLENGE_DURATION.raw()))
+            claim: rootClaim()
         });
 
         // Set the game as initialized.
@@ -377,6 +397,13 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // Set whether the game type was respected when the game was created.
         wasRespectedGameTypeWhenCreated =
             GameType.unwrap(ANCHOR_STATE_REGISTRY.respectedGameType()) == GameType.unwrap(GAME_TYPE);
+
+        // SPEC §6 Phase 0 step 6+7: multi-segment field writes.
+        batchSize = _batchSize;
+        numSegments = _numSegments;
+        // ★ Solidity default 0 would mis-trigger lazy compute as "already computed, lowest=0";
+        //   explicit sentinel required. See SPEC §11 Invariant 15.
+        lowestSIndex = LOWEST_S_NOT_SET;
     }
 
     /// @notice The L2 sequence number (block number) for which this game is proposing an output root.
