@@ -940,11 +940,19 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Getter for the extra data.
     /// @dev `clones-with-immutable-args` argument #4
+    /// @dev SPEC §3.4: total extraData length is `0x24 + 0x20 × (numSegments - 1)` — a fixed
+    ///      36-byte header (l2SequenceNumber + parentIndex) followed by `numSegments - 1`
+    ///      intermediate roots (32 bytes each).
+    ///
+    ///      Kept `pure` (matches IDisputeGame interface) by deriving length from `calldatasize()`
+    ///      rather than storage `numSegments`. Layout:
+    ///        calldatasize = 4 (selector) + 0x78 (fixed CWIA args) + 0x20 × (N-1) (intermediates) + 2 (CWIA suffix)
+    ///        extraData length = calldatasize - 4 - 2 - 0x54 = calldatasize - 0x5A
     /// @return extraData_ Any extra data supplied to the dispute game contract by the creator.
     function extraData() public pure returns (bytes memory extraData_) {
-        // The extra data starts at the second word within the cwia calldata and
-        // is 36 bytes long. 32 bytes are for the l2BlockNumber, 4 bytes are for the parentIndex.
-        extraData_ = _getArgBytes(0x54, 0x24);
+        uint256 cz;
+        assembly { cz := calldatasize() }
+        extraData_ = _getArgBytes(0x54, cz - 0x5A);
     }
 
     /// @notice Read the k-th intermediate boundary root from CWIA calldata (0-indexed).
@@ -959,6 +967,22 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // CWIA layout: intermediate roots start at offset 0x78 (after creator+rootClaim+l1Head+l2SeqNum+parentIndex).
         // Each root is 32 bytes; k-th root sits at 0x78 + 0x20 * k.
         root_ = _getArgBytes32(0x78 + 0x20 * uint256(k));
+    }
+
+    /// @notice Bulk read all intermediate boundary roots in a single call.
+    /// @dev    SPEC §3.4: returns `numSegments - 1` 32-byte roots packed; empty bytes when numSegments == 1.
+    ///         Off-chain SDKs prefer this over repeated `intermediateRoot(k)` calls to save RPC round-trips.
+    /// @return roots_ Concatenated 32-byte intermediate roots in 0-indexed order.
+    function intermediateRoots() external view returns (bytes memory roots_) {
+        if (numSegments <= 1) return new bytes(0);
+        roots_ = _getArgBytes(0x78, 0x20 * (uint256(numSegments) - 1));
+    }
+
+    /// @notice Segment size derived from per-game `batchSize` and `numSegments`.
+    /// @dev    SPEC §3: not stored; computed lazily. By initialize() invariants this is always
+    ///         a positive integer (batchSize % numSegments == 0; batchSize >= numSegments).
+    function segmentSize() external view returns (uint64 segmentSize_) {
+        segmentSize_ = batchSize / numSegments;
     }
 
     /// @notice A compliant implementation of this interface should return the components of the
