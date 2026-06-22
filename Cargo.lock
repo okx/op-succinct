@@ -368,9 +368,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-evm"
-version = "0.33.3"
+version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f092eb6af80456e4ab41c9722e777d791335bc9c00b11bc3db7bf29a432dfd0"
+checksum = "c1ceeea6dcbbcd4e546b27700763a6f6c3b3fee30054209884f521078b6fda4f"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -572,8 +572,8 @@ dependencies = [
 
 [[package]]
 name = "alloy-op-evm"
-version = "0.31.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "0.32.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -589,8 +589,8 @@ dependencies = [
 
 [[package]]
 name = "alloy-op-hardforks"
-version = "0.4.7"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "0.5.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-chains",
  "alloy-hardforks 0.4.7",
@@ -5357,7 +5357,7 @@ dependencies = [
 [[package]]
 name = "kona-cli"
 version = "0.3.2"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -5377,7 +5377,7 @@ dependencies = [
 [[package]]
 name = "kona-client"
 version = "1.0.2"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5416,7 +5416,7 @@ dependencies = [
 [[package]]
 name = "kona-derive"
 version = "0.4.5"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5438,7 +5438,7 @@ dependencies = [
 [[package]]
 name = "kona-driver"
 version = "0.4.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-evm",
@@ -5459,7 +5459,7 @@ dependencies = [
 [[package]]
 name = "kona-executor"
 version = "0.4.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5483,7 +5483,7 @@ dependencies = [
 [[package]]
 name = "kona-genesis"
 version = "0.4.5"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-chains",
  "alloy-consensus 2.0.5",
@@ -5504,7 +5504,7 @@ dependencies = [
 [[package]]
 name = "kona-hardforks"
 version = "0.4.5"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-eips 2.0.5",
  "alloy-primitives",
@@ -5519,7 +5519,7 @@ dependencies = [
 [[package]]
 name = "kona-host"
 version = "1.0.2"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5569,7 +5569,7 @@ dependencies = [
 [[package]]
 name = "kona-interop"
 version = "0.4.5"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5591,12 +5591,12 @@ dependencies = [
 [[package]]
 name = "kona-macros"
 version = "0.1.2"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 
 [[package]]
 name = "kona-mpt"
 version = "0.3.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -5608,13 +5608,14 @@ dependencies = [
 [[package]]
 name = "kona-preimage"
 version = "0.3.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-primitives",
  "async-channel",
  "async-trait",
  "rkyv",
  "serde",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -5622,7 +5623,7 @@ dependencies = [
 [[package]]
 name = "kona-proof"
 version = "0.3.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5659,7 +5660,7 @@ dependencies = [
 [[package]]
 name = "kona-proof-interop"
 version = "0.2.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5691,7 +5692,7 @@ dependencies = [
 [[package]]
 name = "kona-protocol"
 version = "0.4.5"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloc-no-stdlib",
  "alloy-consensus 2.0.5",
@@ -5722,7 +5723,7 @@ dependencies = [
 [[package]]
 name = "kona-providers-alloy"
 version = "0.3.3"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -5755,7 +5756,7 @@ dependencies = [
 [[package]]
 name = "kona-registry"
 version = "0.4.5"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-chains",
  "alloy-eips 2.0.5",
@@ -5774,7 +5775,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm"
 version = "0.2.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "async-trait",
  "buddy_system_allocator",
@@ -5786,7 +5787,7 @@ dependencies = [
 [[package]]
 name = "kona-std-fpvm-proc"
 version = "0.2.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "cfg-if",
  "kona-std-fpvm",
@@ -6592,8 +6593,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "op-alloy"
-version = "0.24.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "2.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "op-alloy-consensus",
  "op-alloy-network",
@@ -6604,8 +6605,8 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-consensus"
-version = "0.24.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "2.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -6625,8 +6626,8 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-network"
-version = "0.24.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "2.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-network 2.0.5",
@@ -6638,8 +6639,8 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-provider"
-version = "0.24.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "2.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-network 2.0.5",
  "alloy-primitives",
@@ -6652,8 +6653,8 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-rpc-types"
-version = "0.24.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "2.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
  "alloy-eips 2.0.5",
@@ -6672,11 +6673,10 @@ dependencies = [
 
 [[package]]
 name = "op-alloy-rpc-types-engine"
-version = "0.24.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "2.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "alloy-consensus 2.0.5",
- "alloy-eip7928",
  "alloy-eips 2.0.5",
  "alloy-primitives",
  "alloy-rlp",
@@ -6693,8 +6693,8 @@ dependencies = [
 
 [[package]]
 name = "op-revm"
-version = "19.0.0"
-source = "git+https://github.com/okx/optimism?branch=xl%2Fgasless-n2#55bfcbd2985b4b9e03c8d520412f38275946358a"
+version = "20.0.0"
+source = "git+https://gitlab.okg.com/github/optimism?branch=xl%2Fkona-1.6.0-gasless#2d8cb87e4e7ea69a140815c049de40a0f12cd010"
 dependencies = [
  "auto_impl",
  "revm",
