@@ -102,9 +102,10 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     //                         Events                             //
     ////////////////////////////////////////////////////////////////
 
-    /// @notice Emitted when the game is challenged.
+    /// @notice Emitted when the game is challenged on a specific segment.
     /// @param challenger The address of the challenger.
-    event Challenged(address indexed challenger);
+    /// @param segment   Segment index k that was countered.
+    event Challenged(address indexed challenger, uint64 indexed segment);
 
     /// @notice Emitted when the game is proved.
     /// @param prover The address of the prover.
@@ -128,6 +129,21 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Thrown when `batchSize % numSegments != 0` (SEGMENT_SIZE would not be a positive integer).
     error InvalidBatchSize();
+
+    /// @notice Thrown by any mutator first-check when `status != IN_PROGRESS` (SPEC §11.9 Invariant 31).
+    /// @dev    resolve() uses V1's `ClaimAlreadyResolved` instead per SPEC §6 Phase 3 alignment note.
+    error GameAlreadyResolved();
+
+    /// @notice Thrown by challenge() / proveFull() when `claimData.status == FullProved`
+    ///         (SPEC §6 Phase 1/3.5 — game already early-finalized; reject for clarity vs ClaimAlreadyChallenged).
+    error AlreadyFullProved();
+
+    /// @notice Thrown by challenge() when caller has already countered another segment in this game
+    ///         (SPEC §6 Phase 1 per-address dedup; `challengers[msg.sender].countered == true`).
+    error AlreadyCountered();
+
+    /// @notice Thrown by challenge() / prove(uint64,bytes) when segment index `k >= numSegments`.
+    error IndexOutOfRange();
 
     ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
@@ -436,33 +452,77 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     //                    `IDisputeGame` impl                     //
     ////////////////////////////////////////////////////////////////
 
-    /// @notice Challenges the game.
-    function challenge() external payable returns (ProposalStatus) {
-        // INVARIANT: Can only challenge a game that has not been challenged yet.
-        if (claimData.status != ProposalStatus.Unchallenged) revert ClaimAlreadyChallenged();
+    /// @notice The challenge window deadline (immutable-derived view; not stored).
+    /// @dev    SPEC §8.1: replaces V1's rolling `claimData.deadline`; absolute time anchored at createdAt.
+    ///         Returns `createdAt + MAX_CHALLENGE_DURATION`.
+    function challengeEnd() public view returns (Timestamp challengeEnd_) {
+        challengeEnd_ = Timestamp.wrap(
+            uint64(Timestamp.unwrap(createdAt) + Duration.unwrap(MAX_CHALLENGE_DURATION))
+        );
+    }
+
+    /// @notice Counter segment `k` (multi-challenger, per-segment dispute mode).
+    /// @dev    SPEC §6 Phase 1: each address may counter at most one segment; each segment may be
+    ///         countered by at most one address. Bond deposit goes to refundModeCredit; settle
+    ///         outcome decided at claimCredit() time (lazy S-path).
+    /// @param  k segment index to counter, in `[0, numSegments)`
+    function challenge(uint64 k) external payable returns (ProposalStatus) {
+        // First-check (SPEC §11.9 Invariant 31): always reject Resolved game with a clear error
+        // before considering claimData.status sub-states, so SDK gets unambiguous signal.
+        if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
+
+        // INVARIANT: Cannot counter a game already in FullProved (SPEC §6 Phase 3.5 mutex).
+        //   Distinct from ClaimAlreadyChallenged: tells SDK "give up this game" vs "try another segment".
+        if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
+        // After first-check (Resolved rejected) + FullProved branch, claimData.status ∈ {Unchallenged, Challenged};
+        // both are valid to add another challenger on a different segment.
+
+        // INVARIANT: Must be within the challenge window.
+        //   SPEC §8.1: challengeEnd is derived view (createdAt + MAX_CHAL_DUR), not stored.
+        if (block.timestamp >= Timestamp.unwrap(challengeEnd())) revert ClockTimeExceeded();
 
         // INVARIANT: The challenger must be whitelisted.
         if (!ACCESS_MANAGER.isAllowedChallenger(msg.sender)) revert BadAuth();
 
-        // INVARIANT: Cannot challenge if the game is over.
-        if (gameOver()) revert GameOver();
-
         // If the required bond is not met, revert.
         if (msg.value != CHALLENGER_BOND) revert IncorrectBondAmount();
 
-        // Update the counteredBy address
-        claimData.counteredBy = msg.sender;
+        // INVARIANT (SPEC §6 Phase 1): each address may counter at most one segment per game.
+        if (challengers[msg.sender].countered) revert AlreadyCountered();
 
-        // Update the status of the proposal
-        claimData.status = ProposalStatus.Challenged;
+        // INVARIANT: segment index must be in range.
+        if (k >= numSegments) revert IndexOutOfRange();
 
-        // Update the clock to the current block timestamp, which marks the start of the challenge.
-        claimData.deadline = Timestamp.wrap(uint64(block.timestamp + MAX_PROVE_DURATION.raw()));
+        // INVARIANT (SPEC §6 Phase 1): each segment may be countered by at most one address (index dedup).
+        if (disputes[k].counteredBy != address(0)) revert ClaimAlreadyChallenged();
 
-        // Deposit the bond.
+        // Effects: per-address registry, per-segment registry, deposit ledger, counter, status advance.
+        challengers[msg.sender] = ChallengerInfo({
+            bond: CHALLENGER_BOND,
+            countered: true,
+            counteredIndex: k
+        });
+
+        disputes[k] = DisputeEntry({
+            counteredBy: msg.sender,
+            proved: false,
+            claimed: false,
+            provedBy: address(0)
+        });
+
         refundModeCredit[msg.sender] += msg.value;
+        totalCountered += 1;
 
-        emit Challenged(claimData.counteredBy);
+        // Status advance (idempotent within multi-challenger): first challenger flips Unchallenged → Challenged;
+        // subsequent ones leave it Challenged.
+        if (claimData.status == ProposalStatus.Unchallenged) {
+            claimData.status = ProposalStatus.Challenged;
+        }
+
+        // Note: V1 wrote `claimData.deadline = block.timestamp + MAX_PROVE_DURATION` here (rolling).
+        // SPEC §8.1: proveDeadline is absolute, set once at initialize; challenge() never updates it.
+
+        emit Challenged(msg.sender, k);
 
         return claimData.status;
     }
