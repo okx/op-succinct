@@ -32,10 +32,21 @@ PROPOSER_METRICS_PORT="${PROPOSER_METRICS_PORT:-9000}"
 CHALLENGER_METRICS_PORT="${CHALLENGER_METRICS_PORT:-9001}"
 TX_CONFIRMATION_TIMEOUT="${TX_CONFIRMATION_TIMEOUT:-120}"
 MALICIOUS_CHALLENGE_PERCENTAGE="${MALICIOUS_CHALLENGE_PERCENTAGE:-100}"
+# Proposer prove timeout (sec). 默认 24h 覆盖 mock-mode 大 state（5GB state 实测
+# mock execute ~12h，4h 默认值会让 proposer 死循环 abandon + 重新 fetch witness）。
+# Real prover network 模式跑得快，可以下调；mock 模式建议保留或加大。
+PROPOSER_TIMEOUT="${PROPOSER_TIMEOUT:-86400}"
+# SP1 guest 内存上限 (bytes). DEFAULT_MEMORY_LIMIT in sp1-core-executor 是 24 GB，
+# 对 ≥4 GB TZ state mock execute 不够（state msgpack 反序列化进 Rust struct 5-10x
+# 膨胀，5 GB state 峰值常超 30-50 GB，会触发 ExecutionError::TooMuchMemory 让
+# mock execute 返回 Err，proposer 主循环重 spawn task → 死循环）。
+# 默认 100 GB 覆盖 5-10 GB state；服务器 RAM 充裕的话设更大也无副作用。
+# 这个 env var 由 sp1-core-executor::SP1CoreOpts::default() 直接读，proposer 透传。
+MEMORY_LIMIT="${MEMORY_LIMIT:-107374182400}"  # 100 GB
 
 DISPUTE_GAME_FINALITY_DELAY_SECONDS="${DISPUTE_GAME_FINALITY_DELAY_SECONDS:-10}"
-MAX_CHALLENGE_DURATION="${MAX_CHALLENGE_DURATION:-300}"
-MAX_PROVE_DURATION="${MAX_PROVE_DURATION:-3600}"
+MAX_CHALLENGE_DURATION="${MAX_CHALLENGE_DURATION:-86400}"
+MAX_PROVE_DURATION="${MAX_PROVE_DURATION:-86400}"
 FALLBACK_TIMEOUT_FP_SECS="${FALLBACK_TIMEOUT_FP_SECS:-604800}"
 
 INSTALL_SUBMODULES="${INSTALL_SUBMODULES:-1}"
@@ -82,22 +93,26 @@ wait_for_l1_rpc() {
 start_or_reuse_anvil() {
   if cast chain-id --rpc-url "$L1_RPC" >/dev/null 2>&1; then
     log "reusing L1 RPC at $L1_RPC"
-    return
+  else
+    if [[ "$SKIP_ANVIL" == "1" ]]; then
+      fail "L1 RPC is not reachable at $L1_RPC and SKIP_ANVIL=1"
+    fi
+
+    require_cmd anvil
+    log "starting Anvil on $L1_HOST:$L1_PORT (log: $ANVIL_LOG)"
+    nohup anvil --host "$L1_HOST" --port "$L1_PORT" --chain-id "$CHAIN_ID" >"$ANVIL_LOG" 2>&1 &
+    echo "$!" >"$ANVIL_PID_FILE"
+
+    if ! wait_for_l1_rpc "$L1_RPC"; then
+      tail -n 80 "$ANVIL_LOG" >&2 || true
+      fail "Anvil did not become ready at $L1_RPC"
+    fi
   fi
 
-  if [[ "$SKIP_ANVIL" == "1" ]]; then
-    fail "L1 RPC is not reachable at $L1_RPC and SKIP_ANVIL=1"
-  fi
-
-  require_cmd anvil
-  log "starting Anvil on $L1_HOST:$L1_PORT (log: $ANVIL_LOG)"
-  nohup anvil --host "$L1_HOST" --port "$L1_PORT" --chain-id "$CHAIN_ID" >"$ANVIL_LOG" 2>&1 &
-  echo "$!" >"$ANVIL_PID_FILE"
-
-  if ! wait_for_l1_rpc "$L1_RPC"; then
-    tail -n 80 "$ANVIL_LOG" >&2 || true
-    fail "Anvil did not become ready at $L1_RPC"
-  fi
+  # Enable 2s interval mining. Default anvil mines on demand, which deadlocks
+  # the proposer's NUM_CONFIRMATIONS wait on game-creation tx receipts.
+  log "enabling anvil interval mining (2s/block)"
+  cast rpc anvil_setIntervalMining 2 --rpc-url "$L1_RPC" >/dev/null
 }
 
 fetch_tz_checkpoint() {
@@ -290,6 +305,8 @@ SAFE_DB_FALLBACK=$SAFE_DB_FALLBACK
 MAX_CONCURRENT_DEFENSE_TASKS=$MAX_CONCURRENT_DEFENSE_TASKS
 PROPOSER_METRICS_PORT=$PROPOSER_METRICS_PORT
 TX_CONFIRMATION_TIMEOUT=$TX_CONFIRMATION_TIMEOUT
+TIMEOUT=$PROPOSER_TIMEOUT
+MEMORY_LIMIT=$MEMORY_LIMIT
 EOF
 
   log "writing $CHALLENGER_ENV"
