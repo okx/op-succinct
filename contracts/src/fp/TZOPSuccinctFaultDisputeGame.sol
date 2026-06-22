@@ -107,9 +107,14 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @param segment   Segment index k that was countered.
     event Challenged(address indexed challenger, uint64 indexed segment);
 
-    /// @notice Emitted when the game is proved.
-    /// @param prover The address of the prover.
-    event Proved(address indexed prover);
+    /// @notice Emitted when a per-segment SP1 proof verifies (SPEC §6 Phase 2 prove(uint64,bytes)).
+    /// @param prover  The address whose msg.sender was committed to the zk proof's public input.
+    /// @param segment The segment index k that was proven.
+    event Proved(address indexed prover, uint64 indexed segment);
+
+    /// @notice Emitted when a full-batch SP1 proof verifies (SPEC §6 Phase 3.5 prove(bytes) overload).
+    /// @param prover  The address whose msg.sender was committed to the zk proof's public input.
+    event FullProved(address indexed prover);
 
     /// @notice Emitted when the game is closed.
     event GameClosed(BondDistributionMode bondDistributionMode);
@@ -144,6 +149,25 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Thrown by challenge() / prove(uint64,bytes) when segment index `k >= numSegments`.
     error IndexOutOfRange();
+
+    /// @notice Thrown by prove(uint64,bytes) when segment k has no challenger (or proveFull was used).
+    error IndexNotCountered();
+
+    /// @notice Thrown by prove(uint64,bytes) when segment k has already been successfully proven.
+    error AlreadyProved();
+
+    /// @notice Thrown by prove(bytes) early-finalize when claimData.status != Unchallenged.
+    error NotUnchallenged();
+
+    /// @notice Thrown by prove(bytes) early-finalize when totalCountered != 0 (defensive; Inv 11 makes redundant).
+    error HasChallengers();
+
+    /// @notice Thrown by prove(bytes) early-finalize when called after challengeEnd().
+    error ChallengeWindowEnded();
+
+    /// @notice Thrown by prove(bytes) when parent game has already resolved CHALLENGER_WINS
+    ///         (this game is doomed; off-chain SP1 work would be wasted).
+    error ParentAlreadyLost();
 
     ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
@@ -527,39 +551,133 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         return claimData.status;
     }
 
-    /// @notice Proves the game.
-    /// @param proofBytes The proof bytes to validate the claim.
-    function prove(bytes calldata proofBytes) external returns (ProposalStatus) {
-        // INVARIANT: Cannot prove if the game is over.
-        if (gameOver()) revert GameOver();
+    /// @notice Prove a single segment k (per-segment SP1 STF proof). SPEC §6 Phase 2.
+    /// @dev    Permissionless prover. msg.sender is committed to the SP1 public input as
+    ///         `proverAddress` (frontrun protection — replaying another prover's proof bytes
+    ///         with a different msg.sender fails SP1 verify). L bond (CHALLENGER_BOND) is
+    ///         immediately pushed to msg.sender's normalModeCredit at Step 4.
+    /// @param  k          segment index, must satisfy `disputes[k].counteredBy != 0 ∧ !proved`
+    /// @param  proofBytes SP1 aggregation proof bytes (raw, not abi-encoded struct)
+    function prove(uint64 k, bytes calldata proofBytes) external returns (ProposalStatus) {
+        // First-check (SPEC §11.9 Invariant 31).
+        if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
 
-        // Decode the public values to check the claim root
+        // Per-state revert mapping (SPEC §6 Phase 2 positive enumeration).
+        if (claimData.status == ProposalStatus.Unchallenged) revert IndexNotCountered();
+        if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
+        // Only Challenged proceeds.
+
+        // INVARIANT: Must be within the prove window.
+        if (block.timestamp >= Timestamp.unwrap(claimData.proveDeadline)) revert ClockTimeExceeded();
+
+        // INVARIANT: segment index in range.
+        if (k >= numSegments) revert IndexOutOfRange();
+
+        // INVARIANT: segment must have a challenger to be provable.
+        DisputeEntry storage d = disputes[k];
+        if (d.counteredBy == address(0)) revert IndexNotCountered();
+
+        // INVARIANT: segment not yet proven (defends against double L-bond push).
+        if (d.proved) revert AlreadyProved();
+
+        // Step 1 — derive claimPre = boundary[k].
+        //   SPEC §7: intermediateRoot(i) = boundary[i+1] for i ∈ [0, N-2];
+        //   boundary[0] = startingOutputRoot.root; boundary[N] = rootClaim().
+        bytes32 claimPre;
+        if (k == 0) {
+            claimPre = Hash.unwrap(startingOutputRoot.root);
+        } else {
+            claimPre = intermediateRoot(k - 1);
+        }
+
+        // Step 2 — derive claimPost = boundary[k+1].
+        bytes32 claimPost;
+        if (k == numSegments - 1) {
+            claimPost = Claim.unwrap(rootClaim());
+        } else {
+            claimPost = intermediateRoot(k);
+        }
+
+        // Step 3 — verify the SP1 aggregation proof against derived public input.
+        //   claimBlockNum = startingOutputRoot.l2SequenceNumber + SEGMENT_SIZE * (k + 1)
+        //   where SEGMENT_SIZE = batchSize / numSegments (derived per call; cheap uint64 div).
+        uint64 _segSize = batchSize / numSegments;
         AggregationOutputs memory publicValues = AggregationOutputs({
-            l1Head: Hash.unwrap(l1Head()),
-            l2PreRoot: Hash.unwrap(startingOutputRoot.root),
-            claimRoot: rootClaim().raw(),
-            claimBlockNum: l2SequenceNumber(),
+            l1Head: bytes32(0), // TZ: no L1 derivation; sp1-range-program hardcodes 0
+            l2PreRoot: claimPre,
+            claimRoot: claimPost,
+            claimBlockNum: uint256(uint64(startingOutputRoot.l2SequenceNumber) + _segSize * (k + 1)),
             rollupConfigHash: ROLLUP_CONFIG_HASH,
             rangeVkeyCommitment: RANGE_VKEY_COMMITMENT,
             proverAddress: msg.sender
         });
-
-        // Verify the proof. Reverts if the proof is invalid.
         SP1_VERIFIER.verifyProof(AGGREGATION_VKEY, abi.encode(publicValues), proofBytes);
 
-        // Update the prover address
-        claimData.prover = msg.sender;
+        // Step 4 — mark proved + push L bond immediately to msg.sender (SPEC §6 Phase 2 Step 4).
+        //   Note: only clear challengers[challenger].bond field — keep `countered` flag so
+        //   challenger cannot re-challenge another segment.
+        d.proved = true;
+        d.provedBy = msg.sender;
+        totalProved += 1;
 
-        // Update the status of the proposal
-        if (claimData.counteredBy == address(0)) {
-            claimData.status = ProposalStatus.UnchallengedAndValidProofProvided;
-        } else {
-            claimData.status = ProposalStatus.ChallengedAndValidProofProvided;
-        }
+        address challenger = d.counteredBy;
+        uint256 lBond = challengers[challenger].bond;
+        challengers[challenger].bond = 0;
+        normalModeCredit[msg.sender] += lBond;
 
-        emit Proved(claimData.prover);
+        emit Proved(msg.sender, k);
 
         return claimData.status;
+    }
+
+    /// @notice Optional early-finalize: prove the entire batch in one SP1 proof. SPEC §6 Phase 3.5.
+    /// @dev    Solidity overload of `prove`; selector `prove(bytes)` matches V1 exactly so tools
+    ///         (etherscan, debug tracers) render this as V1's well-known prove call. Semantically
+    ///         equivalent to V1's "prove (Unchallenged → U+VP)" branch but only fires when no
+    ///         challenger has appeared.
+    ///
+    ///         2-step pattern (like V1 and Base): this call only verifies the proof and marks
+    ///         `claimData.status = FullProved`; subsequent `resolve()` consumes the marker.
+    ///
+    ///         Permissionless caller. NO bond required. NO on-chain reward (motivation is
+    ///         downstream finality speed; see SPEC §6.1.3).
+    /// @param  proofBytes SP1 aggregation proof over the entire batch (claimBlockNum = startingSeq + batchSize)
+    function prove(bytes calldata proofBytes) external {
+        // First-check (SPEC §11.9 Invariant 31).
+        if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
+
+        // Per-state revert mapping (SPEC §6 Phase 3.5).
+        if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
+        if (claimData.status == ProposalStatus.Challenged) revert NotUnchallenged();
+        // Resolved already caught by first-check.
+
+        // Only Unchallenged proceeds; defensive checks below.
+        if (totalCountered != 0) revert HasChallengers();
+        if (block.timestamp >= Timestamp.unwrap(challengeEnd())) revert ChallengeWindowEnded();
+
+        // Parent-CHW preflight (SPEC §6 Phase 3.5 M3): if parent already resolved CHW, this
+        // game is doomed to burn via §9.4.b; reject the proveFull tx so off-chain SP1 work
+        // isn't wasted on a guaranteed-lose game. (Does not protect against race where
+        // proveFull lands first then parent CHW lands second.)
+        if (getParentGameStatus() == GameStatus.CHALLENGER_WINS) revert ParentAlreadyLost();
+
+        // Step 1 — derive full-batch public input. claimBlockNum = startingSeq + batchSize.
+        AggregationOutputs memory publicValues = AggregationOutputs({
+            l1Head: bytes32(0), // TZ: no L1 derivation
+            l2PreRoot: Hash.unwrap(startingOutputRoot.root),
+            claimRoot: Claim.unwrap(rootClaim()),
+            claimBlockNum: uint256(uint64(startingOutputRoot.l2SequenceNumber) + batchSize),
+            rollupConfigHash: ROLLUP_CONFIG_HASH,
+            rangeVkeyCommitment: RANGE_VKEY_COMMITMENT,
+            proverAddress: msg.sender
+        });
+        SP1_VERIFIER.verifyProof(AGGREGATION_VKEY, abi.encode(publicValues), proofBytes);
+
+        // Step 2 — mark FullProved. Does NOT touch `status` (GameStatus); resolve() does that.
+        claimData.status = ProposalStatus.FullProved;
+        claimData.prover = msg.sender;
+
+        emit FullProved(msg.sender);
     }
 
     /// @notice Returns the status of the parent game.
@@ -714,10 +832,21 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         emit GameClosed(bondDistributionMode);
     }
 
-    /// @notice Determines if the game is finished.
-    /// @return gameOver_ True if the game is either expired or proven.
-    function gameOver() public view returns (bool gameOver_) {
-        gameOver_ = claimData.deadline.raw() < uint64(block.timestamp) || claimData.prover != address(0);
+    /// @notice Determines if the game's challenge/prove phase is closed (mutators may no longer be called).
+    /// @dev    SPEC §12.6.1: 4-state machine; positive enumeration. Does NOT imply final outcome —
+    ///         that is determined by resolve(). Used as gate by resolve()'s !gameOver() check and
+    ///         as the V1-compatible "phase closed" signal.
+    /// @return True iff Resolved (terminal), FullProved (early-finalize marker), or relevant clock expired.
+    function gameOver() public view returns (bool) {
+        ProposalStatus s = claimData.status;
+        if (s == ProposalStatus.Resolved) return true;
+        if (s == ProposalStatus.FullProved) return true; // SPEC §6 Phase 3.5 short-circuit
+        if (s == ProposalStatus.Unchallenged) {
+            // No challenger landed: phase closes at challengeEnd (immutable-derived view).
+            return block.timestamp >= Timestamp.unwrap(challengeEnd());
+        }
+        // s == Challenged: phase closes at proveDeadline (absolute, written once at initialize).
+        return block.timestamp >= Timestamp.unwrap(claimData.proveDeadline);
     }
 
     /// @notice Getter for the game type.
@@ -756,6 +885,20 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // The extra data starts at the second word within the cwia calldata and
         // is 36 bytes long. 32 bytes are for the l2BlockNumber, 4 bytes are for the parentIndex.
         extraData_ = _getArgBytes(0x54, 0x24);
+    }
+
+    /// @notice Read the k-th intermediate boundary root from CWIA calldata (0-indexed).
+    /// @dev    SPEC §3.4 / §7: `intermediateRoot(i) = boundary[i+1]` for i ∈ [0, numSegments-2].
+    ///         Endpoints excluded: boundary[0] = startingOutputRoot.root (storage),
+    ///         boundary[numSegments] = rootClaim() (CWIA standard arg #2). View (not pure) because
+    ///         bound check reads storage `numSegments`.
+    /// @param  k 0-indexed intermediate root, must satisfy `k < numSegments - 1`
+    function intermediateRoot(uint64 k) public view returns (bytes32 root_) {
+        // Invariant: numSegments >= 1 by initialize() check. When numSegments == 1, this always reverts.
+        if (k >= numSegments - 1) revert IndexOutOfRange();
+        // CWIA layout: intermediate roots start at offset 0x78 (after creator+rootClaim+l1Head+l2SeqNum+parentIndex).
+        // Each root is 32 bytes; k-th root sits at 0x78 + 0x20 * k.
+        root_ = _getArgBytes32(0x78 + 0x20 * uint256(k));
     }
 
     /// @notice A compliant implementation of this interface should return the components of the
