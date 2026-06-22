@@ -775,36 +775,81 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         return status;
     }
 
-    /// @notice Claim the credit belonging to the recipient address. Reverts if the game isn't
-    ///         finalized, if the recipient has no credit to claim, or if the bond transfer
-    ///         fails. If the game is finalized but no bond has been paid out yet, this method
-    ///         will determine the bond distribution mode and also try to update anchor game.
-    /// @param _recipient The owner and recipient of the credit.
+    /// @notice Unified claim-credit entry for all roles. SPEC §6.4.2.
+    /// @dev    Roles & behavior:
+    ///           - proposer:    skips settle block; reads normalModeCredit[gameCreator()] populated by resolve() DW
+    ///           - S challenger (lowest, CHW): settle block pushes CHAL_BOND + CREATE_BOND; lazy compute lowestSIndex on first invocation
+    ///           - S challenger (non-lowest, CHW): settle block pushes only CHAL_BOND
+    ///           - L challenger (proved):  settle block detects d.proved == true and is a no-op (L bond was already pushed to provedBy in prove())
+    ///           - pure prover (non-challenger): skips settle block; reads accumulated L bonds pushed in prove() Step 4
+    ///           - REFUND mode: all roles read refundModeCredit (original deposit) and bypass settle block entirely
+    ///
+    ///         CEI ordering: all ledger writes (settle block + zero-out) precede the external `_transfer` call.
+    ///         Reentrancy on the same recipient is safe because normalModeCredit[_recipient] is zeroed
+    ///         before _transfer, so a recursive call hits NoCreditToClaim.
+    /// @param _recipient The owner of the credit to be paid out.
     function claimCredit(address _recipient) external {
-        // Close out the game and determine the bond distribution mode if not already set.
-        // We call this as part of claim credit to reduce the number of additional calls that a
-        // Challenger needs to make to this contract.
+        // Lazy mode gating: idempotent — already-closed games short-circuit inside closeGame().
         closeGame();
 
-        // Fetch the recipient's credit balance based on the bond distribution mode.
-        uint256 recipientCredit;
+        // REFUND mode: simple path, no settle. Refund original deposit.
         if (bondDistributionMode == BondDistributionMode.REFUND) {
-            recipientCredit = refundModeCredit[_recipient];
-        } else if (bondDistributionMode == BondDistributionMode.NORMAL) {
-            recipientCredit = normalModeCredit[_recipient];
-        } else {
-            // We shouldn't get here, but sanity check just in case.
-            revert InvalidBondDistributionMode();
+            uint256 refund = refundModeCredit[_recipient];
+            if (refund == 0) revert NoCreditToClaim();
+            // Zero both ledgers defensively — a future code path that wrote both would otherwise
+            // permit double-claim across modes.
+            refundModeCredit[_recipient] = 0;
+            normalModeCredit[_recipient] = 0;
+            (bool ok,) = _recipient.call{value: refund}(hex"");
+            if (!ok) revert BondTransferFailed();
+            return;
         }
 
-        // Revert if the recipient has no credit to claim.
-        if (recipientCredit == 0) revert NoCreditToClaim();
+        // NORMAL mode (proper game). If recipient is an S-path challenger whose segment hasn't been
+        // proved AND hasn't been settled yet, lazily push CHAL_BOND back + (if winner) CREATE_BOND.
+        if (challengers[_recipient].countered) {
+            uint64 k = challengers[_recipient].counteredIndex;
+            DisputeEntry storage d = disputes[k];
+            if (!d.proved && !d.claimed) {
+                d.claimed = true;
+                uint256 selfBond = challengers[_recipient].bond;
+                challengers[_recipient].bond = 0;
+                normalModeCredit[_recipient] += selfBond;
 
-        // Set the recipient's credit balances to 0.
+                // CHW + not already burned → push CREATE_BOND to the lowest-S challenger (winner-takes-all).
+                // SPEC §9.4.b burn case sets createBondPushedAtResolve in resolve(); skip here.
+                if (status == GameStatus.CHALLENGER_WINS && !createBondPushedAtResolve) {
+                    // Lazy compute lowestSIndex on the first S-path claimCredit invocation.
+                    // Bounded by numSegments ≤ MAX_NUM_SEGMENTS = 256; worst-case ~540k gas.
+                    if (lowestSIndex == LOWEST_S_NOT_SET) {
+                        uint64 found = LOWEST_S_NOT_SET;
+                        for (uint64 j = 0; j < numSegments; j++) {
+                            DisputeEntry storage dj = disputes[j];
+                            if (dj.counteredBy != address(0) && !dj.proved) {
+                                found = j;
+                                break;
+                            }
+                        }
+                        // S = ∅ + CHW is unreachable (resolve() CHW path requires totalProved < totalCountered).
+                        // Defensive assertion to surface implementation bugs instead of silent zero-write.
+                        if (found == LOWEST_S_NOT_SET) revert InvalidProposalStatus();
+                        lowestSIndex = found;
+                    }
+                    if (k == lowestSIndex) {
+                        // CREATE_BOND amount = proposer's original deposit (see resolve() for rationale).
+                        normalModeCredit[_recipient] += refundModeCredit[gameCreator()];
+                    }
+                }
+            }
+            // L-path (d.proved) or already-settled (d.claimed) → no-op; transfer below picks up
+            // whatever was pushed elsewhere (L bond push happened in prove() Step 4 if applicable).
+        }
+
+        // Final transfer (matches V1's local var name to avoid shadowing the `credit()` view).
+        uint256 recipientCredit = normalModeCredit[_recipient];
+        if (recipientCredit == 0) revert NoCreditToClaim();
         refundModeCredit[_recipient] = 0;
         normalModeCredit[_recipient] = 0;
-
-        // Transfer the credit to the recipient.
         (bool success,) = _recipient.call{value: recipientCredit}(hex"");
         if (!success) revert BondTransferFailed();
     }
