@@ -916,4 +916,478 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
         g.prove(uint64(0), "");
     }
+
+    // ===================== §2.6 resolve() — DW paths =====================
+
+    function test_resolve_Unchallenged_clockExpired_DW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+
+        g.resolve();
+
+        assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
+        (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = _readClaimData(g);
+        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.Resolved));
+        // CREATE_BOND credited to gameCreator.
+        assertEq(g.normalModeCredit(proposer), CREATE_BOND);
+    }
+
+    function test_resolve_FullProved_skipsClock_DW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.prank(prover);
+        g.prove("");
+
+        // No need to warp — FullProved triggers gameOver() short-circuit.
+        g.resolve();
+
+        assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
+        // CREATE_BOND credited to gameCreator (same as clock-DW path).
+        assertEq(g.normalModeCredit(proposer), CREATE_BOND);
+    }
+
+    function test_resolve_Challenged_allProved_DW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Challenge k=0 and k=2.
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        // Prove both.
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+        vm.prank(prover);
+        g.prove(uint64(2), "");
+
+        // Warp past proveDeadline.
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+
+        g.resolve();
+
+        assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
+        // CREATE_BOND to proposer.
+        assertEq(g.normalModeCredit(proposer), CREATE_BOND);
+        // L-bonds already pushed during prove(): prover got 2 × CHAL_BOND.
+        assertEq(g.normalModeCredit(prover), 2 * CHAL_BOND);
+    }
+
+    function test_resolve_Challenged_someUnproved_CHW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Challenge k=0 (will be proved) and k=2 (will NOT be proved).
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        // Only prove k=0.
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+
+        // Warp past proveDeadline.
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+
+        g.resolve();
+
+        assertEq(uint8(g.status()), uint8(GameStatus.CHALLENGER_WINS));
+        // CREATE_BOND NOT immediately pushed; lazy in claimCredit.
+        assertEq(g.normalModeCredit(proposer), 0);
+    }
+
+    // ===================== §2.6 resolve() Revert paths =====================
+
+    function test_resolve_revert_ClaimAlreadyResolved() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+
+        // Second resolve.
+        vm.expectRevert(ClaimAlreadyResolved.selector);
+        g.resolve();
+    }
+
+    function test_resolve_revert_GameNotOver_beforeChallengeEnd() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.expectRevert(GameNotOver.selector);
+        g.resolve();
+    }
+
+    // ===================== §11.9 first-check protocol tests =====================
+
+    function test_firstCheck_challenge_revert_GameAlreadyResolved() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.GameAlreadyResolved.selector);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+    }
+
+    function test_firstCheck_proveSegment_revert_GameAlreadyResolved() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.GameAlreadyResolved.selector);
+        g.prove(uint64(0), "");
+    }
+
+    function test_firstCheck_proveFull_revert_GameAlreadyResolved() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+
+        vm.expectRevert(TZOPSuccinctFaultDisputeGame.GameAlreadyResolved.selector);
+        g.prove("");
+    }
+
+    // ===================== §2.7 closeGame() =====================
+
+    function test_closeGame_idempotent() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        g.closeGame();
+        // Second call no-op (does not revert).
+        g.closeGame();
+    }
+
+    function test_closeGame_revert_GameNotFinalized() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+        // Did NOT wait past finality delay.
+
+        vm.expectRevert(GameNotFinalized.selector);
+        g.closeGame();
+    }
+
+    // ===================== §2.8 claimCredit() — per-role =====================
+
+    /// @dev Helper: take a game past resolve + finality delay so closeGame() succeeds.
+    ///      Handles all 4 ProposalStatus values; warps to whichever clock controls eligibility.
+    function _finalizeGame(TZOPSuccinctFaultDisputeGame g) internal {
+        if (uint8(g.status()) == uint8(GameStatus.IN_PROGRESS)) {
+            if (!g.gameOver()) {
+                (, Timestamp proveDeadline_, , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = g.claimData();
+                if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.Challenged) {
+                    vm.warp(proveDeadline_.raw() + 1);
+                } else {
+                    // Unchallenged → wait challengeEnd. FullProved → gameOver already true above.
+                    vm.warp(g.challengeEnd().raw() + 1);
+                }
+            }
+            g.resolve();
+        }
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+    }
+
+    function test_claim_proposer_DW_getsCreateBond() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        _finalizeGame(g);
+
+        uint256 balBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - balBefore, CREATE_BOND);
+    }
+
+    function test_claim_proposer_CHW_revertNoCreditToClaim() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Force CHW: challenge but never prove.
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // proposer not credited in CHW path.
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(proposer);
+    }
+
+    function test_claim_lowestSChallenger_CHW_getsBothBonds() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Challenge k=0 (lowest-S) and k=2; neither proved.
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // challenger (k=0) is lowest-S → gets CHAL_BOND + CREATE_BOND.
+        uint256 balBefore = challenger.balance;
+        g.claimCredit(challenger);
+        assertEq(challenger.balance - balBefore, CHAL_BOND + CREATE_BOND);
+
+        // lowestSIndex should now be 0 (lazy compute happened).
+        assertEq(g.lowestSIndex(), 0);
+    }
+
+    function test_claim_nonLowestSChallenger_CHW_getsOnlyOwnBond() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // challenger2 (k=2) is non-lowest-S → gets only CHAL_BOND.
+        uint256 balBefore = challenger2.balance;
+        g.claimCredit(challenger2);
+        assertEq(challenger2.balance - balBefore, CHAL_BOND);
+    }
+
+    function test_claim_lChallenger_alreadyProved_revertNoCreditToClaim() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+
+        // Prove segment 1 → L-bond goes to prover, challenger gets nothing.
+        vm.prank(prover);
+        g.prove(uint64(1), "");
+
+        // Need at least one S to force CHW; add another challenge that's not proved.
+        // Actually for this test, let's let it resolve DW (totalProved == totalCountered) and
+        // verify L-challenger has no credit (their bond went to prover).
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // L-challenger has no credit; settle block detects d.proved=true and is a no-op.
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(challenger);
+    }
+
+    function test_claim_pureProver_DW_getsLBond() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        vm.prank(prover);
+        g.prove(uint64(2), "");
+
+        _finalizeGame(g);
+
+        uint256 balBefore = prover.balance;
+        g.claimCredit(prover);
+        assertEq(prover.balance - balBefore, CHAL_BOND);
+    }
+
+    function test_claim_doubleClaim_secondReverts() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        _finalizeGame(g);
+
+        g.claimCredit(proposer);
+
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(proposer);
+    }
+
+    function test_claim_lazyCompute_sockPuppetCannotChangeWinner() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);  // k=0 honest lowest-S
+        vm.deal(challenger2, 10 ether); // k=3 sock-puppet (highest)
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(3));
+
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Sock-puppet claims FIRST (trying to bias compute) — gets only own CHAL_BOND.
+        uint256 balBefore2 = challenger2.balance;
+        g.claimCredit(challenger2);
+        assertEq(challenger2.balance - balBefore2, CHAL_BOND);
+
+        // lowestSIndex correctly written to 0 (honest's segment).
+        assertEq(g.lowestSIndex(), 0);
+
+        // Honest claims after — still gets CHAL_BOND + CREATE_BOND.
+        uint256 balBefore1 = challenger.balance;
+        g.claimCredit(challenger);
+        assertEq(challenger.balance - balBefore1, CHAL_BOND + CREATE_BOND);
+    }
+
+    // ===================== §3 Integration flows =====================
+
+    function test_flow_noChallenge_clockDW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Honest case: no one challenges; wait full window.
+        vm.warp(g.challengeEnd().raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Proposer claims CREATE_BOND.
+        uint256 balBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - balBefore, CREATE_BOND);
+        // No double claim.
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(proposer);
+    }
+
+    function test_flow_fastFinalize() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Fast finalize via prove(bytes); no challenge window wait needed.
+        vm.prank(prover);
+        g.prove("");
+
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Proposer still gets CREATE_BOND (prover gets no on-chain reward).
+        uint256 balBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - balBefore, CREATE_BOND);
+
+        // Prover gets nothing (motivation is downstream finality, not on-chain bond).
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(prover);
+    }
+
+    function test_flow_challengedAllProved_DW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+        vm.prank(prover);
+        g.prove(uint64(2), "");
+
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Proposer: CREATE_BOND.
+        uint256 balBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - balBefore, CREATE_BOND);
+
+        // Prover: 2 × CHAL_BOND (one per proved segment).
+        uint256 proverBefore = prover.balance;
+        g.claimCredit(prover);
+        assertEq(prover.balance - proverBefore, 2 * CHAL_BOND);
+
+        // Challengers got nothing (their bonds went to prover).
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(challenger);
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(challenger2);
+    }
+
+    function test_flow_challengedSomeUnproved_CHW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);  // lowest-S (k=1)
+        vm.deal(challenger2, 10 ether); // non-lowest-S (k=3)
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(3));
+
+        // No prover acts; both unproved.
+        (, Timestamp proveDeadline, , , ) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Lowest-S (challenger @ k=1) gets CHAL_BOND + CREATE_BOND.
+        uint256 balBefore1 = challenger.balance;
+        g.claimCredit(challenger);
+        assertEq(challenger.balance - balBefore1, CHAL_BOND + CREATE_BOND);
+
+        // Non-lowest-S (challenger2 @ k=3) gets only own CHAL_BOND.
+        uint256 balBefore2 = challenger2.balance;
+        g.claimCredit(challenger2);
+        assertEq(challenger2.balance - balBefore2, CHAL_BOND);
+
+        // Proposer gets nothing.
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(proposer);
+
+        // Bond conservation: CREATE_BOND + 2*CHAL_BOND in total; all distributed (no burn).
+        assertEq(address(g).balance, 0);
+    }
 }
