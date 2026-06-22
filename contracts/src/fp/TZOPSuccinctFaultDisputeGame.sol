@@ -52,14 +52,14 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
 
     enum ProposalStatus {
-        // The initial state of a new proposal.
+        // The initial state of a new proposal (no challenger; no proveFull).
         Unchallenged,
-        // A proposal that has been challenged but not yet proven.
+        // ≥1 challenger has countered some segment, awaiting per-segment prove.
         Challenged,
-        // An unchallenged proposal that has been proven valid with a verified proof.
-        UnchallengedAndValidProofProvided,
-        // A challenged proposal that has been proven valid with a verified proof.
-        ChallengedAndValidProofProvided,
+        // Optional early-finalize mark: no challenger + entire-batch SP1 proof verified
+        // by `prove(bytes)` overload. Equivalent to V1's UnchallengedAndValidProofProvided.
+        // See SPEC §6 Phase 3.5.
+        FullProved,
         // The final state after resolution, either GameStatus.CHALLENGER_WINS or GameStatus.DEFENDER_WINS.
         Resolved
     }
@@ -69,13 +69,33 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
 
     /// @notice The `ClaimData` struct represents the data associated with a Claim.
+    /// @dev    Field order chosen for slot-1 packing: prover(20) + proveDeadline(8) + parentIndex(4) = 32B.
+    ///         vs V1: drops `counteredBy` (per-segment tracking moved to `disputes[k].counteredBy`);
+    ///         renames `deadline` → `proveDeadline` and switches semantics from rolling to absolute-time
+    ///         (initialized once, never updated). See SPEC §8.1.
     struct ClaimData {
+        address prover;             // SPEC §6 Phase 3.5 `prove(bytes)` writes msg.sender; default address(0)
+        Timestamp proveDeadline;    // = createdAt + MAX_CHALLENGE_DURATION + MAX_PROVE_DURATION; absolute, never updated
         uint32 parentIndex;
-        address counteredBy;
-        address prover;
-        Claim claim;
         ProposalStatus status;
-        Timestamp deadline;
+        Claim claim;
+    }
+
+    /// @notice Per-address challenger state for multi-challenger dispute mode (SPEC §6 Phase 1).
+    /// @dev    `countered` is permanent once true → prevents re-challenge after prove() drains bond.
+    struct ChallengerInfo {
+        uint256 bond;               // CHAL_BOND deposit, zeroed in prove() Step 4 (L-path) or claimCredit() (S-path)
+        bool    countered;          // permanent true after first challenge()
+        uint64  counteredIndex;     // segment k that this challenger countered
+    }
+
+    /// @notice Per-segment dispute state for multi-challenger dispute mode (SPEC §6 Phase 1/2/4).
+    /// @dev    Two slots packed: slot a = counteredBy(20)+proved(1)+claimed(1) = 22B; slot b = provedBy(20).
+    struct DisputeEntry {
+        address counteredBy;        // first challenger who counters segment k (index dedup)
+        bool    proved;             // true after successful per-segment prove(uint64,bytes)
+        bool    claimed;            // SPEC §6.4.2 lazy S-path settle marker (set in claimCredit)
+        address provedBy;           // prover address for L-bond push at prove() Step 4
     }
 
     ////////////////////////////////////////////////////////////////
@@ -96,6 +116,13 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
     ////////////////////////////////////////////////////////////////
+
+    /// @notice Upper bound on per-game `numSegments` (SPEC §3, §4 bond economics calibration).
+    uint64 internal constant MAX_NUM_SEGMENTS = 256;
+
+    /// @notice Sentinel value for uninitialized `lowestSIndex` (SPEC §6.4.2 lazy compute, §11 Inv 15).
+    /// @dev    Solidity-default 0 would be ambiguous with "segment 0 is the lowest"; explicit sentinel required.
+    uint64 internal constant LOWEST_S_NOT_SET = type(uint64).max;
 
     /// @notice The maximum duration allowed for a challenger to challenge a game.
     Duration internal immutable MAX_CHALLENGE_DURATION;
@@ -134,8 +161,8 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     AccessManager internal immutable ACCESS_MANAGER;
 
     /// @notice Semantic version.
-    /// @custom:semver 2.0.0
-    string public constant version = "2.0.0";
+    /// @custom:semver 2.0.0-tz-segment
+    string public constant version = "2.0.0-tz-segment";
 
     /// @notice The starting timestamp of the game.
     Timestamp public createdAt;
@@ -167,6 +194,40 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice The bond distribution mode of the game.
     BondDistributionMode public bondDistributionMode;
+
+    ////////////////////////////////////////////////////////////////
+    //              Multi-segment / Multi-challenger              //
+    //   (SPEC §3 / §6 / §12.3; new vs V1)                        //
+    ////////////////////////////////////////////////////////////////
+
+    /// @notice Per-game total batch span = `l2SequenceNumber() - startingOutputRoot.l2SequenceNumber`.
+    /// @dev    Decided by proposer at create; `batchSize % numSegments == 0` enforced in initialize.
+    uint64 public batchSize;
+
+    /// @notice Per-game segment count chosen by proposer at create.
+    /// @dev    Range `[1, MAX_NUM_SEGMENTS]`; derived from CWIA calldata length in initialize.
+    ///         SEGMENT_SIZE = batchSize / numSegments (view-derived; not stored).
+    uint64 public numSegments;
+
+    /// @notice Total number of segments that have been countered (SPEC §6.4.2 / §9 invariants).
+    uint64 public totalCountered;
+
+    /// @notice Total number of countered segments that have been successfully proved.
+    uint64 public totalProved;
+
+    /// @notice First-mismatch winner index (smallest k ∈ S set), lazy-computed in claimCredit (SPEC §6.4.2 / §9.5).
+    /// @dev    Initialized to LOWEST_S_NOT_SET in initialize; written once on first S-path claimCredit().
+    uint64 public lowestSIndex;
+
+    /// @notice Set true when parent-CHW forces game CHW with `totalCountered == 0`
+    ///         (SPEC §9.4.b: CREATE_BOND burned to address(0), claimCredit must skip re-distribution).
+    bool public createBondPushedAtResolve;
+
+    /// @notice Per-address challenger registry (multi-challenger dedup + bond tracking).
+    mapping(address => ChallengerInfo) public challengers;
+
+    /// @notice Per-segment dispute registry (segment-level dedup + L-bond push + lazy S-settle).
+    mapping(uint64 => DisputeEntry) public disputes;
 
     /// @param _maxChallengeDuration The maximum duration allowed for a challenger to challenge a game.
     /// @param _maxProveDuration The maximum duration allowed for a proposer to prove against a challenge.
