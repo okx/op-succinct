@@ -617,7 +617,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         //   where SEGMENT_SIZE = batchSize / numSegments (derived per call; cheap uint64 div).
         uint64 _segSize = batchSize / numSegments;
         AggregationOutputs memory publicValues = AggregationOutputs({
-            l1Head: bytes32(0), // TZ: no L1 derivation; sp1-range-program hardcodes 0
+            l1Head: Hash.unwrap(l1Head()), // CWIA arg; tz-aggregation program passes through `latest_l1_checkpoint_head`
             l2PreRoot: claimPre,
             claimRoot: claimPost,
             claimBlockNum: uint256(uint64(startingOutputRoot.l2SequenceNumber) + _segSize * (k + 1)),
@@ -676,7 +676,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Step 1 — derive full-batch public input. claimBlockNum = startingSeq + batchSize.
         AggregationOutputs memory publicValues = AggregationOutputs({
-            l1Head: bytes32(0), // TZ: no L1 derivation
+            l1Head: Hash.unwrap(l1Head()), // CWIA arg, matches tz-aggregation program output
             l2PreRoot: Hash.unwrap(startingOutputRoot.root),
             claimRoot: Claim.unwrap(rootClaim()),
             claimBlockNum: uint256(uint64(startingOutputRoot.l2SequenceNumber) + batchSize),

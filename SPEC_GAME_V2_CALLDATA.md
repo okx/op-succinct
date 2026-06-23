@@ -666,7 +666,7 @@ if (k == numSegments - 1) {
 // AggregationOutputs struct 定义在 src/lib/Types.sol，字段顺序 / 名称与原合约 line 387-395 完全一致
 uint64 _segSize = batchSize / numSegments;            // SEGMENT_SIZE 派生 (uint64 除法 ~5 gas)
 AggregationOutputs memory publicValues = AggregationOutputs({
-    l1Head:               bytes32(0),                                              // TZ 无 L1 derivation；SP1 sp1-range-program 端已 hardcode 此字段为 0
+    l1Head:               Hash.unwrap(l1Head()),                                  // CWIA arg #3；tz-aggregation 程序通过 `inputs.latest_l1_checkpoint_head` 透传，game.l1Head() drives end-to-end（V1 line 388 同 pattern）
     l2PreRoot:            claimPre,                                                // 来自 Step 1
     claimRoot:            claimPost,                                               // 来自 Step 2
     claimBlockNum:        uint64(startingOutputRoot.l2SequenceNumber + _segSize * (k + 1)),  // 起点 + SEGMENT_SIZE * (k+1)
@@ -840,7 +840,7 @@ function prove(bytes calldata proofBytes) external;
 
 #### Step 1 — 派生 public input + SP1 verify
 
-与 §6 Phase 2 Step 3 `prove(uint64,bytes)` **唯一差别**：`claimBlockNum = startingOutputRoot.l2SequenceNumber + batchSize`（全 batch 跨度）而非 `SEGMENT_SIZE × (k+1)`（per-segment）。其余字段（`l1Head=0`, `l2PreRoot`, `claimRoot`, `rollupConfigHash`, `rangeVkeyCommitment`, `proverAddress=msg.sender`）一致。SP1 aggregation 程序原生支持任意 block delta，同 vkey 可验证两种 proof。
+与 §6 Phase 2 Step 3 `prove(uint64,bytes)` **唯一差别**：`claimBlockNum = startingOutputRoot.l2SequenceNumber + batchSize`（全 batch 跨度）而非 `SEGMENT_SIZE × (k+1)`（per-segment）。其余字段（`l1Head = Hash.unwrap(l1Head())`, `l2PreRoot`, `claimRoot`, `rollupConfigHash`, `rangeVkeyCommitment`, `proverAddress=msg.sender`）一致。SP1 aggregation 程序原生支持任意 block delta，同 vkey 可验证两种 proof。
 
 #### Step 2 — 推进 `claimData.status → FullProved` + 记录 prover address
 
