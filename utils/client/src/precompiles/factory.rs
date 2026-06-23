@@ -3,7 +3,7 @@
 use super::OpZkvmPrecompiles;
 use alloy_evm::{Database, EvmEnv, EvmFactory};
 use alloy_op_evm::{
-    OpEvm, OpEvmContext, OpTx, OpTxError, XLayerGaslessFeeHook, XLayerGaslessFeeHookFactory,
+    OpEvm, OpEvmContext, OpTx, OpTxError,
     post_exec::{PostExecEvmFactoryHooks, PostExecExecutedTx, PostExecTxContext, WarmingState},
 };
 use op_revm::{L1BlockInfo, OpBuilder, OpHaltReason, OpSpecId, OpTransaction};
@@ -28,14 +28,6 @@ impl Default for ZkvmOpEvmFactory {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Wires the real XLayer gasless fee hook into the zkVM proof path so that gasless
-/// transactions bypass the base-fee check exactly as the sequencer does. Required by the
-/// gasless `BlockExecutorFactory` bound in kona; mirrors kona's `FpvmOpEvmFactory` impl
-/// (the orphan rule forces this impl to live here).
-impl XLayerGaslessFeeHookFactory for ZkvmOpEvmFactory {
-    type Hook<DB: Database, I: Inspector<OpEvmContext<DB>>> = XLayerGaslessFeeHook;
 }
 
 /// Bridges `ZkvmOpEvmFactory` into the `PostExecEvmFactoryAdapter` path used by kona's
