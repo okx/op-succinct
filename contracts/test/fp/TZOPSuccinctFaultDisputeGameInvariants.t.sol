@@ -90,7 +90,7 @@ contract InvariantHandler is Test {
 
     function h_warpToProveDeadline() external {
         try game.claimData() returns (
-            address, Timestamp pd, uint32, TZOPSuccinctFaultDisputeGame.ProposalStatus, Claim
+            uint32, address, Claim, TZOPSuccinctFaultDisputeGame.ProposalStatus, Timestamp pd
         ) {
             vm.warp(uint256(pd.raw()) + 1);
         } catch {}
@@ -271,7 +271,7 @@ contract TZOPSuccinctFaultDisputeGameInvariantsTest is Test {
 
     /// @notice Inv 26: claimData.status == FullProved ⟺ claimData.prover != address(0).
     function invariant_fullProvedBiconditional() public view {
-        (address pv, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = game.claimData();
+        (, address pv, , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = game.claimData();
         if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved) {
             assertTrue(pv != address(0), "FullProved => prover set");
         } else {

@@ -17,7 +17,6 @@ import {
 } from "src/dispute/lib/Types.sol";
 import {
     AlreadyInitialized,
-    AnchorRootNotFound,
     BadAuth,
     BadExtraData,
     BondTransferFailed,
@@ -74,12 +73,22 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ///         vs V1: drops `counteredBy` (per-segment tracking moved to `disputes[k].counteredBy`);
     ///         renames `deadline` → `proveDeadline` and switches semantics from rolling to absolute-time
     ///         (initialized once, never updated). See SPEC §8.1.
+    // Field order intentionally matches V1 OPSuccinctFaultDisputeGame.sol:70-77 minus the deleted
+    // `counteredBy` (which V2 moved to `disputes[k].counteredBy` for per-segment tracking).
+    // `deadline` renamed to `proveDeadline` to reflect the absolute-time semantics (SPEC §8.1).
+    // Order: parentIndex → prover → claim → status → proveDeadline (same as V1, minus counteredBy).
     struct ClaimData {
-        address prover;             // SPEC §6 Phase 3.5 `prove(bytes)` writes msg.sender; default address(0)
-        Timestamp proveDeadline;    // = createdAt + MAX_CHALLENGE_DURATION + MAX_PROVE_DURATION; absolute, never updated
         uint32 parentIndex;
-        ProposalStatus status;
+        // SPEC §6 Phase 3.5 `prove(bytes)` writes msg.sender here; default address(0).
+        // ⚠️ INFORMATIONAL ONLY — V2 has no internal read site for this field (resolve/claimCredit
+        // /gameOver all consume `status == FullProved` instead). V1 used `prover != address(0)` to
+        // gate the fast-finalize path; V2 replaced that with the explicit `ProposalStatus.FullProved`
+        // enum value. Kept on storage for off-chain indexers / audit trail; `FullProved(prover)`
+        // event broadcasts the same info if you only need it once.
+        address prover;
         Claim claim;
+        ProposalStatus status;
+        Timestamp proveDeadline;    // = createdAt + MAX_CHALLENGE_DURATION + MAX_PROVE_DURATION; absolute, never updated
     }
 
     /// @notice Per-address challenger state for multi-challenger dispute mode (SPEC §6 Phase 1).
@@ -121,53 +130,12 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     event GameClosed(BondDistributionMode bondDistributionMode);
 
     ////////////////////////////////////////////////////////////////
-    //          Errors (TZ-spec additions per SPEC §12.4)         //
-    //   (will be consolidated into lib/Errors.sol in a later commit)
-    ////////////////////////////////////////////////////////////////
-
-    // `BadExtraData` is imported from `src/dispute/lib/Errors.sol`.
-
-    /// @notice Thrown when derived numSegments is outside `[1, MAX_NUM_SEGMENTS]`.
-    /// @param  actual Derived numSegments value from CWIA calldata length.
-    error InvalidNumSegments(uint64 actual);
-
-    /// @notice Thrown when `batchSize % numSegments != 0` (SEGMENT_SIZE would not be a positive integer).
-    error InvalidBatchSize();
-
-    /// @notice Thrown by any mutator first-check when `status != IN_PROGRESS` (SPEC §11.9 Invariant 31).
-    /// @dev    resolve() uses V1's `ClaimAlreadyResolved` instead per SPEC §6 Phase 3 alignment note.
-    error GameAlreadyResolved();
-
-    /// @notice Thrown by challenge() / proveFull() when `claimData.status == FullProved`
-    ///         (SPEC §6 Phase 1/3.5 — game already early-finalized; reject for clarity vs ClaimAlreadyChallenged).
-    error AlreadyFullProved();
-
-    /// @notice Thrown by challenge() when caller has already countered another segment in this game
-    ///         (SPEC §6 Phase 1 per-address dedup; `challengers[msg.sender].countered == true`).
-    error AlreadyCountered();
-
-    /// @notice Thrown by challenge() / prove(uint64,bytes) when segment index `k >= numSegments`.
-    error IndexOutOfRange();
-
-    /// @notice Thrown by prove(uint64,bytes) when segment k has no challenger (or proveFull was used).
-    error IndexNotCountered();
-
-    /// @notice Thrown by prove(uint64,bytes) when segment k has already been successfully proven.
-    error AlreadyProved();
-
-    /// @notice Thrown by prove(bytes) early-finalize when claimData.status != Unchallenged.
-    error NotUnchallenged();
-
-    /// @notice Thrown by prove(bytes) early-finalize when called after challengeEnd().
-    error ChallengeWindowEnded();
-
-    /// @notice Thrown by prove(bytes) when parent game has already resolved CHALLENGER_WINS
-    ///         (this game is doomed; off-chain SP1 work would be wasted).
-    error ParentAlreadyLost();
-
-    ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
     ////////////////////////////////////////////////////////////////
+
+    // TZ-spec error declarations (SPEC §12.4) now live in `src/fp/lib/Errors.sol`,
+    // imported via the wildcard at the top of this file. `BadExtraData` is imported
+    // from `src/dispute/lib/Errors.sol`.
 
     /// @notice Upper bound on per-game `numSegments` (SPEC §3, §4 bond economics calibration).
     uint64 internal constant MAX_NUM_SEGMENTS = 256;
@@ -241,17 +209,41 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @dev This should match the claim root of the parent game.
     Proposal public startingOutputRoot;
 
+    // ────────────────────────────────────────────────────────────
+    // Storage layout: 4 small fields below pack into a SINGLE slot
+    //   wasRespected (1B) + bondDistributionMode (1B) +
+    //   createBondPushedAtResolve (1B) + lowestSIndex (8B) = 11B / 32B
+    // (Reorder vs natural order saves 1 slot per game — net ~20k gas init,
+    //  ~2k gas per resolve/claimCredit hot path SLOAD avoidance.)
+    // ────────────────────────────────────────────────────────────
+
     /// @notice A boolean for whether or not the game type was respected when the game was created.
     bool public wasRespectedGameTypeWhenCreated;
 
     /// @notice The bond distribution mode of the game.
     BondDistributionMode public bondDistributionMode;
 
+    /// @notice Set true when parent-CHW forces game CHW AND `totalProved == totalCountered` —
+    ///         covers both burn sub-cases per SPEC §9.4.b:
+    ///           (a) totalCountered == 0 (Unchallenged / FullProved): no challenger to receive
+    ///               CREATE_BOND → burn to address(0).
+    ///           (b) totalCountered > 0 && totalProved == totalCountered (S == ∅): all challenged
+    ///               segments proved → claimCredit lazy lowest-S compute would never run (gated on
+    ///               `!d.proved`), so non-burn fallthrough would strand CREATE_BOND forever → also burn.
+    ///         Reading this flag in claimCredit suppresses the lazy CREATE_BOND push since the bond
+    ///         was already burned in resolve().
+    bool public createBondPushedAtResolve;
+
+    /// @notice First-mismatch winner index (smallest k ∈ S set), lazy-computed in claimCredit (SPEC §6.4.2 / §9.5).
+    /// @dev    Initialized to LOWEST_S_NOT_SET in initialize; written once on first S-path claimCredit().
+    uint64 public lowestSIndex;
+
     ////////////////////////////////////////////////////////////////
     //              Multi-segment / Multi-challenger              //
     //   (SPEC §3 / §6 / §12.3; new vs V1)                        //
     ////////////////////////////////////////////////////////////////
 
+    // 4 × uint64 below pack into a SINGLE 32B slot.
     /// @notice Per-game total batch span = `l2SequenceNumber() - startingOutputRoot.l2SequenceNumber`.
     /// @dev    Decided by proposer at create; `batchSize % numSegments == 0` enforced in initialize.
     uint64 public batchSize;
@@ -267,21 +259,13 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice Total number of countered segments that have been successfully proved.
     uint64 public totalProved;
 
-    /// @notice First-mismatch winner index (smallest k ∈ S set), lazy-computed in claimCredit (SPEC §6.4.2 / §9.5).
-    /// @dev    Initialized to LOWEST_S_NOT_SET in initialize; written once on first S-path claimCredit().
-    uint64 public lowestSIndex;
-
-    /// @notice Set true when parent-CHW forces game CHW with `totalCountered == 0`
-    ///         (SPEC §9.4.b: CREATE_BOND burned to address(0), claimCredit must skip re-distribution).
-    bool public createBondPushedAtResolve;
-
     /// @notice CREATE_BOND amount snapshot, captured from `msg.value` at initialize().
     /// @dev    The factory enforces `msg.value == initBonds(GAME_TYPE)` at create-time, so this
     ///         is the canonical CREATE_BOND for this game. Stored separately from
     ///         `refundModeCredit[gameCreator()]` to avoid creator-as-challenger ledger inflation:
     ///         if the creator also calls `challenge()`, `refundModeCredit[creator]` is +=ed by
     ///         CHAL_BOND and can no longer be used as a CREATE_BOND amount proxy.
-    uint256 public createBondAmount;
+    uint256 public createBond;
 
     /// @notice Per-address challenger registry (multi-challenger dedup + bond tracking).
     mapping(address => ChallengerInfo) public challengers;
@@ -419,32 +403,33 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // Set the root claim.
         // SPEC §8.1: proveDeadline is absolute time (never updated), unlike V1's rolling deadline.
         // ClaimData has 5 fields (V1 had 6); `counteredBy` removed (now in disputes[k]).
+        // Literal order matches V1 layout (V1:296-303) minus counteredBy, for diff-against-V1 clarity.
         claimData = ClaimData({
+            parentIndex: parentIndex(),
             prover: address(0),
+            claim: rootClaim(),
+            status: ProposalStatus.Unchallenged,
             proveDeadline: Timestamp.wrap(uint64(
                 block.timestamp + MAX_CHALLENGE_DURATION.raw() + MAX_PROVE_DURATION.raw()
-            )),
-            parentIndex: parentIndex(),
-            status: ProposalStatus.Unchallenged,
-            claim: rootClaim()
+            ))
         });
 
         // Set the game as initialized.
         initialized = true;
 
+        // ─── V1 steps 3-5: order strictly aligned with OPSuccinctFaultDisputeGame.sol:307-316 ───
+
         // Deposit the bond.
         refundModeCredit[gameCreator()] += msg.value;
-        // Snapshot CREATE_BOND for use as the canonical amount in resolve()/claimCredit() bond
-        // pushes — avoids aliasing refundModeCredit[creator], which would be inflated by CHAL_BOND
-        // if the creator also calls challenge() (creator-as-challenger).
-        createBondAmount = msg.value;
 
-        // Set the game's starting timestamp
+        // Set the game's starting timestamp.
         createdAt = Timestamp.wrap(uint64(block.timestamp));
 
         // Set whether the game type was respected when the game was created.
         wasRespectedGameTypeWhenCreated =
             GameType.unwrap(ANCHOR_STATE_REGISTRY.respectedGameType()) == GameType.unwrap(GAME_TYPE);
+
+        // ─── V2-new fields: all appended after the V1-aligned 1-5 block per SPEC §6 Phase 0 ───
 
         // SPEC §6 Phase 0 step 6+7: multi-segment field writes.
         batchSize = _batchSize;
@@ -452,6 +437,11 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // ★ Solidity default 0 would mis-trigger lazy compute as "already computed, lowest=0";
         //   explicit sentinel required. See SPEC §11 Invariant 15.
         lowestSIndex = LOWEST_S_NOT_SET;
+
+        // Snapshot CREATE_BOND for use as the canonical amount in resolve()/claimCredit() bond
+        // pushes — avoids aliasing refundModeCredit[creator], which would be inflated by CHAL_BOND
+        // if the creator also calls challenge() (creator-as-challenger).
+        createBond = msg.value;
     }
 
     /// @notice The L2 sequence number (block number) for which this game is proposing an output root.
@@ -679,6 +669,8 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Step 2 — mark FullProved. Does NOT touch `status` (GameStatus); resolve() does that.
         claimData.status = ProposalStatus.FullProved;
+        // claimData.prover is informational-only storage (see ClaimData natspec); FullProved event
+        // below carries the same data for the common indexer use case.
         claimData.prover = msg.sender;
 
         emit FullProved(msg.sender);
@@ -741,7 +733,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             // resolve outcome — this matches V1 baseline behavior and the REFUND-mode-as-
             // emergency-rollback semantics. See SPEC §9.4.b NOTE on REFUND-mode override.
             if (totalProved == totalCountered) {
-                normalModeCredit[address(0)] += createBondAmount;
+                normalModeCredit[address(0)] += createBond;
                 createBondPushedAtResolve = true;
             }
 
@@ -755,11 +747,10 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         if (!gameOver()) revert GameNotOver();
 
         // SPEC §6 Phase 3: 4-state branch on claimData.status. CREATE_BOND amount captured in
-        // initialize and stored in `createBondAmount` (NOT read from refundModeCredit[creator],
+        // initialize and stored in `createBond` (NOT read from refundModeCredit[creator],
         // which is +=ed by challenge() under creator-as-challenger).
         address creator = gameCreator();
-        TZOPSuccinctFaultDisputeGame.ProposalStatus s = claimData.status;
-        uint256 createBond = createBondAmount;
+        ProposalStatus s = claimData.status;
 
         // Unchallenged + FullProved converge to the same DW bond flow:
         //   Unchallenged: gameOver() ensured block.timestamp >= challengeEnd() (clock-expiry)
@@ -826,6 +817,12 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             return;
         }
 
+        // Defense-in-depth: closeGame() above must have set mode to NORMAL or REFUND. If we reach
+        // here with UNDECIDED, something is wrong — likely a reentry into claimCredit through the
+        // ASR.setAnchorState callback in closeGame before mode was written. V1
+        // OPSuccinctFaultDisputeGame.sol:512-515 has the equivalent guard; V2 must not lose it.
+        if (bondDistributionMode != BondDistributionMode.NORMAL) revert InvalidBondDistributionMode();
+
         // NORMAL mode (proper game). If recipient is an S-path challenger whose segment hasn't been
         // proved AND hasn't been settled yet, lazily push CHAL_BOND back + (if winner) CREATE_BOND.
         // Use storage pointer to amortize ChallengerInfo SLOADs.
@@ -862,8 +859,8 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
                     if (k == lowestSIndex) {
                         // CREATE_BOND amount captured in initialize. Must NOT read
                         // refundModeCredit[gameCreator()] (inflated by CHAL_BOND under
-                        // creator-as-challenger — see createBondAmount natspec).
-                        normalModeCredit[_recipient] += createBondAmount;
+                        // creator-as-challenger — see createBond natspec).
+                        normalModeCredit[_recipient] += createBond;
                     }
                 }
             }

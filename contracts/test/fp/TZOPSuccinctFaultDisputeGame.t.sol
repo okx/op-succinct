@@ -26,7 +26,18 @@ import {
     ClaimAlreadyChallenged,
     GameNotOver,
     IncorrectDisputeGameFactory,
-    InvalidProposalStatus
+    InvalidProposalStatus,
+    InvalidNumSegments,
+    InvalidBatchSize,
+    GameAlreadyResolved,
+    AlreadyFullProved,
+    AlreadyCountered,
+    IndexOutOfRange,
+    IndexNotCountered,
+    AlreadyProved,
+    NotUnchallenged,
+    ChallengeWindowEnded,
+    ParentAlreadyLost
 } from "src/fp/lib/Errors.sol";
 import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
@@ -230,6 +241,9 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
     }
 
     /// @notice Destructure claimData() into named locals (TZ ClaimData has 5 fields).
+    /// @dev    ClaimData struct order is V1-aligned: (parentIndex, prover, claim, status, proveDeadline).
+    ///         Helper rearranges to a stable test-friendly return order so callers don't need to
+    ///         track storage layout decisions.
     function _readClaimData(TZOPSuccinctFaultDisputeGame g)
         internal
         view
@@ -241,7 +255,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
             Claim claim_
         )
     {
-        (prover_, proveDeadline_, parentIndex_, status_, claim_) = g.claimData();
+        (parentIndex_, prover_, claim_, status_, proveDeadline_) = g.claimData();
     }
 
     // ===================== §2.2 initialize() Happy Paths =====================
@@ -368,7 +382,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         // numSegments = 257 (one above MAX_NUM_SEGMENTS=256). extraData = 0x24 + 0x20*256 = 0x2024.
         bytes32[] memory tooManyRoots = new bytes32[](256); // intermediates for N=257
         bytes memory extra = _encodeExtraData(2000, 0, tooManyRoots);
-        vm.expectRevert(abi.encodeWithSelector(TZOPSuccinctFaultDisputeGame.InvalidNumSegments.selector, uint64(257)));
+        vm.expectRevert(abi.encodeWithSelector(InvalidNumSegments.selector, uint64(257)));
         vm.prank(proposer);
         factory.create{value: CREATE_BOND}(gameType, rootClaim, extra);
     }
@@ -395,7 +409,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
             roots[i] = keccak256(abi.encodePacked("seg", i));
         }
         vm.prank(proposer);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.InvalidBatchSize.selector);
+        vm.expectRevert(InvalidBatchSize.selector);
         factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraData(2001, 0, roots));
     }
 
@@ -469,7 +483,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
         // k = numSegments - 1 = 3 → out of range (intermediateRoot only goes up to N-2 = 2).
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        vm.expectRevert(IndexOutOfRange.selector);
         g.intermediateRoot(3);
     }
 
@@ -479,7 +493,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
             address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
         );
         // N=1 → no intermediate roots; any k reverts.
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        vm.expectRevert(IndexOutOfRange.selector);
         g.intermediateRoot(0);
     }
 
@@ -598,7 +612,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         vm.deal(challenger, 10 ether);
         vm.prank(challenger);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        vm.expectRevert(IndexOutOfRange.selector);
         g.challenge{value: CHAL_BOND}(uint64(1));
     }
 
@@ -659,7 +673,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         // Same challenger tries to counter another segment.
         vm.prank(challenger);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyCountered.selector);
+        vm.expectRevert(AlreadyCountered.selector);
         g.challenge{value: CHAL_BOND}(uint64(1));
     }
 
@@ -669,7 +683,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         vm.deal(challenger, 10 ether);
         vm.prank(challenger);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        vm.expectRevert(IndexOutOfRange.selector);
         g.challenge{value: CHAL_BOND}(uint64(4)); // numSegments == 4, k=4 invalid
     }
 
@@ -730,7 +744,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
 
         // claimData.status is Unchallenged → prove(k) should revert IndexNotCountered.
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexNotCountered.selector);
+        vm.expectRevert(IndexNotCountered.selector);
         g.prove(uint64(0), "");
     }
 
@@ -744,7 +758,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         g.challenge{value: CHAL_BOND}(uint64(1));
 
         // Now try to prove k=3 (not countered).
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexNotCountered.selector);
+        vm.expectRevert(IndexNotCountered.selector);
         g.prove(uint64(3), "");
     }
 
@@ -772,7 +786,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.prank(challenger);
         g.challenge{value: CHAL_BOND}(uint64(0));
 
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.IndexOutOfRange.selector);
+        vm.expectRevert(IndexOutOfRange.selector);
         g.prove(uint64(4), "");
     }
 
@@ -789,7 +803,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         // Second prove of same segment.
         vm.prank(prover);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyProved.selector);
+        vm.expectRevert(AlreadyProved.selector);
         g.prove(uint64(2), "");
     }
 
@@ -862,7 +876,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         // Second prove(bytes) call.
         vm.prank(prover);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
+        vm.expectRevert(AlreadyFullProved.selector);
         g.prove("");
     }
 
@@ -876,7 +890,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         // Now status is Challenged; prove(bytes) should revert.
         vm.prank(prover);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.NotUnchallenged.selector);
+        vm.expectRevert(NotUnchallenged.selector);
         g.prove("");
     }
 
@@ -888,7 +902,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.warp(g.challengeEnd().raw());
 
         vm.prank(prover);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.ChallengeWindowEnded.selector);
+        vm.expectRevert(ChallengeWindowEnded.selector);
         g.prove("");
     }
 
@@ -902,7 +916,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         vm.deal(challenger, 10 ether);
         vm.prank(challenger);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
+        vm.expectRevert(AlreadyFullProved.selector);
         g.challenge{value: CHAL_BOND}(uint64(1));
     }
 
@@ -914,7 +928,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.prank(prover);
         g.prove("");
 
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyFullProved.selector);
+        vm.expectRevert(AlreadyFullProved.selector);
         g.prove(uint64(0), "");
     }
 
@@ -1141,7 +1155,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         vm.deal(challenger, 10 ether);
         vm.prank(challenger);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.GameAlreadyResolved.selector);
+        vm.expectRevert(GameAlreadyResolved.selector);
         g.challenge{value: CHAL_BOND}(uint64(0));
     }
 
@@ -1152,7 +1166,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.warp(g.challengeEnd().raw() + 1);
         g.resolve();
 
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.GameAlreadyResolved.selector);
+        vm.expectRevert(GameAlreadyResolved.selector);
         g.prove(uint64(0), "");
     }
 
@@ -1163,7 +1177,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         vm.warp(g.challengeEnd().raw() + 1);
         g.resolve();
 
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.GameAlreadyResolved.selector);
+        vm.expectRevert(GameAlreadyResolved.selector);
         g.prove("");
     }
 
@@ -1201,7 +1215,8 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
     function _finalizeGame(TZOPSuccinctFaultDisputeGame g) internal {
         if (uint8(g.status()) == uint8(GameStatus.IN_PROGRESS)) {
             if (!g.gameOver()) {
-                (, Timestamp proveDeadline_, , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = g.claimData();
+                // ClaimData order: (parentIndex, prover, claim, status, proveDeadline)
+                (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, Timestamp proveDeadline_) = g.claimData();
                 if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.Challenged) {
                     vm.warp(proveDeadline_.raw() + 1);
                 } else {

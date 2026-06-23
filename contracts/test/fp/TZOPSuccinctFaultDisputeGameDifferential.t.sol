@@ -317,13 +317,14 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
             Timestamp v1Deadline
         ) = v1Game.claimData();
 
-        // TZ ClaimData: (prover, proveDeadline, parentIndex, status, claim) — 5-tuple
+        // TZ ClaimData: V1-aligned order minus counteredBy.
+        // (parentIndex, prover, claim, status, proveDeadline) — 5-tuple
         (
-            address tzProver,
-            Timestamp tzProveDeadline,
             uint32 tzParentIdx,
+            address tzProver,
+            Claim tzClaim,
             ,
-            Claim tzClaim
+            Timestamp tzProveDeadline
         ) = tzGame.claimData();
 
         // Shared semantics:

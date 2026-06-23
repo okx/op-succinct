@@ -12,7 +12,11 @@ import {
     ClaimAlreadyResolved,
     BondTransferFailed
 } from "src/dispute/lib/Errors.sol";
-import {ClaimAlreadyChallenged} from "src/fp/lib/Errors.sol";
+import {
+    ClaimAlreadyChallenged,
+    AlreadyCountered,
+    NotUnchallenged
+} from "src/fp/lib/Errors.sol";
 import {AggregationOutputs} from "src/lib/Types.sol";
 import {TZOPSuccinctFaultDisputeGame} from "src/fp/TZOPSuccinctFaultDisputeGame.sol";
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
@@ -147,7 +151,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
         g.challenge{value: CHAL_BOND}(uint64(0));
 
         vm.prank(attackerA);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyCountered.selector);
+        vm.expectRevert(AlreadyCountered.selector);
         g.challenge{value: CHAL_BOND}(uint64(1));
     }
 
@@ -171,7 +175,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
 
         // challenger cannot re-challenge another segment.
         vm.prank(challenger);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.AlreadyCountered.selector);
+        vm.expectRevert(AlreadyCountered.selector);
         g.challenge{value: CHAL_BOND}(uint64(2));
     }
 
@@ -215,7 +219,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
 
         // Now proveFull (prove(bytes)) reverts.
         vm.prank(prover);
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.NotUnchallenged.selector);
+        vm.expectRevert(NotUnchallenged.selector);
         g.prove("");
 
         // Adversary's CHAL_BOND is at risk: if anyone proves k=0 within proveDeadline, attacker loses.
@@ -467,7 +471,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
     ///         (CREATE_BOND at initialize, CHAL_BOND at challenge). Earlier code used this ledger
     ///         as a CREATE_BOND amount proxy in resolve()/claimCredit, which double-counted the
     ///         self-CHAL_BOND and made the contract insolvent. The fix snapshots CREATE_BOND
-    ///         into `createBondAmount` at initialize and reads that field instead.
+    ///         into `createBond` at initialize and reads that field instead.
     /// @dev    DW path: status=DEFENDER_WINS (Challenged + totalProved == totalCountered).
     function test_attack_creatorAsChallenger_bondConservation_DW() public {
         // Setup: same address gets both proposer and challenger whitelist.
@@ -482,8 +486,8 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
 
         assertEq(g.refundModeCredit(proposer), CREATE_BOND + CHAL_BOND,
             "refundModeCredit is inflated by self-CHAL_BOND (this is the attack premise)");
-        assertEq(g.createBondAmount(), CREATE_BOND,
-            "createBondAmount snapshot equals exactly CREATE_BOND");
+        assertEq(g.createBond(), CREATE_BOND,
+            "createBond snapshot equals exactly CREATE_BOND");
 
         // Independent prover proves segment 1 → consumes proposer's CHAL_BOND via L-bond push.
         vm.prank(prover);
@@ -543,7 +547,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
 
         // Proposer (as lowest-S challenger) claims:
         //   - settle block: own CHAL_BOND back
-        //   - lazy lowest-S push: createBondAmount (NOT refundModeCredit[creator] = CREATE_BOND+CHAL_BOND)
+        //   - lazy lowest-S push: createBond (NOT refundModeCredit[creator] = CREATE_BOND+CHAL_BOND)
         // Expected total = CHAL_BOND + CREATE_BOND.
         uint256 proposerBefore = proposer.balance;
         g.claimCredit(proposer);
