@@ -15,6 +15,8 @@ import {
 import {ClaimAlreadyChallenged} from "src/fp/lib/Errors.sol";
 import {AggregationOutputs} from "src/lib/Types.sol";
 import {TZOPSuccinctFaultDisputeGame} from "src/fp/TZOPSuccinctFaultDisputeGame.sol";
+import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
+import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 /// @notice Receiver that re-enters claimCredit on receive — for testing CEI ordering.
 contract ReentrantClaimer {
@@ -456,5 +458,218 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
         // Each holds its own CREATE_BOND deposit (no shared bond pool).
         assertEq(address(gameA).balance, CREATE_BOND);
         assertEq(address(gameB).balance, CREATE_BOND);
+    }
+
+    // ===================== Creator-as-Challenger Bond Inflation Regression =====================
+
+    /// @notice REGRESSION: when the proposer is also whitelisted as a challenger and uses both
+    ///         roles in the same game, `refundModeCredit[gameCreator()]` is +=ed twice
+    ///         (CREATE_BOND at initialize, CHAL_BOND at challenge). Earlier code used this ledger
+    ///         as a CREATE_BOND amount proxy in resolve()/claimCredit, which double-counted the
+    ///         self-CHAL_BOND and made the contract insolvent. The fix snapshots CREATE_BOND
+    ///         into `createBondAmount` at initialize and reads that field instead.
+    /// @dev    DW path: status=DEFENDER_WINS (Challenged + totalProved == totalCountered).
+    function test_attack_creatorAsChallenger_bondConservation_DW() public {
+        // Setup: same address gets both proposer and challenger whitelist.
+        accessManager.setChallenger(proposer, true);
+
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(2, 2000, 0, rootClaim);
+
+        // Same address challenges segment 1 — refundModeCredit[proposer] becomes inflated.
+        vm.prank(proposer);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+
+        assertEq(g.refundModeCredit(proposer), CREATE_BOND + CHAL_BOND,
+            "refundModeCredit is inflated by self-CHAL_BOND (this is the attack premise)");
+        assertEq(g.createBondAmount(), CREATE_BOND,
+            "createBondAmount snapshot equals exactly CREATE_BOND");
+
+        // Independent prover proves segment 1 → consumes proposer's CHAL_BOND via L-bond push.
+        vm.prank(prover);
+        g.prove(uint64(1), "");
+        assertEq(g.totalProved(), 1);
+        assertEq(g.totalCountered(), 1);
+
+        // Resolve under DW path (Challenged + all proved).
+        (, Timestamp proveDeadline, , ,) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
+
+        // Wait for finality + game-proper acceptance.
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Proposer claims: must receive exactly CREATE_BOND, NOT CREATE_BOND + CHAL_BOND.
+        // (Self-CHAL_BOND was forfeited to prover via the L-bond push at prove() Step 4.)
+        uint256 proposerBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - proposerBefore, CREATE_BOND,
+            "creator-as-challenger DW: receives only CREATE_BOND (not inflated by self-CHAL_BOND)");
+
+        // Prover claims their L-bond.
+        uint256 proverBefore = prover.balance;
+        g.claimCredit(prover);
+        assertEq(prover.balance - proverBefore, CHAL_BOND, "prover receives CHAL_BOND from L-push");
+
+        // Bond conservation: total paid = total deposited; contract drains to 0.
+        assertEq(address(g).balance, 0, "bond conservation holds: contract balance is zero");
+    }
+
+    /// @notice REGRESSION (CHW path): proposer-as-challenger on the lowest-S segment must not
+    ///         get the inflated `refundModeCredit[creator]` value when claimCredit's lazy
+    ///         winner-takes-all push fires.
+    /// @dev    CHW path: status=CHALLENGER_WINS (Challenged + totalProved < totalCountered).
+    ///         The proposer challenges k=0 (lowest-S) themselves but nobody proves it → they
+    ///         win the CHW lazy push. Should receive: own CHAL_BOND (settle) + CREATE_BOND
+    ///         (winner push). Total = CHAL_BOND + CREATE_BOND, NOT 2*CHAL_BOND + CREATE_BOND.
+    function test_attack_creatorAsChallenger_bondConservation_CHW_lowestS() public {
+        accessManager.setChallenger(proposer, true);
+
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(2, 2000, 0, rootClaim);
+
+        // Proposer challenges segment 0 (will be lowest-S; nobody proves it).
+        vm.prank(proposer);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        // Resolve past prove deadline → CHW (totalProved=0 < totalCountered=1).
+        (, Timestamp proveDeadline, , ,) = _readClaimData(g);
+        vm.warp(proveDeadline.raw() + 1);
+        g.resolve();
+        assertEq(uint8(g.status()), uint8(GameStatus.CHALLENGER_WINS));
+
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Proposer (as lowest-S challenger) claims:
+        //   - settle block: own CHAL_BOND back
+        //   - lazy lowest-S push: createBondAmount (NOT refundModeCredit[creator] = CREATE_BOND+CHAL_BOND)
+        // Expected total = CHAL_BOND + CREATE_BOND.
+        uint256 proposerBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - proposerBefore, CHAL_BOND + CREATE_BOND,
+            "creator-as-challenger CHW: receives CHAL_BOND + CREATE_BOND (no double CHAL_BOND inflation)");
+
+        assertEq(address(g).balance, 0, "bond conservation holds in CHW path");
+    }
+
+    // ===================== Parent-CHW CREATE_BOND Burn Regression =====================
+
+    /// @notice REGRESSION (code-review #2): parent-CHW with `totalProved == totalCountered > 0`
+    ///         (all challenged segments proved, S == ∅). Earlier code's parent-CHW branch only
+    ///         burned CREATE_BOND when totalCountered == 0; the totalCountered > 0 case relied on
+    ///         claimCredit's lazy lowest-S compute, but that compute is gated on `!d.proved` and
+    ///         never runs when all segments are proved → CREATE_BOND ETH stranded in contract
+    ///         with NO ledger entry pointing at it (silent §11 Inv 2 violation).
+    /// @dev    Fix collapses the burn condition to `totalProved == totalCountered`, covering
+    ///         both 0==0 and N==N (>0).
+    function test_attack_parentCHW_allProved_createBondBurned() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(2, 2000, 0, rootClaim);
+
+        // Two challengers, both segments countered.
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(1));
+
+        // Both segments proved → totalProved == totalCountered == 2, S == ∅.
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+        vm.prank(prover);
+        g.prove(uint64(1), "");
+        assertEq(g.totalProved(), 2);
+        assertEq(g.totalCountered(), 2);
+
+        // Simulate parent resolving CHW (e.g., fraud detected upstream after this game ran).
+        vm.mockCall(
+            address(parentGame),
+            abi.encodeWithSelector(IDisputeGame.status.selector),
+            abi.encode(GameStatus.CHALLENGER_WINS)
+        );
+
+        g.resolve();
+        vm.clearMockedCalls();
+
+        assertEq(uint8(g.status()), uint8(GameStatus.CHALLENGER_WINS));
+
+        // #2 fix: CREATE_BOND explicitly burned to address(0) (no longer stranded under NORMAL mode).
+        assertEq(g.normalModeCredit(address(0)), CREATE_BOND,
+            "parent-CHW + all-proved: CREATE_BOND burn ledger entry recorded");
+
+        // refundModeCredit[creator] is intentionally preserved — REFUND mode (governance override)
+        // must be able to roll back the burn to original depositor, matching V1 baseline behavior.
+        assertEq(g.refundModeCredit(proposer), CREATE_BOND,
+            "refundModeCredit[creator] preserved for REFUND-mode override rollback");
+
+        // Burn flag set so claimCredit lazy push is skipped.
+        assertTrue(g.createBondPushedAtResolve(), "createBondPushedAtResolve flag set");
+
+        // Wait for finality.
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Provers still claim their L-bonds (parent-CHW does not reclaim L-bonds — design-accepted
+        // per SPEC §11 Inv 2 / code-review #4 finding).
+        uint256 proverBefore = prover.balance;
+        g.claimCredit(prover);
+        assertEq(prover.balance - proverBefore, 2 * CHAL_BOND, "prover claims both L-bonds");
+
+        // NORMAL mode: proposer has no normalModeCredit entry → revert.
+        vm.expectRevert(NoCreditToClaim.selector);
+        g.claimCredit(proposer);
+
+        // CREATE_BOND ETH remains burned in contract (no recipient holds address(0)'s private key).
+        assertEq(address(g).balance, CREATE_BOND, "CREATE_BOND remains burned in contract under NORMAL mode");
+    }
+
+    /// @notice REGRESSION: REFUND mode semantics override §9.4.b burn — matches V1 baseline.
+    ///         When a parent-CHW game later flips to REFUND mode (ASR.isGameProper=false, e.g.,
+    ///         Guardian retirement / blacklist), the burn intent is overridden by REFUND's
+    ///         emergency-rollback semantics: all original deposits return to their depositors
+    ///         regardless of resolve outcome. The proposer reclaims their CREATE_BOND via the
+    ///         REFUND branch — matches V1 OPSuccinctFaultDisputeGame.sol behavior.
+    /// @dev    The §9.4.b burn lands in normalModeCredit[address(0)] (only paid in NORMAL mode);
+    ///         refundModeCredit[gameCreator()] is intentionally NOT cleared at burn time so
+    ///         REFUND mode can roll back as designed.
+    function test_parentCHW_burn_refundModeOverridesBurn_V1Compatible() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(1, 2000, 0, rootClaim);
+
+        // No challenger → totalCountered == 0; parent-CHW hits the burn branch.
+        vm.mockCall(
+            address(parentGame),
+            abi.encodeWithSelector(IDisputeGame.status.selector),
+            abi.encode(GameStatus.CHALLENGER_WINS)
+        );
+        g.resolve();
+        vm.clearMockedCalls();
+
+        // Burn ledger entry recorded (claimed under NORMAL mode), but creator's refund ledger
+        // is intentionally untouched so REFUND mode can roll back as designed.
+        assertEq(g.normalModeCredit(address(0)), CREATE_BOND,
+            "burn recorded in normalModeCredit[address(0)] (NORMAL-mode burn)");
+        assertEq(g.refundModeCredit(proposer), CREATE_BOND,
+            "REFUND-mode override: refundModeCredit[creator] preserved for emergency rollback");
+
+        // Wait for finality.
+        vm.warp(g.resolvedAt().raw() + portal.disputeGameFinalityDelaySeconds() + 1);
+
+        // Force isGameProper() = false → closeGame() flips bondDistributionMode to REFUND.
+        vm.mockCall(
+            address(anchorStateRegistry),
+            abi.encodeWithSelector(IAnchorStateRegistry.isGameProper.selector, IDisputeGame(address(g))),
+            abi.encode(false)
+        );
+
+        // Proposer reclaims CREATE_BOND via REFUND branch — V1-compatible behavior.
+        uint256 proposerBefore = proposer.balance;
+        g.claimCredit(proposer);
+        assertEq(proposer.balance - proposerBefore, CREATE_BOND,
+            "REFUND mode: proposer reclaims CREATE_BOND (overrides SPEC 9.4.b burn)");
+
+        vm.clearMockedCalls();
+
+        // Contract balance drained (CREATE_BOND refunded to proposer).
+        assertEq(address(g).balance, 0, "REFUND mode rolls back to original depositor");
     }
 }

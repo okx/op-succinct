@@ -19,6 +19,7 @@ import {
     AlreadyInitialized,
     AnchorRootNotFound,
     BadAuth,
+    BadExtraData,
     BondTransferFailed,
     ClaimAlreadyResolved,
     ClockTimeExceeded,
@@ -124,9 +125,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     //   (will be consolidated into lib/Errors.sol in a later commit)
     ////////////////////////////////////////////////////////////////
 
-    /// @notice Thrown when the CWIA calldata length is not `0x7E + 0x20 * (numSegments - 1)`.
-    /// @dev    Matches the selector V1 uses via inline assembly (`0x9824bdab`).
-    error BadExtraData();
+    // `BadExtraData` is imported from `src/dispute/lib/Errors.sol`.
 
     /// @notice Thrown when derived numSegments is outside `[1, MAX_NUM_SEGMENTS]`.
     /// @param  actual Derived numSegments value from CWIA calldata length.
@@ -158,9 +157,6 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Thrown by prove(bytes) early-finalize when claimData.status != Unchallenged.
     error NotUnchallenged();
-
-    /// @notice Thrown by prove(bytes) early-finalize when totalCountered != 0 (defensive; Inv 11 makes redundant).
-    error HasChallengers();
 
     /// @notice Thrown by prove(bytes) early-finalize when called after challengeEnd().
     error ChallengeWindowEnded();
@@ -278,6 +274,14 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice Set true when parent-CHW forces game CHW with `totalCountered == 0`
     ///         (SPEC §9.4.b: CREATE_BOND burned to address(0), claimCredit must skip re-distribution).
     bool public createBondPushedAtResolve;
+
+    /// @notice CREATE_BOND amount snapshot, captured from `msg.value` at initialize().
+    /// @dev    The factory enforces `msg.value == initBonds(GAME_TYPE)` at create-time, so this
+    ///         is the canonical CREATE_BOND for this game. Stored separately from
+    ///         `refundModeCredit[gameCreator()]` to avoid creator-as-challenger ledger inflation:
+    ///         if the creator also calls `challenge()`, `refundModeCredit[creator]` is +=ed by
+    ///         CHAL_BOND and can no longer be used as a CREATE_BOND amount proxy.
+    uint256 public createBondAmount;
 
     /// @notice Per-address challenger registry (multi-challenger dedup + bond tracking).
     mapping(address => ChallengerInfo) public challengers;
@@ -430,6 +434,10 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Deposit the bond.
         refundModeCredit[gameCreator()] += msg.value;
+        // Snapshot CREATE_BOND for use as the canonical amount in resolve()/claimCredit() bond
+        // pushes — avoids aliasing refundModeCredit[creator], which would be inflated by CHAL_BOND
+        // if the creator also calls challenge() (creator-as-challenger).
+        createBondAmount = msg.value;
 
         // Set the game's starting timestamp
         createdAt = Timestamp.wrap(uint64(block.timestamp));
@@ -527,12 +535,9 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             counteredIndex: k
         });
 
-        disputes[k] = DisputeEntry({
-            counteredBy: msg.sender,
-            proved: false,
-            claimed: false,
-            provedBy: address(0)
-        });
+        // Only write the non-zero field; `proved`, `claimed`, `provedBy` stay at their slot-zero
+        // defaults (struct-literal init would force a second SSTORE on the still-zero second slot).
+        disputes[k].counteredBy = msg.sender;
 
         refundModeCredit[msg.sender] += msg.value;
         totalCountered += 1;
@@ -562,10 +567,10 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // First-check (SPEC §11.9 Invariant 31).
         if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
 
-        // Per-state revert mapping (SPEC §6 Phase 2 positive enumeration).
-        if (claimData.status == ProposalStatus.Unchallenged) revert IndexNotCountered();
+        // FullProved gets a specific revert (clarity for SDKs); Unchallenged falls through to
+        // the per-segment `disputes[k].counteredBy == 0` check below, which returns the same
+        // IndexNotCountered error.
         if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
-        // Only Challenged proceeds.
 
         // INVARIANT: Must be within the prove window.
         if (block.timestamp >= Timestamp.unwrap(claimData.proveDeadline)) revert ClockTimeExceeded();
@@ -646,13 +651,12 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // First-check (SPEC §11.9 Invariant 31).
         if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
 
-        // Per-state revert mapping (SPEC §6 Phase 3.5).
+        // Per-state revert mapping (SPEC §6 Phase 3.5). After these checks, status is
+        // necessarily Unchallenged (Resolved already caught by first-check above), which by
+        // Invariant 11 implies totalCountered == 0 — no defensive recheck needed.
         if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
         if (claimData.status == ProposalStatus.Challenged) revert NotUnchallenged();
-        // Resolved already caught by first-check.
 
-        // Only Unchallenged proceeds; defensive checks below.
-        if (totalCountered != 0) revert HasChallengers();
         if (block.timestamp >= Timestamp.unwrap(challengeEnd())) revert ChallengeWindowEnded();
 
         // Parent-CHW preflight (SPEC §6 Phase 3.5 M3): if parent already resolved CHW, this
@@ -719,14 +723,25 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             //   Override outcome to CHW regardless of internal state (incl. FullProved); bypass gameOver().
             status = GameStatus.CHALLENGER_WINS;
 
-            // Sub-case totalCountered == 0 (Unchallenged OR FullProved): no challenger to receive
-            // CREATE_BOND → burn to address(0); flag claimCredit() to skip its lowest-S lazy push.
-            // Sub-case totalCountered > 0: CREATE_BOND will be pushed to lowest-S challenger by
-            // lazy compute in claimCredit() (same path as clock-CHW).
-            if (totalCountered == 0) {
-                // CREATE_BOND amount = the proposer's initial deposit recorded in refundModeCredit
-                // (factory's initBonds enforced exact value at initialize).
-                normalModeCredit[address(0)] += refundModeCredit[gameCreator()];
+            // CREATE_BOND disposal under parent-CHW. Two burn sub-cases collapse to the single
+            // condition `totalProved == totalCountered` (covers 0==0 and N==N for N>0):
+            //   - totalCountered == 0 (Unchallenged / FullProved): no challenger to receive it
+            //     (SPEC §9.4.b original burn case).
+            //   - totalCountered > 0 && totalProved == totalCountered (S == ∅): the claimCredit
+            //     lazy lowest-S compute would never run (it's gated on `!d.proved`), so the
+            //     non-burn fallthrough would strand CREATE_BOND forever. Extend §9.4.b to burn
+            //     here too — spec didn't anticipate this case, code-review #2 finding.
+            // Else (totalCountered > 0 && totalProved < totalCountered, S != ∅): lazy compute
+            // will pick lowest-S winner in claimCredit (SPEC §9.4.a fallthrough).
+            //
+            // NOTE: we do NOT zero refundModeCredit[gameCreator()] here. The burn lands in
+            // normalModeCredit[address(0)] which is only paid out under NORMAL mode (nobody can
+            // claim from address(0) → effective burn). Under REFUND mode (ASR.isGameProper=false,
+            // governance override), all original deposits return to depositors regardless of
+            // resolve outcome — this matches V1 baseline behavior and the REFUND-mode-as-
+            // emergency-rollback semantics. See SPEC §9.4.b NOTE on REFUND-mode override.
+            if (totalProved == totalCountered) {
+                normalModeCredit[address(0)] += createBondAmount;
                 createBondPushedAtResolve = true;
             }
 
@@ -739,24 +754,27 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // Parent DEFENDER_WINS → normal path. Game must be over (challenge/prove phase closed).
         if (!gameOver()) revert GameNotOver();
 
-        // SPEC §6 Phase 3: 4-state branch on claimData.status.
-        // CREATE_BOND amount used by DW branches (== refundModeCredit[gameCreator()] by initialize).
-        if (claimData.status == ProposalStatus.Unchallenged) {
-            // gameOver() ensured block.timestamp >= challengeEnd() (clock-expiration DW).
+        // SPEC §6 Phase 3: 4-state branch on claimData.status. CREATE_BOND amount captured in
+        // initialize and stored in `createBondAmount` (NOT read from refundModeCredit[creator],
+        // which is +=ed by challenge() under creator-as-challenger).
+        address creator = gameCreator();
+        TZOPSuccinctFaultDisputeGame.ProposalStatus s = claimData.status;
+        uint256 createBond = createBondAmount;
+
+        // Unchallenged + FullProved converge to the same DW bond flow:
+        //   Unchallenged: gameOver() ensured block.timestamp >= challengeEnd() (clock-expiry)
+        //   FullProved:   gameOver() short-circuit gave eligibility before challengeEnd
+        // Either way: no challenger → CREATE_BOND back to proposer; no L-bonds (none pushed).
+        if (s == ProposalStatus.Unchallenged || s == ProposalStatus.FullProved) {
             status = GameStatus.DEFENDER_WINS;
-            normalModeCredit[gameCreator()] += refundModeCredit[gameCreator()];
-        } else if (claimData.status == ProposalStatus.FullProved) {
-            // gameOver() short-circuit on FullProved triggers immediate resolve eligibility
-            // (no need to wait challengeEnd). Bond flow identical to Unchallenged-clock path.
-            status = GameStatus.DEFENDER_WINS;
-            normalModeCredit[gameCreator()] += refundModeCredit[gameCreator()];
-        } else if (claimData.status == ProposalStatus.Challenged) {
+            normalModeCredit[creator] += createBond;
+        } else if (s == ProposalStatus.Challenged) {
             // gameOver() ensured block.timestamp >= proveDeadline.
             if (totalProved == totalCountered) {
                 // All challenged segments proved → DW; CREATE_BOND to proposer.
                 // L-bonds already pushed to provers in prove() Step 4.
                 status = GameStatus.DEFENDER_WINS;
-                normalModeCredit[gameCreator()] += refundModeCredit[gameCreator()];
+                normalModeCredit[creator] += createBond;
             } else {
                 // ≥1 unproved → CHW. CREATE_BOND held in contract until claimCredit() lazy compute
                 // picks the lowest-S challenger (SPEC §6.4.2, §9.4.a winner-takes-all).
@@ -793,11 +811,14 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         closeGame();
 
         // REFUND mode: simple path, no settle. Refund original deposit.
+        // Zero BOTH ledgers (matches V1 OPSuccinctFaultDisputeGame.sol:521-522) — `normalModeCredit`
+        // may be non-zero in REFUND mode (e.g., prove() Step 4 push or resolve() DW credit landed
+        // before closeGame() decided REFUND). Clearing the ghost entry keeps ledger views consistent
+        // for audits / off-chain indexers, and aligns with the SPEC §9.4.b principle that all
+        // NORMAL-mode ledger writes are invalidated under REFUND-mode override.
         if (bondDistributionMode == BondDistributionMode.REFUND) {
             uint256 refund = refundModeCredit[_recipient];
             if (refund == 0) revert NoCreditToClaim();
-            // Zero both ledgers defensively — a future code path that wrote both would otherwise
-            // permit double-claim across modes.
             refundModeCredit[_recipient] = 0;
             normalModeCredit[_recipient] = 0;
             (bool ok,) = _recipient.call{value: refund}(hex"");
@@ -807,13 +828,15 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // NORMAL mode (proper game). If recipient is an S-path challenger whose segment hasn't been
         // proved AND hasn't been settled yet, lazily push CHAL_BOND back + (if winner) CREATE_BOND.
-        if (challengers[_recipient].countered) {
-            uint64 k = challengers[_recipient].counteredIndex;
+        // Use storage pointer to amortize ChallengerInfo SLOADs.
+        ChallengerInfo storage ci = challengers[_recipient];
+        if (ci.countered) {
+            uint64 k = ci.counteredIndex;
             DisputeEntry storage d = disputes[k];
             if (!d.proved && !d.claimed) {
                 d.claimed = true;
-                uint256 selfBond = challengers[_recipient].bond;
-                challengers[_recipient].bond = 0;
+                uint256 selfBond = ci.bond;
+                ci.bond = 0;
                 normalModeCredit[_recipient] += selfBond;
 
                 // CHW + not already burned → push CREATE_BOND to the lowest-S challenger (winner-takes-all).
@@ -822,22 +845,25 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
                     // Lazy compute lowestSIndex on the first S-path claimCredit invocation.
                     // Bounded by numSegments ≤ MAX_NUM_SEGMENTS = 256; worst-case ~540k gas.
                     if (lowestSIndex == LOWEST_S_NOT_SET) {
+                        uint64 n = numSegments; // hoist out of loop to avoid per-iter SLOAD
                         uint64 found = LOWEST_S_NOT_SET;
-                        for (uint64 j = 0; j < numSegments; j++) {
+                        for (uint64 j = 0; j < n; j++) {
                             DisputeEntry storage dj = disputes[j];
                             if (dj.counteredBy != address(0) && !dj.proved) {
                                 found = j;
                                 break;
                             }
                         }
-                        // S = ∅ + CHW is unreachable (resolve() CHW path requires totalProved < totalCountered).
-                        // Defensive assertion to surface implementation bugs instead of silent zero-write.
-                        if (found == LOWEST_S_NOT_SET) revert InvalidProposalStatus();
+                        // S = ∅ && CHW is unreachable (resolve() CHW path requires totalProved < totalCountered).
+                        // Use assert: surfaces as Panic, distinguishes implementation bug from user error.
+                        assert(found != LOWEST_S_NOT_SET);
                         lowestSIndex = found;
                     }
                     if (k == lowestSIndex) {
-                        // CREATE_BOND amount = proposer's original deposit (see resolve() for rationale).
-                        normalModeCredit[_recipient] += refundModeCredit[gameCreator()];
+                        // CREATE_BOND amount captured in initialize. Must NOT read
+                        // refundModeCredit[gameCreator()] (inflated by CHAL_BOND under
+                        // creator-as-challenger — see createBondAmount natspec).
+                        normalModeCredit[_recipient] += createBondAmount;
                     }
                 }
             }
@@ -905,7 +931,17 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
             // No challenger landed: phase closes at challengeEnd (immutable-derived view).
             return block.timestamp >= Timestamp.unwrap(challengeEnd());
         }
-        // s == Challenged: phase closes at proveDeadline (absolute, written once at initialize).
+        // s == Challenged: two terminal triggers
+        //   (a) Early-finalize: challengeEnd passed (no new challengers possible) AND
+        //       all challenged segments proved (totalProved == totalCountered). Saves up to
+        //       MAX_PROVE_DURATION of waiting when defense is complete.
+        //       ⚠ challengeEnd guard is MANDATORY: without it, an early `totalProved ==
+        //       totalCountered` window in [challenge window] would let resolve() race ahead
+        //       and revoke other challengers' right to counter further segments.
+        //   (b) Normal timeout: proveDeadline reached (some segments unproved → CHW path).
+        if (block.timestamp >= Timestamp.unwrap(challengeEnd()) && totalProved == totalCountered) {
+            return true;
+        }
         return block.timestamp >= Timestamp.unwrap(claimData.proveDeadline);
     }
 

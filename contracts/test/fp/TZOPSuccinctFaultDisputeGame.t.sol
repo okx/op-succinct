@@ -10,6 +10,7 @@ import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 import {Claim, Duration, GameStatus, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
 import {
     BadAuth,
+    BadExtraData,
     IncorrectBondAmount,
     AlreadyInitialized,
     UnexpectedRootClaim,
@@ -358,7 +359,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         // Total calldata = 4 (selector) + 0x78 (fixed CWIA) + 0x10 (malformed) + 2 (CWIA suffix) = 0x8E.
         // (calldatasize - 0x7E) % 0x20 = 0x10 % 0x20 = 0x10 != 0 → revert.
         bytes memory malformedExtra = abi.encodePacked(uint256(2000), uint32(0), bytes16(uint128(0xdead)));
-        vm.expectRevert(TZOPSuccinctFaultDisputeGame.BadExtraData.selector);
+        vm.expectRevert(BadExtraData.selector);
         vm.prank(proposer);
         factory.create{value: CREATE_BOND}(gameType, rootClaim, malformedExtra);
     }
@@ -1027,6 +1028,106 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         vm.expectRevert(GameNotOver.selector);
         g.resolve();
+    }
+
+    // ===================== Early-finalize on totalProved == totalCountered =====================
+
+    /// @notice Positive: after challengeEnd, with all challenged segments proved, gameOver()=true
+    ///         and resolve() succeeds with DW. Saves up to MAX_PROVE_DURATION of waiting.
+    function test_resolve_Challenged_earlyFinalize_afterChallengeEnd_allProved_DW() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // Challenge k=0 and k=2, prove both — all within the challenge window.
+        vm.deal(challenger, 10 ether);
+        vm.deal(challenger2, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+        vm.prank(prover);
+        g.prove(uint64(2), "");
+
+        // Still in challenge window — gameOver must be false (no early-finalize yet).
+        assertFalse(g.gameOver(), "challenge window still open: gameOver() must be false");
+
+        // Cross challengeEnd, but stay well before proveDeadline.
+        vm.warp(g.challengeEnd().raw() + 1);
+
+        // Early-finalize kicks in: gameOver() returns true; resolve() succeeds with DW.
+        assertTrue(g.gameOver(), "after challengeEnd + all proved: gameOver() returns true");
+        g.resolve();
+
+        assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
+        assertEq(g.normalModeCredit(proposer), CREATE_BOND);
+        assertEq(g.normalModeCredit(prover), 2 * CHAL_BOND);
+    }
+
+    /// @notice Negative (critical): while challenge window is still open, totalProved ==
+    ///         totalCountered MUST NOT trigger gameOver(). Otherwise a bot could race-resolve
+    ///         and revoke the right of later challengers to counter further segments.
+    function test_resolve_Challenged_earlyFinalize_blockedDuringChallengeWindow_GameNotOver() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+
+        // totalProved == totalCountered == 1, but still within challenge window.
+        assertEq(g.totalProved(), 1);
+        assertEq(g.totalCountered(), 1);
+        assertFalse(g.gameOver(), "early-finalize must NOT trigger inside challenge window");
+
+        vm.expectRevert(GameNotOver.selector);
+        g.resolve();
+    }
+
+    /// @notice Negative (core protection): even after totalProved == totalCountered, a later
+    ///         challenger MUST be able to counter another segment while still inside the
+    ///         challenge window. The early-finalize guard prevents resolve() race that would
+    ///         lock the game prematurely and block legitimate late challenges.
+    function test_challenge_lateChallengeAllowedAfterAllProved_withinChallengeWindow() public {
+        vm.prank(proposer);
+        TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
+
+        // First challenger + prover hit an intermediate "all-proved" state.
+        vm.deal(challenger, 10 ether);
+        vm.prank(challenger);
+        g.challenge{value: CHAL_BOND}(uint64(0));
+        vm.prank(prover);
+        g.prove(uint64(0), "");
+        assertEq(g.totalCountered(), 1);
+        assertEq(g.totalProved(), 1);
+
+        // Confirm gameOver() is still false so resolve() cannot race in.
+        assertFalse(g.gameOver(), "must remain open for late challengers");
+
+        // Late challenger comes in within the challenge window — must succeed, not revert.
+        vm.deal(challenger2, 10 ether);
+        vm.prank(challenger2);
+        g.challenge{value: CHAL_BOND}(uint64(2));
+
+        // Counter took effect; game stays in Challenged with totalProved < totalCountered.
+        assertEq(g.totalCountered(), 2);
+        assertEq(g.totalProved(), 1);
+
+        // Honest defense: prover proves k=2 too. Still in challenge window → game still open.
+        vm.prank(prover);
+        g.prove(uint64(2), "");
+        assertEq(g.totalProved(), 2);
+        assertFalse(g.gameOver(), "still in challenge window: gameOver() remains false");
+
+        // After challengeEnd both fall through to early-finalize and game can be resolved DW.
+        vm.warp(g.challengeEnd().raw() + 1);
+        assertTrue(g.gameOver(), "early-finalize triggers post-challengeEnd");
+        g.resolve();
+        assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
     }
 
     // ===================== §11.9 first-check protocol tests =====================
