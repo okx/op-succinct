@@ -2,13 +2,13 @@
 pragma solidity ^0.8.15;
 
 // Testing
-import "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {Proxy} from "@optimism/src/universal/Proxy.sol";
 import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 
 // Libraries
-import {Claim, Duration, GameStatus, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
-import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
+import {Claim, Duration, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
+import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 // Contracts under test (both V1 and TZ)
 import {OPSuccinctFaultDisputeGame} from "src/fp/OPSuccinctFaultDisputeGame.sol";
@@ -145,7 +145,7 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
     /// @notice V1's prove(bytes) selector MUST match TZ's prove(bytes) overload selector.
     /// @dev    This is the key V1-tooling-compatibility guarantee: etherscan, indexers,
     ///         debug tracers identify TZ's early-finalize call as V1's well-known prove.
-    function test_diff_proveSelector_TZ_matchesV1() public {
+    function test_diff_proveSelector_TZ_matchesV1() public pure {
         // V1: prove(bytes) is the only prove function.
         bytes4 v1ProveSelector = OPSuccinctFaultDisputeGame.prove.selector;
         // TZ: prove is overloaded; we want the (bytes)-only variant. Construct manually
@@ -159,7 +159,7 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
 
     /// @notice TZ's per-segment prove(uint64,bytes) MUST have a distinct selector from V1's prove(bytes).
     /// @dev    Prevents accidental cross-dispatch in tooling.
-    function test_diff_proveUint64BytesSelector_distinctFromV1() public {
+    function test_diff_proveUint64BytesSelector_distinctFromV1() public pure {
         bytes4 v1ProveSelector = OPSuccinctFaultDisputeGame.prove.selector;
         bytes4 tzProveUint64Selector = bytes4(keccak256("prove(uint64,bytes)"));
 
@@ -168,7 +168,7 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
 
     /// @notice V1's challenge() and TZ's challenge(uint64) MUST have distinct selectors.
     /// @dev    Documents the unavoidable ABI break for the per-segment counter.
-    function test_diff_challengeSelector_V1_distinctFromTZ() public {
+    function test_diff_challengeSelector_V1_distinctFromTZ() public pure {
         bytes4 v1ChallengeSelector = bytes4(keccak256("challenge()"));
         bytes4 tzChallengeSelector = bytes4(keccak256("challenge(uint64)"));
 
@@ -180,7 +180,7 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
     /// @notice For N=1 (degenerate path), TZ's extraData encoding is byte-identical to V1's.
     /// @dev    Both encode `(uint256 l2SequenceNumber, uint32 parentIndex)` = 36 bytes,
     ///         producing identical factory UUIDs for matching `(gameType, rootClaim, extraData)`.
-    function test_diff_extraDataEncoding_N1_byteIdenticalToV1() public {
+    function test_diff_extraDataEncoding_N1_byteIdenticalToV1() public pure {
         // Both V1 and TZ N=1 use abi.encodePacked(uint256, uint32) = 36 bytes.
         bytes memory tzN1Extra = abi.encodePacked(uint256(1000), type(uint32).max);
         bytes memory v1Extra = abi.encodePacked(uint256(1000), type(uint32).max);
@@ -285,7 +285,7 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
     }
 
     /// @notice V1's maxClockDuration() returns MAX_CHALLENGE_DURATION. TZ should match exactly.
-    function test_diff_maxClockDuration_identical() public {
+    function test_diff_maxClockDuration_identical() public view {
         assertEq(v1Impl.maxClockDuration().raw(), tzImpl.maxClockDuration().raw());
         assertEq(v1Impl.maxClockDuration().raw(), maxChallengeDuration.raw());
     }
@@ -337,16 +337,16 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
         // Divergence: V1 has counteredBy field (unused at init); TZ moved it to disputes[k].counteredBy.
         assertEq(v1CounteredBy, address(0));
 
-        // Divergence: V1's deadline is rolling (init = createdAt + MAX_CHAL).
-        //             TZ's proveDeadline is absolute (init = createdAt + MAX_CHAL + MAX_PROVE).
-        Duration MAX_CHAL = maxChallengeDuration;
-        Duration MAX_PROVE = maxProveDuration;
+        // Divergence: V1's deadline is rolling (init = createdAt + maxChal).
+        //             TZ's proveDeadline is absolute (init = createdAt + maxChal + maxProve).
+        Duration maxChal = maxChallengeDuration;
+        Duration maxProve = maxProveDuration;
         Timestamp v1Created = v1Game.createdAt();
         Timestamp tzCreated = tzGame.createdAt();
-        assertEq(v1Deadline.raw(), uint64(v1Created.raw()) + MAX_CHAL.raw());
+        assertEq(v1Deadline.raw(), uint64(v1Created.raw()) + maxChal.raw());
         assertEq(
             tzProveDeadline.raw(),
-            uint64(tzCreated.raw()) + MAX_CHAL.raw() + MAX_PROVE.raw()
+            uint64(tzCreated.raw()) + maxChal.raw() + maxProve.raw()
         );
     }
 
@@ -370,7 +370,7 @@ contract TZOPSuccinctFaultDisputeGameDifferentialTest is Test {
 
     // ===================== Version =====================
 
-    function test_diff_version_distinct() public {
+    function test_diff_version_distinct() public view {
         // V1 version constant.
         assertEq(v1Impl.version(), "2.0.0");
         // TZ adds suffix to distinguish.

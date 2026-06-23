@@ -2,7 +2,7 @@
 pragma solidity ^0.8.15;
 
 // Testing
-import "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {Proxy} from "@optimism/src/universal/Proxy.sol";
 import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 
@@ -15,18 +15,15 @@ import {
     AlreadyInitialized,
     UnexpectedRootClaim,
     NoCreditToClaim,
-    GameNotResolved,
     GameNotFinalized,
     ClaimAlreadyResolved,
     ClockTimeExceeded
 } from "src/dispute/lib/Errors.sol";
 import {
-    ParentGameNotResolved,
     InvalidParentGame,
     ClaimAlreadyChallenged,
     GameNotOver,
     IncorrectDisputeGameFactory,
-    InvalidProposalStatus,
     InvalidNumSegments,
     InvalidBatchSize,
     GameAlreadyResolved,
@@ -36,13 +33,13 @@ import {
     IndexNotCountered,
     AlreadyProved,
     NotUnchallenged,
-    ChallengeWindowEnded,
-    ParentAlreadyLost
+    ChallengeWindowEnded
 } from "src/fp/lib/Errors.sol";
-import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
+import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 // Contracts under test
 import {TZOPSuccinctFaultDisputeGame} from "src/fp/TZOPSuccinctFaultDisputeGame.sol";
+import {OPSuccinctFaultDisputeGame} from "src/fp/OPSuccinctFaultDisputeGame.sol";
 
 // Infrastructure
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
@@ -429,11 +426,11 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
     // ===================== §2.9 View Function Tests =====================
 
-    function test_view_version() public {
+    function test_view_version() public view {
         assertEq(gameImpl.version(), "2.0.0-tz-segment");
     }
 
-    function test_view_maxClockDuration_equalsMaxChallengeDuration() public {
+    function test_view_maxClockDuration_equalsMaxChallengeDuration() public view {
         // SPEC alignment with V1: maxClockDuration() returns MAX_CHALLENGE_DURATION.
         assertEq(gameImpl.maxClockDuration().raw(), gameImpl.maxChallengeDuration().raw());
         assertEq(gameImpl.maxClockDuration().raw(), maxChallengeDuration.raw());
@@ -855,16 +852,15 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved));
     }
 
-    function test_proveFull_selector_matchesV1() public {
-        // SPEC §6 Phase 3.5: prove(bytes) selector matches V1 for etherscan/tooling compat.
-        // V1 prove(bytes) selector == keccak256("prove(bytes)")[:4].
-        bytes4 expected = bytes4(keccak256("prove(bytes)"));
-        // Solidity overload resolution: TZOPSuccinctFaultDisputeGame.prove.selector is ambiguous,
-        // so we construct it manually and compare.
-        bytes4 actual = bytes4(keccak256("prove(bytes)"));
-        assertEq(expected, actual);
-        // (Self-tautology, but documents intent. Real verification: extracted bytecode would
-        // contain this selector in the dispatch table.)
+    function test_proveFull_selector_matchesV1() public pure {
+        // SPEC §6 Phase 3.5: V2 prove(bytes) selector must match V1 for etherscan/tooling compat.
+        // V1 has a single `prove(bytes)` overload, so its selector is unambiguous.
+        // V2's `prove.selector` is ambiguous (overload), so we compare V1's selector against the
+        // canonical signature hash; V2's prove(bytes) overload uses the same signature →
+        // dispatch table contains the matching selector by Solidity ABI rules.
+        bytes4 v1Selector = OPSuccinctFaultDisputeGame.prove.selector;
+        bytes4 canonicalSelector = bytes4(keccak256("prove(bytes)"));
+        assertEq(v1Selector, canonicalSelector, "V1 prove(bytes) selector deviates from canonical");
     }
 
     function test_proveFull_revert_AlreadyFullProved_doubleCall() public {

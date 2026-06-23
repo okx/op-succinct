@@ -4,7 +4,7 @@ pragma solidity ^0.8.15;
 // Inherits all setUp + helpers from the main test contract.
 import {TZOPSuccinctFaultDisputeGameTest} from "./TZOPSuccinctFaultDisputeGame.t.sol";
 
-import {Claim, Duration, GameStatus, Hash, Timestamp} from "src/dispute/lib/Types.sol";
+import {Timestamp} from "src/dispute/lib/Types.sol";
 import {TZOPSuccinctFaultDisputeGame} from "src/fp/TZOPSuccinctFaultDisputeGame.sol";
 
 /// @title TZOPSuccinctFaultDisputeGameGasTest

@@ -4,10 +4,8 @@ pragma solidity ^0.8.15;
 // Inherits all setUp + helpers from the main test contract.
 import {TZOPSuccinctFaultDisputeGameTest} from "./TZOPSuccinctFaultDisputeGame.t.sol";
 
-import {Claim, Duration, GameStatus, Hash, Timestamp} from "src/dispute/lib/Types.sol";
+import {Claim, GameStatus, Timestamp} from "src/dispute/lib/Types.sol";
 import {
-    BadAuth,
-    IncorrectBondAmount,
     NoCreditToClaim,
     ClaimAlreadyResolved,
     BondTransferFailed
@@ -356,7 +354,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
     /// @dev    With SP1MockVerifier we cannot operationally test verify-rejection, but the
     ///         binding is purely a function of publicValues content. Asserting publicValues
     ///         distinctness proves the cryptographic separation.
-    function test_attack_replay_publicInputDiffersAcrossRootClaim() public {
+    function test_attack_replay_publicInputDiffersAcrossRootClaim() public view {
         // Construct hypothetical publicValues for two games.
         AggregationOutputs memory pvA = AggregationOutputs({
             l1Head: bytes32(0),
@@ -381,7 +379,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
 
     /// @notice Two segments within the same game have different `claimBlockNum` in publicValues
     ///         → cross-segment proof replay rejected by SP1 verifier.
-    function test_attack_replay_publicInputDiffersAcrossSegments() public {
+    function test_attack_replay_publicInputDiffersAcrossSegments() public view {
         AggregationOutputs memory pvSeg0 = AggregationOutputs({
             l1Head: bytes32(0),
             l2PreRoot: keccak256("start"),
@@ -406,7 +404,7 @@ contract TZOPSuccinctFaultDisputeGameAttacksTest is TZOPSuccinctFaultDisputeGame
     /// @notice publicValues includes `proverAddress = msg.sender` — attacker that copies an
     ///         honest prover's proof bytes but submits with own msg.sender produces different
     ///         publicValues → SP1 verifier rejects.
-    function test_attack_frontrunProver_publicInputIncludesMsgSender() public {
+    function test_attack_frontrunProver_publicInputIncludesMsgSender() public view {
         AggregationOutputs memory pvHonest = AggregationOutputs({
             l1Head: bytes32(0),
             l2PreRoot: keccak256("start"),

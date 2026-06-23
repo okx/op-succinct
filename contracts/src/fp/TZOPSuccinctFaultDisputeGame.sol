@@ -6,12 +6,10 @@ import {Clone} from "@solady/utils/Clone.sol";
 import {
     BondDistributionMode,
     Claim,
-    Clock,
     Duration,
     GameStatus,
     GameType,
     Hash,
-    LibClock,
     Proposal,
     Timestamp
 } from "src/dispute/lib/Types.sol";
@@ -23,13 +21,30 @@ import {
     ClaimAlreadyResolved,
     ClockTimeExceeded,
     GameNotFinalized,
-    GameNotInProgress,
     IncorrectBondAmount,
     InvalidBondDistributionMode,
     NoCreditToClaim,
     UnexpectedRootClaim
 } from "src/dispute/lib/Errors.sol";
-import "src/fp/lib/Errors.sol";
+import {
+    AlreadyCountered,
+    AlreadyFullProved,
+    AlreadyProved,
+    ChallengeWindowEnded,
+    ClaimAlreadyChallenged,
+    GameAlreadyResolved,
+    GameNotOver,
+    IncorrectDisputeGameFactory,
+    IndexNotCountered,
+    IndexOutOfRange,
+    InvalidBatchSize,
+    InvalidNumSegments,
+    InvalidParentGame,
+    InvalidProposalStatus,
+    NotUnchallenged,
+    ParentAlreadyLost,
+    ParentGameNotResolved
+} from "src/fp/lib/Errors.sol";
 import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 // Interfaces
@@ -69,14 +84,18 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ////////////////////////////////////////////////////////////////
 
     /// @notice The `ClaimData` struct represents the data associated with a Claim.
-    /// @dev    Field order chosen for slot-1 packing: prover(20) + proveDeadline(8) + parentIndex(4) = 32B.
-    ///         vs V1: drops `counteredBy` (per-segment tracking moved to `disputes[k].counteredBy`);
-    ///         renames `deadline` → `proveDeadline` and switches semantics from rolling to absolute-time
-    ///         (initialized once, never updated). See SPEC §8.1.
-    // Field order intentionally matches V1 OPSuccinctFaultDisputeGame.sol:70-77 minus the deleted
-    // `counteredBy` (which V2 moved to `disputes[k].counteredBy` for per-segment tracking).
-    // `deadline` renamed to `proveDeadline` to reflect the absolute-time semantics (SPEC §8.1).
-    // Order: parentIndex → prover → claim → status → proveDeadline (same as V1, minus counteredBy).
+    /// @dev    Field order matches V1 OPSuccinctFaultDisputeGame.sol:70-77 minus the deleted
+    ///         `counteredBy` (V2 moved per-challenger tracking to `disputes[k].counteredBy`).
+    ///         `deadline` renamed to `proveDeadline` to reflect absolute-time semantics (SPEC §8.1,
+    ///         initialized once, never updated; differs from V1's rolling deadline).
+    ///         Resulting storage layout under Solidity packing (3 slots total):
+    ///           - slot A: parentIndex(4B) + prover(20B) = 24B
+    ///           - slot B: claim(32B)
+    ///           - slot C: status(1B) + proveDeadline(8B) = 9B
+    ///         Same slot count as V1 (V1 had 4 slots before dropping counteredBy → 3). Field order
+    ///         prioritized V1-diff readability over slot-1 32B packing — the alternative order
+    ///         (prover, proveDeadline, parentIndex, status, claim) would yield slot-1 32B full but
+    ///         break the V1 1:1 field-position alignment relied on by diff tools.
     struct ClaimData {
         uint32 parentIndex;
         // SPEC §6 Phase 3.5 `prove(bytes)` writes msg.sender here; default address(0).

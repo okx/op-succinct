@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.15;
 
-import "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {Proxy} from "@optimism/src/universal/Proxy.sol";
 import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 
-import {Claim, Duration, GameStatus, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
+import {Claim, Duration, GameType, Hash, Proposal, Timestamp} from "src/dispute/lib/Types.sol";
 import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 import {TZOPSuccinctFaultDisputeGame} from "src/fp/TZOPSuccinctFaultDisputeGame.sol";
@@ -60,7 +60,7 @@ contract InvariantHandler is Test {
 
     // ===================== Handler operations =====================
 
-    function h_challenge(uint8 actorIdx, uint64 k) external {
+    function hChallenge(uint8 actorIdx, uint64 k) external {
         address a = _actor(actorIdx);
         k = uint64(uint256(k) % NUM_SEGMENTS); // bound to [0, NUM_SEGMENTS)
         try game.challenge{value: CHAL_BOND}(k) {
@@ -73,22 +73,27 @@ contract InvariantHandler is Test {
         }
     }
 
-    function h_proveSegment(uint8 actorIdx, uint64 k) external {
+    function hProveSegment(uint8 actorIdx, uint64 k) external {
+        // prove(k) is permissionless — prank as a fuzzer-chosen actor so invariants cover
+        // multi-prover identity (e.g., L-bond push to varying msg.sender vs single test contract).
         k = uint64(uint256(k) % NUM_SEGMENTS);
+        vm.prank(_actor(actorIdx));
         try game.prove(k, "") {} catch {}
     }
 
-    function h_proveFull(uint8 actorIdx) external {
+    function hProveFull(uint8 actorIdx) external {
+        // prove(bytes) is permissionless — same rationale as hProveSegment.
+        vm.prank(_actor(actorIdx));
         try game.prove("") {} catch {}
     }
 
-    function h_warpToChallengeEnd() external {
+    function hWarpToChallengeEnd() external {
         try game.challengeEnd() returns (Timestamp t) {
             vm.warp(uint256(t.raw()) + 1);
         } catch {}
     }
 
-    function h_warpToProveDeadline() external {
+    function hWarpToProveDeadline() external {
         try game.claimData() returns (
             uint32, address, Claim, TZOPSuccinctFaultDisputeGame.ProposalStatus, Timestamp pd
         ) {
@@ -96,11 +101,11 @@ contract InvariantHandler is Test {
         } catch {}
     }
 
-    function h_resolve() external {
+    function hResolve() external {
         try game.resolve() {} catch {}
     }
 
-    function h_claimCredit(uint8 actorIdx) external {
+    function hClaimCredit(uint8 actorIdx) external {
         try game.claimCredit(_actor(actorIdx)) {} catch {}
     }
 }
@@ -213,13 +218,13 @@ contract TZOPSuccinctFaultDisputeGameInvariantsTest is Test {
         // Fund the handler so it can pay CHAL_BOND on challenge() calls.
         // (Handler forwards msg.value from itself when calling game.challenge.)
         bytes4[] memory selectors = new bytes4[](7);
-        selectors[0] = InvariantHandler.h_challenge.selector;
-        selectors[1] = InvariantHandler.h_proveSegment.selector;
-        selectors[2] = InvariantHandler.h_proveFull.selector;
-        selectors[3] = InvariantHandler.h_warpToChallengeEnd.selector;
-        selectors[4] = InvariantHandler.h_warpToProveDeadline.selector;
-        selectors[5] = InvariantHandler.h_resolve.selector;
-        selectors[6] = InvariantHandler.h_claimCredit.selector;
+        selectors[0] = InvariantHandler.hChallenge.selector;
+        selectors[1] = InvariantHandler.hProveSegment.selector;
+        selectors[2] = InvariantHandler.hProveFull.selector;
+        selectors[3] = InvariantHandler.hWarpToChallengeEnd.selector;
+        selectors[4] = InvariantHandler.hWarpToProveDeadline.selector;
+        selectors[5] = InvariantHandler.hResolve.selector;
+        selectors[6] = InvariantHandler.hClaimCredit.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
