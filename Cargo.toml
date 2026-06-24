@@ -272,9 +272,10 @@ slop-whir = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v
 
 # Redirect crates.io op-alloy / alloy-op-evm to the optimism monorepo
 # so all kona path-deps resolve to the same versions.
-op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl" }
-op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl" }
-op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl" }
-op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl" }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl" }
-op-revm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl" }
+# path= is required because github.com/okx/optimism is a Go monorepo with no root Cargo.toml.
+op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl", path = "rust/op-alloy/crates/consensus" }
+op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl", path = "rust/op-alloy/crates/network" }
+op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl", path = "rust/op-alloy/crates/rpc-types" }
+op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl", path = "rust/op-alloy/crates/rpc-types-engine" }
+alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl", path = "rust/alloy-op-evm" }
+op-revm = { git = "https://gitlab.okg.com/github/optimism", branch = "xl/kona-1.6.0-gasless-impl", path = "rust/op-revm" }
