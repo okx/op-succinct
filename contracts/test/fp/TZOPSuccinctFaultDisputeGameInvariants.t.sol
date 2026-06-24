@@ -256,16 +256,16 @@ contract TZOPSuccinctFaultDisputeGameInvariantsTest is Test {
         assertLe(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.Resolved));
     }
 
-    /// @notice Inv 22: FullProved ⟹ totalCountered == 0 (no challengers landed before proveFull).
+    /// @notice Inv 22: UnchallengedAndValidProofProvided ⟹ totalCountered == 0 (no challengers landed before proveFull).
     function invariant_fullProvedExcludesChallengers() public view {
         (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = game.claimData();
-        if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved) {
-            assertEq(game.totalCountered(), 0, "FullProved implies totalCountered == 0");
+        if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.UnchallengedAndValidProofProvided) {
+            assertEq(game.totalCountered(), 0, "UnchallengedAndValidProofProvided implies totalCountered == 0");
         }
     }
 
     /// @notice Inv 11: Challenged ⟺ totalCountered ≥ 1
-    ///         (FullProved / Unchallenged → totalCountered == 0; Resolved post-CHW path may have any).
+    ///         (UnchallengedAndValidProofProvided / Unchallenged → totalCountered == 0; Resolved post-CHW path may have any).
     /// @dev    Tests only the forward direction here (Challenged → totalCountered ≥ 1).
     function invariant_challengedImpliesCountered() public view {
         (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = game.claimData();
@@ -274,13 +274,13 @@ contract TZOPSuccinctFaultDisputeGameInvariantsTest is Test {
         }
     }
 
-    /// @notice Inv 26: claimData.status == FullProved ⟺ claimData.prover != address(0).
+    /// @notice Inv 26: claimData.status == UnchallengedAndValidProofProvided ⟺ claimData.prover != address(0).
     function invariant_fullProvedBiconditional() public view {
         (, address pv, , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = game.claimData();
-        if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved) {
-            assertTrue(pv != address(0), "FullProved => prover set");
+        if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.UnchallengedAndValidProofProvided) {
+            assertTrue(pv != address(0), "UnchallengedAndValidProofProvided => prover set");
         } else {
-            // prover may still be set if status moved Unchallenged → FullProved → Resolved.
+            // prover may still be set if status moved Unchallenged → UnchallengedAndValidProofProvided → Resolved.
             // Only assert "prover == 0" when status has never advanced past Unchallenged.
             if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.Unchallenged) {
                 assertEq(pv, address(0), "Unchallenged => prover unset");

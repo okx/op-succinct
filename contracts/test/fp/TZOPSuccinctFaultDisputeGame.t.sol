@@ -27,7 +27,7 @@ import {
     InvalidNumSegments,
     InvalidBatchSize,
     GameAlreadyResolved,
-    AlreadyFullProved,
+    AlreadyEarlyFinalized,
     AlreadyCountered,
     IndexOutOfRange,
     IndexNotCountered,
@@ -65,7 +65,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
     // ===================== Events (mirror those in TZOPSuccinctFaultDisputeGame) =====================
     event Challenged(address indexed challenger, uint64 indexed segment);
     event Proved(address indexed prover, uint64 indexed segment);
-    event FullProved(address indexed prover);
+    event UnchallengedAndValidProofProvided(address indexed prover);
     event Resolved(GameStatus indexed status);
 
     // ===================== Infrastructure =====================
@@ -820,24 +820,24 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
     // ===================== §2.5 prove(bytes) Early-Finalize Overload =====================
 
-    function test_proveFull_happyPath_N1_marksFullProved() public {
+    function test_proveFull_happyPath_N1_marksEarlyFinalized() public {
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = TZOPSuccinctFaultDisputeGame(
             address(factory.create{value: CREATE_BOND}(gameType, rootClaim, _encodeExtraDataN1(2000, 0)))
         );
 
         vm.expectEmit(true, false, false, false);
-        emit FullProved(prover);
+        emit UnchallengedAndValidProofProvided(prover);
 
         vm.prank(prover);
         g.prove("");
 
         (address pv, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = _readClaimData(g);
         assertEq(pv, prover);
-        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved));
+        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.UnchallengedAndValidProofProvided));
         // GameStatus untouched (resolve() handles it).
         assertEq(uint8(g.status()), uint8(GameStatus.IN_PROGRESS));
-        // gameOver() short-circuits on FullProved.
+        // gameOver() short-circuits on UnchallengedAndValidProofProvided.
         assertTrue(g.gameOver());
     }
 
@@ -849,7 +849,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         g.prove("");
 
         (, , , TZOPSuccinctFaultDisputeGame.ProposalStatus s, ) = _readClaimData(g);
-        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.FullProved));
+        assertEq(uint8(s), uint8(TZOPSuccinctFaultDisputeGame.ProposalStatus.UnchallengedAndValidProofProvided));
     }
 
     function test_proveFull_selector_matchesV1() public pure {
@@ -863,7 +863,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         assertEq(v1Selector, canonicalSelector, "V1 prove(bytes) selector deviates from canonical");
     }
 
-    function test_proveFull_revert_AlreadyFullProved_doubleCall() public {
+    function test_proveFull_revert_AlreadyEarlyFinalized_doubleCall() public {
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
 
@@ -872,7 +872,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         // Second prove(bytes) call.
         vm.prank(prover);
-        vm.expectRevert(AlreadyFullProved.selector);
+        vm.expectRevert(AlreadyEarlyFinalized.selector);
         g.prove("");
     }
 
@@ -902,8 +902,8 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         g.prove("");
     }
 
-    function test_proveFull_challengeAfter_revertAlreadyFullProved() public {
-        // Mutex: after proveFull, challenge(k) should revert AlreadyFullProved (not ClaimAlreadyChallenged).
+    function test_proveFull_challengeAfter_revertAlreadyEarlyFinalized() public {
+        // Mutex: after proveFull, challenge(k) should revert AlreadyEarlyFinalized (not ClaimAlreadyChallenged).
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
 
@@ -912,19 +912,19 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
 
         vm.deal(challenger, 10 ether);
         vm.prank(challenger);
-        vm.expectRevert(AlreadyFullProved.selector);
+        vm.expectRevert(AlreadyEarlyFinalized.selector);
         g.challenge{value: CHAL_BOND}(uint64(1));
     }
 
-    function test_proveSegment_revert_AlreadyFullProved() public {
-        // prove(uint64,bytes) after proveFull should revert AlreadyFullProved (status is FullProved).
+    function test_proveSegment_revert_AlreadyEarlyFinalized() public {
+        // prove(uint64,bytes) after proveFull should revert AlreadyEarlyFinalized (status is UnchallengedAndValidProofProvided).
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
 
         vm.prank(prover);
         g.prove("");
 
-        vm.expectRevert(AlreadyFullProved.selector);
+        vm.expectRevert(AlreadyEarlyFinalized.selector);
         g.prove(uint64(0), "");
     }
 
@@ -945,14 +945,14 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
         assertEq(g.normalModeCredit(proposer), CREATE_BOND);
     }
 
-    function test_resolve_FullProved_skipsClock_DW() public {
+    function test_resolve_EarlyFinalized_skipsClock_DW() public {
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
 
         vm.prank(prover);
         g.prove("");
 
-        // No need to warp — FullProved triggers gameOver() short-circuit.
+        // No need to warp — UnchallengedAndValidProofProvided triggers gameOver() short-circuit.
         g.resolve();
 
         assertEq(uint8(g.status()), uint8(GameStatus.DEFENDER_WINS));
@@ -1216,7 +1216,7 @@ contract TZOPSuccinctFaultDisputeGameTest is Test {
                 if (s == TZOPSuccinctFaultDisputeGame.ProposalStatus.Challenged) {
                     vm.warp(proveDeadline_.raw() + 1);
                 } else {
-                    // Unchallenged → wait challengeEnd. FullProved → gameOver already true above.
+                    // Unchallenged → wait challengeEnd. UnchallengedAndValidProofProvided → gameOver already true above.
                     vm.warp(g.challengeEnd().raw() + 1);
                 }
             }

@@ -28,7 +28,7 @@ import {
 } from "src/dispute/lib/Errors.sol";
 import {
     AlreadyCountered,
-    AlreadyFullProved,
+    AlreadyEarlyFinalized,
     AlreadyProved,
     ChallengeWindowEnded,
     ClaimAlreadyChallenged,
@@ -74,7 +74,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // Optional early-finalize mark: no challenger + entire-batch SP1 proof verified
         // by `prove(bytes)` overload. Equivalent to V1's UnchallengedAndValidProofProvided.
         // See SPEC §6 Phase 3.5.
-        FullProved,
+        UnchallengedAndValidProofProvided,
         // The final state after resolution, either GameStatus.CHALLENGER_WINS or GameStatus.DEFENDER_WINS.
         Resolved
     }
@@ -100,9 +100,9 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         uint32 parentIndex;
         // SPEC §6 Phase 3.5 `prove(bytes)` writes msg.sender here; default address(0).
         // ⚠️ INFORMATIONAL ONLY — V2 has no internal read site for this field (resolve/claimCredit
-        // /gameOver all consume `status == FullProved` instead). V1 used `prover != address(0)` to
-        // gate the fast-finalize path; V2 replaced that with the explicit `ProposalStatus.FullProved`
-        // enum value. Kept on storage for off-chain indexers / audit trail; `FullProved(prover)`
+        // /gameOver all consume `status == UnchallengedAndValidProofProvided` instead). V1 used `prover != address(0)` to
+        // gate the fast-finalize path; V2 replaced that with the explicit `ProposalStatus.UnchallengedAndValidProofProvided`
+        // enum value. Kept on storage for off-chain indexers / audit trail; `UnchallengedAndValidProofProvided(prover)`
         // event broadcasts the same info if you only need it once.
         address prover;
         Claim claim;
@@ -143,7 +143,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Emitted when a full-batch SP1 proof verifies (SPEC §6 Phase 3.5 prove(bytes) overload).
     /// @param prover  The address whose msg.sender was committed to the zk proof's public input.
-    event FullProved(address indexed prover);
+    event UnchallengedAndValidProofProvided(address indexed prover);
 
     /// @notice Emitted when the game is closed.
     event GameClosed(BondDistributionMode bondDistributionMode);
@@ -244,7 +244,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
     /// @notice Set true when parent-CHW forces game CHW AND `totalProved == totalCountered` —
     ///         covers both burn sub-cases per SPEC §9.4.b:
-    ///           (a) totalCountered == 0 (Unchallenged / FullProved): no challenger to receive
+    ///           (a) totalCountered == 0 (Unchallenged / UnchallengedAndValidProofProvided): no challenger to receive
     ///               CREATE_BOND → burn to address(0).
     ///           (b) totalCountered > 0 && totalProved == totalCountered (S == ∅): all challenged
     ///               segments proved → claimCredit lazy lowest-S compute would never run (gated on
@@ -512,10 +512,10 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // before considering claimData.status sub-states, so SDK gets unambiguous signal.
         if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
 
-        // INVARIANT: Cannot counter a game already in FullProved (SPEC §6 Phase 3.5 mutex).
+        // INVARIANT: Cannot counter a game already in UnchallengedAndValidProofProvided (SPEC §6 Phase 3.5 mutex).
         //   Distinct from ClaimAlreadyChallenged: tells SDK "give up this game" vs "try another segment".
-        if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
-        // After first-check (Resolved rejected) + FullProved branch, claimData.status ∈ {Unchallenged, Challenged};
+        if (claimData.status == ProposalStatus.UnchallengedAndValidProofProvided) revert AlreadyEarlyFinalized();
+        // After first-check (Resolved rejected) + UnchallengedAndValidProofProvided branch, claimData.status ∈ {Unchallenged, Challenged};
         // both are valid to add another challenger on a different segment.
 
         // INVARIANT: Must be within the challenge window.
@@ -576,10 +576,10 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // First-check (SPEC §11.9 Invariant 31).
         if (status != GameStatus.IN_PROGRESS) revert GameAlreadyResolved();
 
-        // FullProved gets a specific revert (clarity for SDKs); Unchallenged falls through to
+        // UnchallengedAndValidProofProvided gets a specific revert (clarity for SDKs); Unchallenged falls through to
         // the per-segment `disputes[k].counteredBy == 0` check below, which returns the same
         // IndexNotCountered error.
-        if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
+        if (claimData.status == ProposalStatus.UnchallengedAndValidProofProvided) revert AlreadyEarlyFinalized();
 
         // INVARIANT: Must be within the prove window.
         if (block.timestamp >= Timestamp.unwrap(claimData.proveDeadline)) revert ClockTimeExceeded();
@@ -651,7 +651,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ///         challenger has appeared.
     ///
     ///         2-step pattern (like V1 and Base): this call only verifies the proof and marks
-    ///         `claimData.status = FullProved`; subsequent `resolve()` consumes the marker.
+    ///         `claimData.status = UnchallengedAndValidProofProvided`; subsequent `resolve()` consumes the marker.
     ///
     ///         Permissionless caller. NO bond required. NO on-chain reward (motivation is
     ///         downstream finality speed; see SPEC §6.1.3).
@@ -663,7 +663,7 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // Per-state revert mapping (SPEC §6 Phase 3.5). After these checks, status is
         // necessarily Unchallenged (Resolved already caught by first-check above), which by
         // Invariant 11 implies totalCountered == 0 — no defensive recheck needed.
-        if (claimData.status == ProposalStatus.FullProved) revert AlreadyFullProved();
+        if (claimData.status == ProposalStatus.UnchallengedAndValidProofProvided) revert AlreadyEarlyFinalized();
         if (claimData.status == ProposalStatus.Challenged) revert NotUnchallenged();
 
         if (block.timestamp >= Timestamp.unwrap(challengeEnd())) revert ChallengeWindowEnded();
@@ -686,13 +686,13 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         });
         SP1_VERIFIER.verifyProof(AGGREGATION_VKEY, abi.encode(publicValues), proofBytes);
 
-        // Step 2 — mark FullProved. Does NOT touch `status` (GameStatus); resolve() does that.
-        claimData.status = ProposalStatus.FullProved;
-        // claimData.prover is informational-only storage (see ClaimData natspec); FullProved event
+        // Step 2 — mark UnchallengedAndValidProofProvided. Does NOT touch `status` (GameStatus); resolve() does that.
+        claimData.status = ProposalStatus.UnchallengedAndValidProofProvided;
+        // claimData.prover is informational-only storage (see ClaimData natspec); UnchallengedAndValidProofProvided event
         // below carries the same data for the common indexer use case.
         claimData.prover = msg.sender;
 
-        emit FullProved(msg.sender);
+        emit UnchallengedAndValidProofProvided(msg.sender);
     }
 
     /// @notice Returns the status of the parent game.
@@ -731,12 +731,12 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         if (parentGameStatus == GameStatus.CHALLENGER_WINS) {
             // SPEC §9.4.b parent-forced CHW:
             //   This game's startingOutputRoot derives from an invalid parent chain → game is doomed.
-            //   Override outcome to CHW regardless of internal state (incl. FullProved); bypass gameOver().
+            //   Override outcome to CHW regardless of internal state (incl. UnchallengedAndValidProofProvided); bypass gameOver().
             status = GameStatus.CHALLENGER_WINS;
 
             // CREATE_BOND disposal under parent-CHW. Two burn sub-cases collapse to the single
             // condition `totalProved == totalCountered` (covers 0==0 and N==N for N>0):
-            //   - totalCountered == 0 (Unchallenged / FullProved): no challenger to receive it
+            //   - totalCountered == 0 (Unchallenged / UnchallengedAndValidProofProvided): no challenger to receive it
             //     (SPEC §9.4.b original burn case).
             //   - totalCountered > 0 && totalProved == totalCountered (S == ∅): the claimCredit
             //     lazy lowest-S compute would never run (it's gated on `!d.proved`), so the
@@ -771,11 +771,11 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         address creator = gameCreator();
         ProposalStatus s = claimData.status;
 
-        // Unchallenged + FullProved converge to the same DW bond flow:
+        // Unchallenged + UnchallengedAndValidProofProvided converge to the same DW bond flow:
         //   Unchallenged: gameOver() ensured block.timestamp >= challengeEnd() (clock-expiry)
-        //   FullProved:   gameOver() short-circuit gave eligibility before challengeEnd
+        //   UnchallengedAndValidProofProvided:   gameOver() short-circuit gave eligibility before challengeEnd
         // Either way: no challenger → CREATE_BOND back to proposer; no L-bonds (none pushed).
-        if (s == ProposalStatus.Unchallenged || s == ProposalStatus.FullProved) {
+        if (s == ProposalStatus.Unchallenged || s == ProposalStatus.UnchallengedAndValidProofProvided) {
             status = GameStatus.DEFENDER_WINS;
             normalModeCredit[creator] += createBond;
         } else if (s == ProposalStatus.Challenged) {
@@ -938,11 +938,11 @@ contract TZOPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @dev    SPEC §12.6.1: 4-state machine; positive enumeration. Does NOT imply final outcome —
     ///         that is determined by resolve(). Used as gate by resolve()'s !gameOver() check and
     ///         as the V1-compatible "phase closed" signal.
-    /// @return True iff Resolved (terminal), FullProved (early-finalize marker), or relevant clock expired.
+    /// @return True iff Resolved (terminal), UnchallengedAndValidProofProvided (early-finalize marker), or relevant clock expired.
     function gameOver() public view returns (bool) {
         ProposalStatus s = claimData.status;
         if (s == ProposalStatus.Resolved) return true;
-        if (s == ProposalStatus.FullProved) return true; // SPEC §6 Phase 3.5 short-circuit
+        if (s == ProposalStatus.UnchallengedAndValidProofProvided) return true; // SPEC §6 Phase 3.5 short-circuit
         if (s == ProposalStatus.Unchallenged) {
             // No challenger landed: phase closes at challengeEnd (immutable-derived view).
             return block.timestamp >= Timestamp.unwrap(challengeEnd());

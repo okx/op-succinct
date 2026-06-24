@@ -7,7 +7,7 @@
 > - **CWIA-eager commit**：proposer 在 `create()` 时即通过 CWIA extraData 提交全 batch 的 `numSegments - 1` 个 intermediate segment hash
 > - **Per-game variable batchSize + numSegments**：proposer 在 create 时自主决定 batch 范围与段数；合约层只约束 `1 ≤ numSegments ≤ MAX_NUM_SEGMENTS` 和 `batchSize % numSegments == 0`
 > - **SEGMENT_SIZE 派生（不存 storage）**：`SEGMENT_SIZE = batchSize / numSegments`，纯 view derive
-> - **State machine 4 态**：`Unchallenged / Challenged / FullProved / Resolved`（FullProved 通道见 §6 Phase 3.5 早 finalize）
+> - **State machine 4 态**：`Unchallenged / Challenged / UnchallengedAndValidProofProvided / Resolved`（UnchallengedAndValidProofProvided 通道见 §6 Phase 3.5 早 finalize）
 > - **challenge + counter 合一**：单一 `challenge(k)` 函数
 > - **L bond 即时 push**：prove Step 3 发放给 prover，resolve 不再遍历
 > - **`prove(bytes)` 早 finalize 通道**（可选）：无 challenger 时一次性证明全 batch，跳过 challenge 窗口等待
@@ -268,7 +268,7 @@ prove_cost  ≪  CHALLENGER_BOND  ≪  CREATE_BOND
 
 合约同时维护两个 state：
 - **`GameStatus`**（来自 OP-stack `IDisputeGame` 接口，3 值：`IN_PROGRESS / DEFENDER_WINS / CHALLENGER_WINS`）
-- **`ProposalStatus`**（本合约定义，**4 值**：`Unchallenged / Challenged / FullProved / Resolved`）
+- **`ProposalStatus`**（本合约定义，**4 值**：`Unchallenged / Challenged / UnchallengedAndValidProofProvided / Resolved`）
 
 ### 5.1 极简状态机
 
@@ -283,7 +283,7 @@ prove_cost  ≪  CHALLENGER_BOND  ≪  CREATE_BOND
         ├── prove(bytes)(proofBytes) [§6 Phase 3.5, 无 challenger 时早证 overload]
         │       ▼
         │   ┌──────────────┐
-        │   │  FullProved  │
+        │   │  UnchallengedAndValidProofProvided  │
         │   └──────────────┘
         │       │
         │       └── resolve() ──→ Resolved + GameStatus=DEFENDER_WINS (早 finalize, 跳过 clock 等待)
@@ -307,7 +307,7 @@ prove_cost  ≪  CHALLENGER_BOND  ≪  CREATE_BOND
      └──────────────┘
 ```
 
-> 任意时刻 `parentStatus == CHALLENGER_WINS` 触发**parent-forced CHW**（详见 §6 Phase 3 / §9.4.b）：bypass gameOver()，任何 ProposalStatus（含 FullProved）直接推到 `Resolved + CHALLENGER_WINS`，覆盖正常分支。
+> 任意时刻 `parentStatus == CHALLENGER_WINS` 触发**parent-forced CHW**（详见 §6 Phase 3 / §9.4.b）：bypass gameOver()，任何 ProposalStatus（含 UnchallengedAndValidProofProvided）直接推到 `Resolved + CHALLENGER_WINS`，覆盖正常分支。
 
 > 所有终止箭头都意味着 `resolve()` 被调用：**ProposalStatus 同步转为 `Resolved`**，**GameStatus 从 `IN_PROGRESS` 转为 DEFENDER_WINS / CHALLENGER_WINS**。终态后不可再变。
 >
@@ -323,14 +323,14 @@ prove_cost  ≪  CHALLENGER_BOND  ≪  CREATE_BOND
 enum ProposalStatus {
     Unchallenged,       // 初始状态（无 challenger, 也未 `prove(bytes)`）
     Challenged,         // ≥1 challenger 已 counter segment，等待 proof
-    FullProved,         // §6 Phase 3.5 早 finalize 标记态：无 challenge + `prove(bytes)` 已验整 batch；等 resolve() consume
+    UnchallengedAndValidProofProvided,         // §6 Phase 3.5 早 finalize 标记态：无 challenge + `prove(bytes)` 已验整 batch；等 resolve() consume
     Resolved            // 终态：resolve() 已调
 }
 ```
 
 > **vs V1**：V1 ProposalStatus 5 态（Unchallenged / Challenged / U+VP / C+VP / Resolved）→ 本 spec 4 态。差异：
 > - **删除 C+VP**：multi-segment 下 prove(k) Step 4 即时 push L bond 给 prover，无 game-wide 中间态需求
-> - **U+VP → 重命名 FullProved**：含义不变（无 challenge + 整 batch 已验），独立 enum 值显式标记早 finalize 路径，避免"Unchallenged + sub-flag"隐式编码
+> - **保留 U+VP**（同 V1 命名，V1 alignment-first）：含义不变（无 challenge + 整 batch 已验）
 
 **GameStatus** & **BondDistributionMode**：复用 OP-stack 标准（详见 `src/dispute/lib/Types.sol`）。`BondDistributionMode` 顺序固定为 `{ UNDECIDED, NORMAL, REFUND }`（UNDECIDED = 0，storage 默认值）。
 
@@ -530,7 +530,7 @@ function challenge(uint64 k) external payable returns (ProposalStatus);
 **不变式**：
 - 每地址至多 counter 1 段（`challengers[msg.sender].countered` dedup）
 - 每 segment 至多被 1 个 challenger counter（`disputes[k].counteredBy` dedup；**index dedup** 保证 lowest-S 唯一性）
-- 仅在 `claimData.status ∈ {Unchallenged, Challenged}` 时允许（**multi-challenger 设计**：Challenged 状态下仍可继续 counter 新 segment；FullProved / Resolved 拒绝入场）
+- 仅在 `claimData.status ∈ {Unchallenged, Challenged}` 时允许（**multi-challenger 设计**：Challenged 状态下仍可继续 counter 新 segment；UnchallengedAndValidProofProvided / Resolved 拒绝入场）
 - 不修改任何 deadline（`proveDeadline` 在 initialize 时一次性写入；`challengeEnd()` 是 immutable-derived view = `createdAt + MAX_CHALLENGE_DURATION`，无 storage 字段）
 
 **revert mapping**（按 §11.9 mutator first-check 协议，与 V1 [line 436](contracts/src/fp/OPSuccinctFaultDisputeGame.sol#L436) 同顺序）：
@@ -538,7 +538,7 @@ function challenge(uint64 k) external payable returns (ProposalStatus);
 | revert 顺序 | 触发条件 | error |
 |---|---|---|
 | 1 | `status != GameStatus.IN_PROGRESS` | `GameAlreadyResolved` |
-| 2 | `claimData.status == FullProved` | `AlreadyFullProved` |
+| 2 | `claimData.status == UnchallengedAndValidProofProvided` | `AlreadyFullProved` |
 | 3 | `block.timestamp ≥ challengeEnd()` | `ClockTimeExceeded` |
 | 4 | `!ACCESS_MANAGER.isAllowedChallenger(msg.sender)` | `BadAuth` |
 | 5 | `msg.value != CHALLENGER_BOND` | `IncorrectBondAmount` |
@@ -617,9 +617,9 @@ V2 blob 的 `prove(bytes)` 内部 abi.decode 一个 7 字段的 SegmentProof str
 
 **不变式 + revert mapping**（按 §11 Invariant 27 统一 mutator first-check 协议；k = function 参数）：
 - **First check**：`status != GameStatus.IN_PROGRESS` → revert `GameAlreadyResolved`（与 V1 [line 436](contracts/src/fp/OPSuccinctFaultDisputeGame.sol#L436) 同顺序）
-- `claimData.status != Challenged` → revert（Unchallenged / FullProved 时无可证 segment；细分 error 见下）：
+- `claimData.status != Challenged` → revert（Unchallenged / UnchallengedAndValidProofProvided 时无可证 segment；细分 error 见下）：
   - `claimData.status == Unchallenged` → revert `IndexNotCountered`（segment 尚未被 challenge，无法 prove；prove(uint64,bytes) 只在 Challenged 状态可用）
-  - `claimData.status == FullProved` → revert `AlreadyFullProved`（game 已被 full-batch 早证，应走 resolve 而非 per-segment prove）
+  - `claimData.status == UnchallengedAndValidProofProvided` → revert `AlreadyFullProved`（game 已被 full-batch 早证，应走 resolve 而非 per-segment prove）
 - 仅当 `claimData.status == Challenged` 下推到余下校验：
   - `block.timestamp < Timestamp.unwrap(claimData.proveDeadline)` → revert `ClockTimeExceeded`（prove 窗口截止；initialize 时一次性写入，永不更新）
   - `k < numSegments` → revert `IndexOutOfRange`（per-game storage）
@@ -724,7 +724,7 @@ normalModeCredit[msg.sender] += lBond;           // prover 即时入账
 | 3 | parent DEFENDER_WINS ∧ `!gameOver()` | `GameNotOver` |
 | 4 | parent DEFENDER_WINS ∧ `claimData.status == Resolved` (unreachable，由 #1 拦截，sanity) | `InvalidProposalStatus` |
 
-**判定矩阵**（成功路径 GameStatus 输出）：parent CHW 覆盖 → CHW；否则按 `claimData.status` 分支 → Unchallenged/FullProved → DW；Challenged ∧ `totalProved == totalCountered` → DW；Challenged ∧ `totalProved < totalCountered` → CHW。详细 bond 流向见 pseudocode + §9.4。
+**判定矩阵**（成功路径 GameStatus 输出）：parent CHW 覆盖 → CHW；否则按 `claimData.status` 分支 → Unchallenged/UnchallengedAndValidProofProvided → DW；Challenged ∧ `totalProved == totalCountered` → DW；Challenged ∧ `totalProved < totalCountered` → CHW。详细 bond 流向见 pseudocode + §9.4。
 
 **parent-forced CHW 覆盖语义**：若 `getParentGameStatus() == CHALLENGER_WINS`，**优先级最高**强制 GameStatus = CHALLENGER_WINS；bond 处理详见 §9.4.b。无需 `gameOver()` guard——parent CHW 意味着 `startingOutputRoot` 来源于 invalid chain，本 game 必 CHW，honest challenger 在窗口内外都无法挽救，race condition 不存在，早 resolve 让 honest challenger 更快通过 `claimCredit` 拿回 CHAL_BOND。
 
@@ -759,9 +759,9 @@ function resolve() external returns (GameStatus) {
     if (!gameOver()) revert GameNotOver();
 
     if (claimData.status == ProposalStatus.Unchallenged
-     || claimData.status == ProposalStatus.FullProved) {
+     || claimData.status == ProposalStatus.UnchallengedAndValidProofProvided) {
         // 两路径 bond 流向一致：无 challenger 接收 → CREATE_BOND 退 proposer
-        // Unchallenged: clock 自然到期；FullProved: §6 Phase 3.5 早 finalize 标记态
+        // Unchallenged: clock 自然到期；UnchallengedAndValidProofProvided: §6 Phase 3.5 早 finalize 标记态
         status = GameStatus.DEFENDER_WINS;
         normalModeCredit[gameCreator()] += CREATE_BOND;
     } else if (claimData.status == ProposalStatus.Challenged) {
@@ -814,7 +814,7 @@ prove(bytes)          // §6 Phase 3.5: full-batch early finalize, 无 challenge
 
 ```solidity
 /// @notice 全 batch 证明通道：proposer（或任何 prover）在无人挑战时一次性证明整 batch，
-///         推进 claimData.status 到 FullProved；不直接 finalize，需后续 resolve() consume。
+///         推进 claimData.status 到 UnchallengedAndValidProofProvided；不直接 finalize，需后续 resolve() consume。
 /// @dev    Selector 与 V1 `prove(bytes)` 一致；V1 N=1 退化路径下二者语义等价。
 /// @param  proofBytes  SP1 aggregation proof，public input 见下
 function prove(bytes calldata proofBytes) external;
@@ -825,7 +825,7 @@ function prove(bytes calldata proofBytes) external;
 | revert 顺序 | 触发条件 | error |
 |---|---|---|
 | 1 | `status != GameStatus.IN_PROGRESS` | `GameAlreadyResolved` (§11 Inv 27, V1 line 436) |
-| 2 | `claimData.status == FullProved` | `AlreadyFullProved` |
+| 2 | `claimData.status == UnchallengedAndValidProofProvided` | `AlreadyFullProved` |
 | 3 | `claimData.status == Challenged` | `NotUnchallenged` |
 | 4 | `block.timestamp >= challengeEnd()` | `ChallengeWindowEnded` |
 | 5 | `getParentGameStatus() == CHALLENGER_WINS` | `ParentAlreadyLost` |
@@ -842,12 +842,12 @@ function prove(bytes calldata proofBytes) external;
 
 与 §6 Phase 2 Step 3 `prove(uint64,bytes)` **唯一差别**：`claimBlockNum = startingOutputRoot.l2SequenceNumber + batchSize`（全 batch 跨度）而非 `SEGMENT_SIZE × (k+1)`（per-segment）。其余字段（`l1Head = Hash.unwrap(l1Head())`, `l2PreRoot`, `claimRoot`, `rollupConfigHash`, `rangeVkeyCommitment`, `proverAddress=msg.sender`）一致。SP1 aggregation 程序原生支持任意 block delta，同 vkey 可验证两种 proof。
 
-#### Step 2 — 推进 `claimData.status → FullProved` + 记录 prover address
+#### Step 2 — 推进 `claimData.status → UnchallengedAndValidProofProvided` + 记录 prover address
 
 ```solidity
-claimData.status = ProposalStatus.FullProved;   // 4 态中独立标记，不借用 Unchallenged
+claimData.status = ProposalStatus.UnchallengedAndValidProofProvided;   // 4 态中独立标记，不借用 Unchallenged
 claimData.prover = msg.sender;                   // 记录 prover address (V1 ClaimData.prover 对齐)
-emit FullProved(msg.sender);
+emit UnchallengedAndValidProofProvided(msg.sender);
 ```
 
 > **不动 GameStatus**：与 V1 `prove()` 对齐——只推进 `claimData.status`，GameStatus 翻转由后续 `resolve()` 完成。用独立枚举值（非借用 Unchallenged）显式标记早证态，off-chain indexer 单读 `claimData.status` 即可判别。
@@ -858,7 +858,7 @@ emit FullProved(msg.sender);
 function gameOver() public view returns (bool) {
     ProposalStatus s = claimData.status;
     if (s == ProposalStatus.Resolved) return true;
-    if (s == ProposalStatus.FullProved) return true;     // ★ early-finalize 标记态
+    if (s == ProposalStatus.UnchallengedAndValidProofProvided) return true;     // ★ early-finalize 标记态
     if (s == ProposalStatus.Unchallenged) {
         return block.timestamp >= Timestamp.unwrap(challengeEnd());
     }
@@ -877,11 +877,11 @@ function gameOver() public view returns (bool) {
 >
 > Challenged 状态下 `totalProved == totalCountered` 在 challenge 窗口内只是瞬态等式（仍可来新 challenger）。若省略 guard，bot 可抢跑 resolve() 锁 DW，剥夺后到 challenger 的合法下注权——收益（节约 ≤ MAX_PROVE_DURATION 等待）不足以 justify 这一漏洞。修复：`challengeEnd` 已过 ∧ `totalProved == totalCountered` 两条件 AND，缺一不可。
 >
-> **vs FullProved**：FullProved 早完成跳过 challenge 窗口是 §6.3.5 的 design intent（proposer 抢先 prove(bytes) 锁 game，`challenge()` 主动 revert AlreadyFullProved）；Challenged 状态下未加 guard 的早完成是**意外副作用**。
+> **vs UnchallengedAndValidProofProvided**：UnchallengedAndValidProofProvided 早完成跳过 challenge 窗口是 §6.3.5 的 design intent（proposer 抢先 prove(bytes) 锁 game，`challenge()` 主动 revert AlreadyFullProved）；Challenged 状态下未加 guard 的早完成是**意外副作用**。
 
-**resolve() FullProved 分支**：详见 §6.3 resolve pseudo-code（FullProved 与 Unchallenged 合并分支，bond 流向一致——无 challenger → CREATE_BOND 退 proposer）。
+**resolve() UnchallengedAndValidProofProvided 分支**：详见 §6.3 resolve pseudo-code（UnchallengedAndValidProofProvided 与 Unchallenged 合并分支，bond 流向一致——无 challenger → CREATE_BOND 退 proposer）。
 
-**事件**：`event FullProved(address indexed prover)`（独立于 `Proved(prover, segment)`，便于 indexer 区分两条路径）
+**事件**：`event UnchallengedAndValidProofProvided(address indexed prover)`（独立于 `Proved(prover, segment)`，便于 indexer 区分两条路径）
 
 **典型时间线（happy path）**：
 
@@ -895,7 +895,7 @@ create    prove(bytes)      resolve()      无关
 
 → 整 finalize 时间 ≈ 链下 prove + 2 笔链上 tx ≪ 1 day 的 challenge 窗口等待。
 
-**与 challenge() 的并发竞态**：`claimData.status` 单字段原子翻转保证两者最多一方推进。`prove(bytes)` 先落 → 后到 `challenge(k)` 因 `claimData.status == FullProved` revert `AlreadyFullProved`；反之 `challenge(k)` 先落 → `prove(bytes)` revert `NotUnchallenged`。SDK 据此区分"被另一 challenger 占可换 game" vs "已 full-proved 应放弃"两种 race-loss。
+**与 challenge() 的并发竞态**：`claimData.status` 单字段原子翻转保证两者最多一方推进。`prove(bytes)` 先落 → 后到 `challenge(k)` 因 `claimData.status == UnchallengedAndValidProofProvided` revert `AlreadyFullProved`；反之 `challenge(k)` 先落 → `prove(bytes)` revert `NotUnchallenged`。SDK 据此区分"被另一 challenger 占可换 game" vs "已 full-proved 应放弃"两种 race-loss。
 
 **N=1 退化**：`batchSize == SEGMENT_SIZE`，`prove(bytes)` 与 `prove(0,...)` public input 完全等价；接口仍互斥（前者要求无 counter，后者要求 k 已 counter）。N=1 路径几乎完全恢复 V1 OPSuccinctFaultDisputeGame 语义，仅 challenge ABI 改名 `challenge(uint64)`，prove 多一个 `(uint64,bytes)` overload。
 
@@ -1247,7 +1247,7 @@ mapping(address => uint256) public normalModeCredit;    // settlement ledger（N
 发生于以下**三种**触发条件之一（与 §6 Phase 3 resolve() 4 态分支 + parent-DW 前提一致）：
 
 1. **Clock-Unchallenged**：`claimData.status == Unchallenged ∧ block.timestamp ≥ challengeEnd()`（无 challenger，等到 challenge 窗口截止）
-2. **FullProved**（§6 Phase 3.5 早 finalize 通道）：`claimData.status == FullProved`（`prove(bytes)` 已验整 batch，可在 challengeEnd 前任意时刻 resolve）
+2. **UnchallengedAndValidProofProvided**（§6 Phase 3.5 早 finalize 通道）：`claimData.status == UnchallengedAndValidProofProvided`（`prove(bytes)` 已验整 batch，可在 challengeEnd 前任意时刻 resolve）
 3. **Clock-Challenged-allProved**：`claimData.status == Challenged ∧ block.timestamp ≥ proveDeadline ∧ totalProved == totalCountered`（即 `S = ∅`，全部 disputed segment 都已 prove）
 
 ```
@@ -1295,7 +1295,7 @@ CHW 时 CREATE_BOND 全额给 **lowest-S 的 challenger**（first-mismatch winne
 if (totalProved == totalCountered):
     // S = ∅ — 无 lowest-S challenger 接收 CREATE_BOND（lazy compute 被 §9.5
     //         的 `!d.proved` 门控）。涵盖 (a) totalCountered == 0 含 Unchallenged
-    //         与 FullProved，(b) totalCountered > 0 全证（V2 新边界 case）。
+    //         与 UnchallengedAndValidProofProvided，(b) totalCountered > 0 全证（V2 新边界 case）。
     //         两子情形折叠为同一 burn 路径：
     normalModeCredit[address(0)] += CREATE_BOND
     createBondPushedAtResolve = true     // 防 lazy claimCredit 重复处理
@@ -1330,7 +1330,7 @@ else:
 - **NORMAL**：`closeGame()` 时 `ASR.isGameProper() == true`（正常 game 结算）
 - **REFUND**：`closeGame()` 时 `ASR.isGameProper() == false`（governance emergency 路径 — Guardian 拉黑 / retire / paused）
 
-##### Case A：N = 0（无人挑战，含 Unchallenged 与 FullProved）
+##### Case A：N = 0（无人挑战，含 Unchallenged 与 UnchallengedAndValidProofProvided）
 
 合约持有 ETH = `CREATE_BOND`<br/>
 `resolve()` 进入 burn 分支：`normalModeCredit[address(0)] += CREATE_BOND`，`createBondPushedAtResolve = true`
@@ -1338,7 +1338,7 @@ else:
 | 角色 | NORMAL 模式 | REFUND 模式 |
 |---|---|---|
 | Proposer | 0（`normalModeCredit[proposer]` 为 0，claimCredit revert `NoCreditToClaim`） | **CREATE_BOND**（从 refundModeCredit 退回） |
-| FullProved Prover（若有） | 0（SP1 工作无补偿，§9.4.b NOTE） | 0（同左） |
+| UnchallengedAndValidProofProvided Prover（若有） | 0（SP1 工作无补偿，§9.4.b NOTE） | 0（同左） |
 | address(0) | CREATE_BOND（ledger 记账，无 ETH 出口） | — |
 
 **合约最终余额**：NORMAL = CREATE_BOND（**burned**，永久 stranded）；REFUND = 0
@@ -1406,9 +1406,9 @@ refundModeCredit 只在 initialize 与 challenge 时累加，resolve 与 prove �
 - **REFUND 模式**：所有 depositor 原路退回，整体 override NORMAL 结算；prover SP1 工作无补偿（与 §9.6.5 一致）。
 - **核心设计原则**：REFUND mode = "这个 game 不算数"，emergency rollback 整体 override NORMAL-mode 结算。
 
-#### 9.4.b.2 FullProved + Parent-CHW 的 prover 经济损失
+#### 9.4.b.2 UnchallengedAndValidProofProvided + Parent-CHW 的 prover 经济损失
 
-FullProved game 在 parent CHW 时走 `totalProved == totalCountered → CREATE_BOND burn` 分支（FullProved 蕴含 totalCountered == 0，落入 §9.4.b.1 Case A）。
+UnchallengedAndValidProofProvided game 在 parent CHW 时走 `totalProved == totalCountered → CREATE_BOND burn` 分支（UnchallengedAndValidProofProvided 蕴含 totalCountered == 0，落入 §9.4.b.1 Case A）。
 
 - **`claimData.prover` 损失整 batch 的 SP1 工作成本**（batchSize >> SEGMENT_SIZE，远比 per-segment 高）
 - **协议层无补偿**：`prove(bytes)` 是 best-effort fast-finalize 通道
@@ -1667,7 +1667,7 @@ prove 时 L bond 即时 push 进 `normalModeCredit[prover]`，但**未消费** `
 2. **Settlement ledger 守恒（NORMAL mode 后）**：`sum(normalModeCredit[addr] over all addr) == CREATE_BOND + totalCountered × CHAL_BOND - burn_amount`，其中 `burn_amount > 0` 仅在 §9.4.b parent-forced CHW + `totalProved == totalCountered` 时（含子情形 (a) totalCountered == 0 与 (b) totalCountered > 0 且全证 S = ∅；后者由 burn 路径显式处理，否则 CREATE_BOND 会 stranded）
 3. **Bond field 守恒**：每个 `challengers[challenger].bond` 从 CHAL_BOND 起始；prove(k) 时清零（消费）；resolve 时如未 prove 则在 settlement 中 push 回 normalModeCredit
 4. **Mode 单调**：`bondDistributionMode` 从 `UNDECIDED` 单向推进到 `NORMAL` 或 `REFUND`，永不回退
-5. **Status 单调**：`status` 单向推进 `IN_PROGRESS → DEFENDER_WINS | CHALLENGER_WINS`；`ProposalStatus` 沿两条并行路径单向推进 `Unchallenged → {Challenged | FullProved} → Resolved`，4 态间不可逆转
+5. **Status 单调**：`status` 单向推进 `IN_PROGRESS → DEFENDER_WINS | CHALLENGER_WINS`；`ProposalStatus` 沿两条并行路径单向推进 `Unchallenged → {Challenged | UnchallengedAndValidProofProvided} → Resolved`，4 态间不可逆转
 
 ### 11.2 Per-game 派生不变式
 
@@ -1698,13 +1698,13 @@ prove 时 L bond 即时 push 进 `normalModeCredit[prover]`，但**未消费** `
 ### 11.6 `prove(bytes)` 路径不变式
 
 20. **`prove(bytes)` 前提**：`prove(bytes)` 仅在 `claimData.status == Unchallenged ∧ totalCountered == 0 ∧ block.timestamp < challengeEnd()` 时可调；任一条件破坏即 revert（参见 §6 Phase 3.5 revert mapping）。`totalCountered == 0` 由 `claimData.status == Unchallenged` 隐式蕴含（Invariant 11：`claimData.status == Challenged ⟺ totalCountered ≥ 1`），但保留显式 require 作防御性校验
-21. **`prove(bytes)` 推进 claimData.status**：`prove(bytes)` 写 `claimData.status = ProposalStatus.FullProved` + `claimData.prover = msg.sender`，**不动** `status`（仍是 `IN_PROGRESS`）—— `GameStatus` 翻转由后续 `resolve()` 完成。与 V1 `prove()` 推 `claimData.status = U+VP` + 写 `claimData.prover` 但不动 game.status 完全对齐
-22. **`prove(bytes)` 与 challenge 互斥**：`claimData.status` 单字段原子翻转保证两者最多一方推进——`prove(bytes)` 先落块 → `FullProved` → 后到 `challenge(k)` 因 §6 Phase 1 require `claimData.status == Unchallenged` revert `AlreadyFullProved`；反之先到 `challenge(k)` 推到 `Challenged` → 后到 `prove(bytes)` 因同 require revert `NotUnchallenged`
-23. **FullProved → gameOver() 立即短路**：`claimData.status == FullProved` 在 §12.6.1 `gameOver()` 的第 2 检查（早于 challengeEnd / proveDeadline clock 判定）即返回 true；任何后续 `resolve()` 都可在 challengeEnd 前完成 finalize
-24. **resolve() FullProved 分支**（**前提**：`parentStatus == DEFENDER_WINS`）：`claimData.status == FullProved` 在 resolve() 进入独立分支，直接推到 `DEFENDER_WINS`；bond 流向与"无 challenge + clock 到期"完全一致（CREATE_BOND 退 gameCreator，无 CHAL_BOND 涉及）。
-    > **parent-CHW 例外**：若 `parentStatus == CHALLENGER_WINS`，§6 Phase 3 resolve() 在 gameOver() / claimData.status 分支**之前**就强制 `status = CHALLENGER_WINS`，**FullProved 标记不能挽救一个 starting state 已错的 game**。此时 `totalCountered == 0`（FullProved 蕴含），走 §9.4.b 子情形 → CREATE_BOND burn，`claimData.prover` 损失 SP1 工作成本（与 §9.6.5 prover REFUND mode 同性质不对称）。
-25. **`prove(bytes)` 单次性**：`claimData.status` 仅从 `Unchallenged` 单向推进到 `FullProved`，不可逆、不可重写（require `claimData.status == Unchallenged → revert AlreadyFullProved`）
-26. **`claimData.prover` 字段语义**：`claimData.status == FullProved ⟺ claimData.prover != address(0)`（同一 `prove(bytes)` tx 内原子写入）。
+21. **`prove(bytes)` 推进 claimData.status**：`prove(bytes)` 写 `claimData.status = ProposalStatus.UnchallengedAndValidProofProvided` + `claimData.prover = msg.sender`，**不动** `status`（仍是 `IN_PROGRESS`）—— `GameStatus` 翻转由后续 `resolve()` 完成。与 V1 `prove()` 推 `claimData.status = U+VP` + 写 `claimData.prover` 但不动 game.status 完全对齐
+22. **`prove(bytes)` 与 challenge 互斥**：`claimData.status` 单字段原子翻转保证两者最多一方推进——`prove(bytes)` 先落块 → `UnchallengedAndValidProofProvided` → 后到 `challenge(k)` 因 §6 Phase 1 require `claimData.status == Unchallenged` revert `AlreadyFullProved`；反之先到 `challenge(k)` 推到 `Challenged` → 后到 `prove(bytes)` 因同 require revert `NotUnchallenged`
+23. **UnchallengedAndValidProofProvided → gameOver() 立即短路**：`claimData.status == UnchallengedAndValidProofProvided` 在 §12.6.1 `gameOver()` 的第 2 检查（早于 challengeEnd / proveDeadline clock 判定）即返回 true；任何后续 `resolve()` 都可在 challengeEnd 前完成 finalize
+24. **resolve() UnchallengedAndValidProofProvided 分支**（**前提**：`parentStatus == DEFENDER_WINS`）：`claimData.status == UnchallengedAndValidProofProvided` 在 resolve() 进入独立分支，直接推到 `DEFENDER_WINS`；bond 流向与"无 challenge + clock 到期"完全一致（CREATE_BOND 退 gameCreator，无 CHAL_BOND 涉及）。
+    > **parent-CHW 例外**：若 `parentStatus == CHALLENGER_WINS`，§6 Phase 3 resolve() 在 gameOver() / claimData.status 分支**之前**就强制 `status = CHALLENGER_WINS`，**UnchallengedAndValidProofProvided 标记不能挽救一个 starting state 已错的 game**。此时 `totalCountered == 0`（UnchallengedAndValidProofProvided 蕴含），走 §9.4.b 子情形 → CREATE_BOND burn，`claimData.prover` 损失 SP1 工作成本（与 §9.6.5 prover REFUND mode 同性质不对称）。
+25. **`prove(bytes)` 单次性**：`claimData.status` 仅从 `Unchallenged` 单向推进到 `UnchallengedAndValidProofProvided`，不可逆、不可重写（require `claimData.status == Unchallenged → revert AlreadyFullProved`）
+26. **`claimData.prover` 字段语义**：`claimData.status == UnchallengedAndValidProofProvided ⟺ claimData.prover != address(0)`（同一 `prove(bytes)` tx 内原子写入）。
     > **V1 对齐**：字段保留在 ClaimData 内，名字与 V1 [ClaimData.prover](contracts/src/fp/OPSuccinctFaultDisputeGame.sol#L73) 一致；语义"谁提供了让 game 早 finalize 的 proof"也对应 V1。本 spec 把 per-segment prover 拆出去由 `disputes[k].provedBy` 接管；game-wide early-finalize prover 留在 `ClaimData.prover`，与 V1 ClaimData shape 1:1 对齐（仅去掉 `counteredBy`）。
     > **不参与协议核心逻辑**：核心 invariants 与 mutator 函数全用 `claimData.status` 判别；`claimData.prover` 仅用于 accountability / SDK 直读 / event indexer 便利（event 已带，storage 为冗余但有对齐价值）。
 27. **`prove(bytes)` 与 per-segment prove 的 SP1 public input 独立**：`prove(bytes)` 的 `claimBlockNum = startingOutputRoot.l2SequenceNumber + batchSize`（全 batch 跨度）；prove(k) 的 `claimBlockNum = startingOutputRoot.l2SequenceNumber + SEGMENT_SIZE × (k + 1)`（per-segment 跨度）。两者共用同一 `AGGREGATION_VKEY + RANGE_VKEY_COMMITMENT` 但 public input 不重叠，零 proof 复用风险
@@ -1715,7 +1715,7 @@ prove 时 L bond 即时 push 进 `normalModeCredit[prover]`，但**未消费** `
     - `lowestSIndex` 在 §6.4.2 claimCredit S-path 内 lazy 写入；`createBondPushedAtResolve` 在 §6 Phase 3 resolve() parent-CHW + totalCountered==0 分支写入
     - 两字段都在 `status → Resolved` **之后**写入，**与 prove-time / `prove(bytes)`-time 字段无 dirty-write 冲突**
     - 结论：同 slot 内两字段虽 packed，但写入路径互斥，无冲突
-    - **`ClaimData.prover` 时序**：slot 1（与 proveDeadline / parentIndex 同 slot）仅在 `prove(bytes)` tx 写入；initialize 写入 proveDeadline + parentIndex 时 prover 默认 0；之后状态机只在 Unchallenged → FullProved 转换一次写入 prover，与 slot 1 其它字段不再有写入冲突
+    - **`ClaimData.prover` 时序**：slot 1（与 proveDeadline / parentIndex 同 slot）仅在 `prove(bytes)` tx 写入；initialize 写入 proveDeadline + parentIndex 时 prover 默认 0；之后状态机只在 Unchallenged → UnchallengedAndValidProofProvided 转换一次写入 prover，与 slot 1 其它字段不再有写入冲突
 
 ### 11.8 Lazy settle 字段（§6.4.2）
 
@@ -1920,8 +1920,8 @@ error GameAlreadyResolved();
 error NotUnchallenged();           // `prove(bytes)` 仅在 claimData.status == Unchallenged 时可用
 // HasChallengers error: 不声明 — 防御性 `totalCountered == 0` check 被 Invariant 11 蕴含覆盖（impl 故意省略，spec §6 Phase 3.5 已对齐）
 error ChallengeWindowEnded();      // `prove(bytes)` 仅在 challenge 窗口内有意义
-error AlreadyFullProved();         // `prove(bytes)`: 同 game 重复（claimData.status == FullProved）
-                                   // 同时被 challenge() 使用：claimData.status == FullProved 时禁止 challenger 入场，避免浪费 CHAL_BOND
+error AlreadyFullProved();         // `prove(bytes)`: 同 game 重复（claimData.status == UnchallengedAndValidProofProvided）
+                                   // 同时被 challenge() 使用：claimData.status == UnchallengedAndValidProofProvided 时禁止 challenger 入场，避免浪费 CHAL_BOND
 error ParentAlreadyLost();         // `prove(bytes)`: parent.status == CHALLENGER_WINS 已落定，本 game 必 burn；阻挡 doomed `prove(bytes)` tx 节省 gas
 
 // Phase 4 closeGame / claimCredit (与原合约 [closeGame:531](contracts/src/fp/OPSuccinctFaultDisputeGame.sol#L531) / [claimCredit:500](contracts/src/fp/OPSuccinctFaultDisputeGame.sol#L500) 对齐)
@@ -1947,7 +1947,7 @@ error InvalidProposalStatus();        // resolve: claimData.status 在 4 态 enu
 ```solidity
 event Challenged(address indexed challenger, uint64 indexed segment);
 event Proved(address indexed prover, uint64 indexed segment);
-event FullProved(address indexed prover);                              // §6 Phase 3.5 — early finalize 通道
+event UnchallengedAndValidProofProvided(address indexed prover);                              // §6 Phase 3.5 — early finalize 通道
 event Resolved(GameStatus status);                                     // OP-stack standard, 继承 IDisputeGame
 event GameClosed(BondDistributionMode mode);                            // OP-stack standard
 ```
@@ -1956,7 +1956,7 @@ event GameClosed(BondDistributionMode mode);                            // OP-st
 - `Challenged` / `Proved` 新增 `segment` 参数（multi-challenger 模式必需）
 
 **vs blob 变体（V2）增量**：
-- **新增** `FullProved(address indexed prover)`（§6 Phase 3.5 early-finalize 通道；V2 无 `prove(bytes)` 则无此 event）
+- **新增** `UnchallengedAndValidProofProvided(address indexed prover)`（§6 Phase 3.5 early-finalize 通道；V2 无 `prove(bytes)` 则无此 event）
 - 其余完全一致（V2 没有 blob-specific event）
 
 ### 12.6 External / public function signatures
@@ -1966,7 +1966,7 @@ event GameClosed(BondDistributionMode mode);                            // OP-st
 function initialize() external payable;
 function challenge(uint64 k) external payable returns (ProposalStatus);
 function prove(uint64 k, bytes calldata proofBytes) external returns (ProposalStatus);  // §6 Phase 2 per-segment prove (新 selector, multi-segment 模式特有)
-function prove(bytes calldata proofBytes) external;                                     // §6 Phase 3.5 early finalize overload (selector 与 V1 `prove(bytes)` 完全一致); 验 + 写 claimData.prover + 推 claimData.status=FullProved; 不改 GameStatus; 后续 resolve() consume
+function prove(bytes calldata proofBytes) external;                                     // §6 Phase 3.5 early finalize overload (selector 与 V1 `prove(bytes)` 完全一致); 验 + 写 claimData.prover + 推 claimData.status=UnchallengedAndValidProofProvided; 不改 GameStatus; 后续 resolve() consume
 function resolve() external returns (GameStatus);
 function closeGame() public;                                                    // OP-stack standard
 function claimCredit(address _recipient) external;                              // OP-stack standard
@@ -2012,7 +2012,7 @@ function challengeEnd() public view returns (Timestamp);                        
 function gameOver() public view returns (bool) {
     ProposalStatus s = claimData.status;
     if (s == ProposalStatus.Resolved) return true;
-    if (s == ProposalStatus.FullProved) return true;     // ★ `prove(bytes)` 早 finalize 标记态（§6 Phase 3.5）
+    if (s == ProposalStatus.UnchallengedAndValidProofProvided) return true;     // ★ `prove(bytes)` 早 finalize 标记态（§6 Phase 3.5）
     if (s == ProposalStatus.Unchallenged) {
         // 未被挑战 + 挑战窗口截止 → game over (Unchallenged 路径)
         return block.timestamp >= Timestamp.unwrap(challengeEnd());
@@ -2028,7 +2028,7 @@ function gameOver() public view returns (bool) {
 }
 ```
 
-> **设计要点**：4 态正向枚举——`Resolved` 终态、`FullProved` 早证态（V1 `UnchallengedAndValidProofProvided` 的等价物，用枚举值显式标记而非"Unchallenged + sub-flag"隐式编码）、`Unchallenged` 走 challenge clock、`Challenged` 走 prove clock 或早完成。单读 `claimData.status` + 时间 + bond counters 即可判别完整状态机。
+> **设计要点**：4 态正向枚举——`Resolved` 终态、`UnchallengedAndValidProofProvided` 早证态（V1 `UnchallengedAndValidProofProvided` 的等价物，用枚举值显式标记而非"Unchallenged + sub-flag"隐式编码）、`Unchallenged` 走 challenge clock、`Challenged` 走 prove clock 或早完成。单读 `claimData.status` + 时间 + bond counters 即可判别完整状态机。
 
 > **Challenged 早完成的 challengeEnd guard 为何不可省略**（详见 §6 Phase 3.5 后 SAFETY NOTE）：
 > 在 `block.timestamp < challengeEnd()` 期间，`totalProved == totalCountered` 是**瞬态等式**——新 challenger 可在窗口内继续 challenge 新段使 totalCountered 上升。若早完成不加 challengeEnd 守卫，会形成抢跑 resolve + 剥夺后到 challenger 权利的攻击路径。**早完成只在 challenge 窗口关闭后才允许触发。**
@@ -2061,7 +2061,7 @@ function segmentSize() external view returns (uint64) {
 - `extraData()` pure → view（因变长 extraData 由 storage `numSegments` 决定长度）
 - **ProposalStatus 5 态 → 4 态**：
   - 删除 `ChallengedAndValidProofProvided` (C+VP)：multi-segment 下 `prove(uint64,bytes)` Step 4 即时 push L bond 给 prover，无 game-wide 中间态需求
-  - `UnchallengedAndValidProofProvided` (U+VP) **重命名为 `FullProved`**：含义不变（无 challenge + 整 batch 已验），通道化为独立 `prove(bytes)` overload（不与 per-segment `prove(uint64,bytes)` 复用），独立 revert mapping
+  - **保留 `UnchallengedAndValidProofProvided` (U+VP)** 同 V1 命名（V1 alignment-first）：含义不变（无 challenge + 整 batch 已验），通道化为独立 `prove(bytes)` overload（不与 per-segment `prove(uint64,bytes)` 复用），独立 revert mapping
 
 **vs blob 变体（V2）增量**：
 - 删除 `blobVersionedHash()` getter
@@ -2147,7 +2147,7 @@ challenger 在调 `challenge(k)` 之前需先获得 intermediate roots、本地 
 - gas 设置按目标 inclusion delay 调
 
 **4. tx 落块后**：
-- 监 `FullProved(prover)` event 确认成功
+- 监 `UnchallengedAndValidProofProvided(prover)` event 确认成功
 - **立即广播 `resolve()` tx**（任何人都可调；建议 prover 自己付以最快 finalize）
 - resolve() 成功后下游 ASR / OptimismPortal 可在 `maxClockDuration` + airgap 后视本 game 为 finalized
 

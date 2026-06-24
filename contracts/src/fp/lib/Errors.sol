@@ -45,9 +45,9 @@ error InvalidBatchSize();
 /// @dev    resolve() uses V1's `ClaimAlreadyResolved` instead per SPEC §6 Phase 3 alignment note.
 error GameAlreadyResolved();
 
-/// @notice Thrown by challenge() / prove(bytes) when `claimData.status == FullProved`
+/// @notice Thrown by challenge() / prove(bytes) when `claimData.status == UnchallengedAndValidProofProvided`
 ///         (SPEC §6 Phase 1/3.5 — game already early-finalized; reject for clarity vs ClaimAlreadyChallenged).
-error AlreadyFullProved();
+error AlreadyEarlyFinalized();
 
 /// @notice Thrown by challenge() when caller has already countered another segment in this game
 ///         (SPEC §6 Phase 1 per-address dedup; `challengers[msg.sender].countered == true`).

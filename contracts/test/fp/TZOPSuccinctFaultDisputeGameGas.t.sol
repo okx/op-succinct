@@ -207,7 +207,7 @@ contract TZOPSuccinctFaultDisputeGameGasTest is TZOPSuccinctFaultDisputeGameTest
         assertLt(used, 100_000, "resolve Unchallenged DW gas regression");
     }
 
-    function test_gas_resolve_FullProved_DW() public {
+    function test_gas_resolve_EarlyFinalized_DW() public {
         vm.prank(proposer);
         TZOPSuccinctFaultDisputeGame g = _createChildGame(4, 2000, 0, rootClaim);
 
@@ -217,8 +217,8 @@ contract TZOPSuccinctFaultDisputeGameGasTest is TZOPSuccinctFaultDisputeGameTest
         uint256 g0 = gasleft();
         g.resolve();
         uint256 used = g0 - gasleft();
-        emit log_named_uint("resolve FullProved DW gas", used);
-        assertLt(used, 100_000, "resolve FullProved gas regression");
+        emit log_named_uint("resolve UnchallengedAndValidProofProvided DW gas", used);
+        assertLt(used, 100_000, "resolve UnchallengedAndValidProofProvided gas regression");
     }
 
     function test_gas_resolve_Challenged_DW_allProved() public {
