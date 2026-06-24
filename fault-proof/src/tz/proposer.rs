@@ -316,7 +316,7 @@ where
         let tasks = ranges.into_iter().enumerate().map(|(idx, (s, e))| {
             let this = self.clone();
             async move {
-                let (range_proof, boot_info) = this.tz_range_proof(idx, s, e).await?;
+                let (range_proof, boot_info) = this.tz_range_proof(s, e).await?;
                 Ok::<_, anyhow::Error>((idx, range_proof, boot_info))
             }
         });
@@ -326,17 +326,13 @@ where
             stream::iter(tasks).buffer_unordered(max_concurrent).try_collect().await?;
         results.sort_by_key(|(idx, _, _)| *idx);
 
-        let mut proofs = Vec::with_capacity(num_ranges);
-        let mut boot_infos = Vec::with_capacity(num_ranges);
-        for (_, range_proof, boot_info) in results {
-            proofs.push(range_proof.proof.clone());
-            boot_infos.push(boot_info);
-        }
+        let (proofs, boot_infos): (Vec<_>, Vec<_>) = results
+            .into_iter()
+            .map(|(_, range_proof, boot_info)| (range_proof.proof, boot_info))
+            .unzip();
 
         let agg_inputs = AggregationInputs {
             boot_infos,
-            // Pass-through: the aggregation guest commits this to AggregationOutputs.l1Head;
-            // the on-chain prove() reads the same value via Hash.unwrap(game.l1Head()).
             latest_l1_checkpoint_head: game_l1_head,
             multi_block_vkey: self.prover.keys().range_vk.hash_u32(),
             prover_address: self.signer.address(),
@@ -358,12 +354,10 @@ where
     /// to validate stdin structure (slow but exhaustive — used for debugging only).
     async fn tz_range_proof(
         &self,
-        idx: usize,
         start_block: u64,
         end_block: u64,
     ) -> Result<(SP1ProofWithPublicValues, BootInfoStruct)> {
         tracing::info!(
-            idx,
             start_block,
             end_block,
             "tz: fetching witness (snapshot + blocks) for sub-range"
@@ -374,7 +368,6 @@ where
         let snapshot_fetch_elapsed = snapshot_fetch_started_at.elapsed();
         let snapshot_bytes = snapshot.len();
         tracing::info!(
-            idx,
             start_block,
             elapsed_ms = snapshot_fetch_elapsed.as_millis() as u64,
             bytes = snapshot_bytes,
@@ -412,7 +405,6 @@ where
         let witness_fetch_elapsed = witness_fetch_started_at.elapsed();
         let witness_bytes = snapshot_bytes + blocks_bytes;
         tracing::info!(
-            idx,
             start_block,
             end_block,
             total_blocks,
@@ -430,7 +422,8 @@ where
 
         if std::env::var("TZ_LOCAL_EXECUTE").ok().as_deref() == Some("1") {
             tracing::info!(
-                idx,
+                start_block,
+                end_block,
                 "tz: TZ_LOCAL_EXECUTE=1 — running range guest on local CPU first"
             );
             let cpu = sp1_sdk::ProverClient::builder().cpu().build().await;
@@ -439,21 +432,22 @@ where
                 .await
             {
                 Ok((pv, report)) => tracing::info!(
-                    idx,
+                    start_block,
+                    end_block,
                     pv_len = pv.as_slice().len(),
                     cycles = ?report.total_instruction_count(),
                     "tz: local execute OK"
                 ),
                 Err(e) => {
-                    tracing::error!(idx, "tz: local execute FAILED: {e:?}");
+                    tracing::error!(start_block, end_block, "tz: local execute FAILED: {e:?}");
                     return Err(anyhow::anyhow!(
-                        "tz: local execute failed (sub-range {idx}): {e}"
+                        "tz: local execute failed (blocks {start_block}-{end_block}): {e}"
                     ));
                 }
             }
         }
 
-        tracing::info!(idx, "tz: generating range proof");
+        tracing::info!(start_block, end_block, "tz: generating range proof");
         let (range_proof, _cycles, _gas) = self.prover.generate_range_proof(range_stdin).await?;
         let boot_info = BootInfoStruct::abi_decode(range_proof.public_values.as_slice())
             .map_err(|e| anyhow::anyhow!("tz: failed to abi_decode range BootInfoStruct: {e}"))?;
