@@ -282,8 +282,14 @@ where
         Ok((receipt.transaction_hash, 0, 0))
     }
 
-    /// Run the twin-layer prove pipeline (single segment): range proof → aggregation proof.
-    /// Returns groth16-wrapped proof bytes ready for OPSuccinctFaultDisputeGame.prove.
+    /// Run the twin-layer prove pipeline: split (start, end] into N sub-ranges per
+    /// `RANGE_SPLIT_COUNT`, generate one range proof per sub-range (concurrent up to
+    /// `MAX_CONCURRENT_RANGE_PROOFS`), then aggregate into a single agg proof.
+    ///
+    /// Each sub-range is independent: its own snapshot at the sub-range's start block +
+    /// blocks (start_i, end_i]. The agg guest's `link_check` validates that adjacent
+    /// boot_infos chain (prev.l2PostRoot == curr.l2PreRoot), which is satisfied by
+    /// `RangeSplitCount::split`'s contiguous-no-gap contract.
     ///
     /// `game_l1_head` is the on-chain game.l1Head() CWIA arg; the aggregation guest commits
     /// this value to AggregationOutputs.l1Head so the on-chain prove() verifier passes.
@@ -293,10 +299,74 @@ where
         end_block: u64,
         game_l1_head: B256,
     ) -> Result<alloy_primitives::Bytes> {
+        let ranges = self
+            .config
+            .range_split_count
+            .split(start_block, end_block)
+            .context("failed to split range for tz proving")?;
+        let num_ranges = ranges.len();
         tracing::info!(
             start_block,
             end_block,
-            "tz: fetching witness (snapshot + blocks) from tz chain"
+            num_ranges,
+            range_split_count = self.config.range_split_count.to_usize(),
+            "tz: proving over {num_ranges} sub-range(s)"
+        );
+
+        let tasks = ranges.into_iter().enumerate().map(|(idx, (s, e))| {
+            let this = self.clone();
+            async move {
+                let (range_proof, boot_info) = this.tz_range_proof(idx, s, e).await?;
+                Ok::<_, anyhow::Error>((idx, range_proof, boot_info))
+            }
+        });
+
+        let max_concurrent = self.config.max_concurrent_range_proofs.get().min(num_ranges);
+        let mut results: Vec<(usize, SP1ProofWithPublicValues, BootInfoStruct)> =
+            stream::iter(tasks).buffer_unordered(max_concurrent).try_collect().await?;
+        results.sort_by_key(|(idx, _, _)| *idx);
+
+        let mut proofs = Vec::with_capacity(num_ranges);
+        let mut boot_infos = Vec::with_capacity(num_ranges);
+        for (_, range_proof, boot_info) in results {
+            proofs.push(range_proof.proof.clone());
+            boot_infos.push(boot_info);
+        }
+
+        let agg_inputs = AggregationInputs {
+            boot_infos,
+            // Pass-through: the aggregation guest commits this to AggregationOutputs.l1Head;
+            // the on-chain prove() reads the same value via Hash.unwrap(game.l1Head()).
+            latest_l1_checkpoint_head: game_l1_head,
+            multi_block_vkey: self.prover.keys().range_vk.hash_u32(),
+            prover_address: self.signer.address(),
+        };
+        let agg_stdin = aggregation_stdin(proofs, &self.prover.keys().range_vk, &agg_inputs)?;
+
+        tracing::info!("tz: generating aggregation proof");
+        let agg_proof = self.prover.generate_agg_proof(agg_stdin).await?;
+        Ok(agg_proof.bytes().into())
+    }
+
+    /// Generate one range proof for a single sub-range (start, end].
+    ///
+    /// Fetches the DexState snapshot at `start` (post-state of block `start`) plus the
+    /// blocks (start, end] streamed into the range guest via `TZ_BLOCKS_PER_FETCH` chunks
+    /// (stdin streaming inside one range proof — orthogonal to multi-range split).
+    ///
+    /// When `TZ_LOCAL_EXECUTE=1`, runs the range guest on local CPU first per sub-range
+    /// to validate stdin structure (slow but exhaustive — used for debugging only).
+    async fn tz_range_proof(
+        &self,
+        idx: usize,
+        start_block: u64,
+        end_block: u64,
+    ) -> Result<(SP1ProofWithPublicValues, BootInfoStruct)> {
+        tracing::info!(
+            idx,
+            start_block,
+            end_block,
+            "tz: fetching witness (snapshot + blocks) for sub-range"
         );
         let witness_fetch_started_at = std::time::Instant::now();
         let snapshot_fetch_started_at = std::time::Instant::now();
@@ -304,6 +374,7 @@ where
         let snapshot_fetch_elapsed = snapshot_fetch_started_at.elapsed();
         let snapshot_bytes = snapshot.len();
         tracing::info!(
+            idx,
             start_block,
             elapsed_ms = snapshot_fetch_elapsed.as_millis() as u64,
             bytes = snapshot_bytes,
@@ -341,6 +412,7 @@ where
         let witness_fetch_elapsed = witness_fetch_started_at.elapsed();
         let witness_bytes = snapshot_bytes + blocks_bytes;
         tracing::info!(
+            idx,
             start_block,
             end_block,
             total_blocks,
@@ -357,46 +429,35 @@ where
         );
 
         if std::env::var("TZ_LOCAL_EXECUTE").ok().as_deref() == Some("1") {
-            tracing::info!("tz: TZ_LOCAL_EXECUTE=1 — running range guest on local CPU first");
+            tracing::info!(
+                idx,
+                "tz: TZ_LOCAL_EXECUTE=1 — running range guest on local CPU first"
+            );
             let cpu = sp1_sdk::ProverClient::builder().cpu().build().await;
             match cpu
                 .execute(Elf::Static(get_range_elf_embedded()), range_stdin.clone())
                 .await
             {
                 Ok((pv, report)) => tracing::info!(
+                    idx,
                     pv_len = pv.as_slice().len(),
                     cycles = ?report.total_instruction_count(),
                     "tz: local execute OK"
                 ),
                 Err(e) => {
-                    tracing::error!("tz: local execute FAILED: {e:?}");
-                    return Err(anyhow::anyhow!("tz: local execute failed: {e}"));
+                    tracing::error!(idx, "tz: local execute FAILED: {e:?}");
+                    return Err(anyhow::anyhow!(
+                        "tz: local execute failed (sub-range {idx}): {e}"
+                    ));
                 }
             }
         }
 
-        tracing::info!("tz: generating range proof");
+        tracing::info!(idx, "tz: generating range proof");
         let (range_proof, _cycles, _gas) = self.prover.generate_range_proof(range_stdin).await?;
         let boot_info = BootInfoStruct::abi_decode(range_proof.public_values.as_slice())
             .map_err(|e| anyhow::anyhow!("tz: failed to abi_decode range BootInfoStruct: {e}"))?;
-
-        let agg_inputs = AggregationInputs {
-            boot_infos: vec![boot_info],
-            // Pass-through: the aggregation guest commits this to AggregationOutputs.l1Head;
-            // the on-chain prove() reads the same value via Hash.unwrap(game.l1Head()).
-            latest_l1_checkpoint_head: game_l1_head,
-            multi_block_vkey: self.prover.keys().range_vk.hash_u32(),
-            prover_address: self.signer.address(),
-        };
-        let agg_stdin = aggregation_stdin(
-            vec![range_proof.proof.clone()],
-            &self.prover.keys().range_vk,
-            &agg_inputs,
-        )?;
-
-        tracing::info!("tz: generating aggregation proof");
-        let agg_proof = self.prover.generate_agg_proof(agg_stdin).await?;
-        Ok(agg_proof.bytes().into())
+        Ok((range_proof, boot_info))
     }
 }
 

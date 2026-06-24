@@ -68,3 +68,6 @@ settings.local.json
 
 # ci-env runtime data (PID files, logs, test-env)
 dev/data/
+
+# Local cargo build TMPDIR override (EDR sandbox workaround)
+.cargo-tmp/
