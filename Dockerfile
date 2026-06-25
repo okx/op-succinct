@@ -11,11 +11,6 @@ RUN apt-get update && apt-get install -y \
     golang-go \
     && rm -rf /var/lib/apt/lists/*
 
-# Configure SSL certificate for corporate proxy (optional)
-COPY copilot.pem /etc/ssl/copilot.pem
-RUN if [ -s /etc/ssl/copilot.pem ]; then \
-        git config --global http.sslCAInfo /etc/ssl/copilot.pem; \
-    fi
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 
 # Install project's required Rust toolchain
@@ -32,6 +27,12 @@ FROM chef AS builder
 
 # Copy source code and build binaries
 COPY . .
+
+# Configure SSL certificate for corporate proxy (optional)
+RUN if [ -f copilot.pem ] && [ -s copilot.pem ]; then \
+        cp copilot.pem /etc/ssl/copilot.pem && \
+        git config --global http.sslCAInfo /etc/ssl/copilot.pem; \
+    fi
 
 RUN cargo build --release --bin proposer && \
     cargo build --release --bin challenger && \
