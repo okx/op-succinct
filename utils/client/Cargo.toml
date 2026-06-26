@@ -7,9 +7,9 @@ edition.workspace = true
 [dependencies]
 # ethereum
 op-alloy-consensus.workspace = true
-alloy-consensus.workspace = true
+alloy-consensus = { version = "2.0.0", default-features = false }
 alloy-rlp.workspace = true
-alloy-eips.workspace = true
+alloy-eips = { version = "2.0.0", default-features = false }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 

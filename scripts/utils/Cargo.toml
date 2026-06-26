@@ -86,6 +86,5 @@ op-succinct-build-utils.workspace = true
 
 [features]
 default = ["ethereum"]
-eigenda = ["op-succinct-proof-utils/eigenda"]
-celestia = ["op-succinct-proof-utils/celestia"]
+# celestia/eigenda excluded (DA backends not used by XLayer)
 ethereum = ["op-succinct-proof-utils/ethereum"]

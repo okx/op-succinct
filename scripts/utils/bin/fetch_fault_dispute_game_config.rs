@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::{env, sync::Arc};
 
 use alloy_eips::BlockId;

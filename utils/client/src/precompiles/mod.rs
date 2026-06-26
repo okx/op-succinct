@@ -8,7 +8,6 @@ use revm::{
     context_interface::JournalTr,
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInput, CallInputs, Gas, InstructionResult, InterpreterResult},
-    precompile::PrecompileError,
 };
 #[cfg(any(test, target_os = "zkvm"))]
 use revm_precompile::PrecompileId;
@@ -149,7 +148,7 @@ where
                 println!("cycle-tracker-report-start: precompile-{}", name);
             }
 
-            let exec_result = precompile.execute(input_bytes, inputs.gas_limit);
+            let exec_result = precompile.execute(input_bytes, inputs.gas_limit, inputs.reservoir);
 
             #[cfg(target_os = "zkvm")]
             if let Some(name) = tracker_name {
@@ -162,26 +161,27 @@ where
         match exec_result {
             Ok(output) => {
                 result.gas.record_refund(output.gas_refunded);
-                let underflow = result.gas.record_cost(output.gas_used);
-                assert!(underflow, "Gas underflow is not possible");
-                result.result = if output.reverted {
-                    InstructionResult::Revert
-                } else {
-                    InstructionResult::Return
-                };
-                result.output = output.bytes;
-            }
-            Err(PrecompileError::Fatal(e)) => return Err(e),
-            Err(e) => {
-                result.result = if e.is_oog() {
-                    InstructionResult::PrecompileOOG
-                } else {
-                    InstructionResult::PrecompileError
-                };
-                if !e.is_oog() && context.journal().depth() == 1 {
-                    context.local_mut().set_precompile_error_context(e.to_string());
+                if output.status.is_success_or_revert() {
+                    let underflow = result.gas.record_regular_cost(output.gas_used);
+                    assert!(underflow, "Gas underflow is not possible");
+                    result.result = if output.status.is_revert() {
+                        InstructionResult::Revert
+                    } else {
+                        InstructionResult::Return
+                    };
+                    result.output = output.bytes;
+                } else if let Some(halt) = output.status.halt_reason() {
+                    result.result = if halt.is_oog() {
+                        InstructionResult::PrecompileOOG
+                    } else {
+                        InstructionResult::PrecompileError
+                    };
+                    if !halt.is_oog() && context.journal().depth() == 1 {
+                        context.local_mut().set_precompile_error_context(halt.to_string());
+                    }
                 }
             }
+            Err(e) => return Err(e.to_string()),
         }
 
         Ok(Some(result))
