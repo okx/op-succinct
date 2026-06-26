@@ -1,6 +1,6 @@
 ---
 name: "tz-prove-pipeline"
-description: "tz fault-proof prove 流水线：从 Witness Builder REST 异步 replay 协议拉 witness → 装配 SP1Stdin → cluster/network 生成 range + aggregation proof → 上链调用 OPSuccinctFaultDisputeGame.prove。包含 host/guest 协议不变量、replay 等待状态机、调试 escape hatch。"
+description: "tz fault-proof prove 流水线：把 (start, end] 切成 N (1–16) 段 sub-range，每段从 Witness Builder REST 异步 replay 协议拉 witness → 装配 SP1Stdin → 并发生成 range proof，按 idx 重排后用 N 份 boot_info 聚合成单份 aggregation proof → 上链调用 OPSuccinctFaultDisputeGame.prove。包含 host/guest 协议不变量、replay 等待状态机、调试 escape hatch。N=1 时与旧单段路径字节等价。"
 ---
 
 # tz Fault-Proof Prove Pipeline
@@ -14,28 +14,48 @@ description: "tz fault-proof prove 流水线：从 Witness Builder REST 异步 r
 - `OPSuccinctFaultDisputeGame`（链上合约，cwia immutable args 包含 `startingBlockNumber()` = parent 的 `l2BlockNumber()`、当前 `l2BlockNumber()`）
 - `DexState`（tz 链状态对象，msgpack 编码，含 `context.height`、`context.block_hash`、`context.app_hash`）
 - `Vec<Block>`（一段连续 tz block，msgpack 编码）
-- `BootInfoStruct`（range guest 的公共输出，Solidity ABI 编码 160 字节）
-- `AggregationInputs` / `AggregationOutputs`
+- `BootInfoStruct`（range guest 的公共输出，Solidity ABI 编码 160 字节）—— multi-range 下每个 sub-range 产出一个，聚合时按 idx 排成 `Vec`
+- `RangeSplitCount`（`config.rs`，1–16，`split(start, end) → Vec<(s_i, e_i)>` 连续无缝切分，INV-2a）
+- `AggregationInputs`（`boot_infos: Vec`，长度 = N）/ `AggregationOutputs`
 - `SP1Stdin` / `SP1ProofWithPublicValues`
 - `SnapshotReplayStatus`（异步 replay 任务的服务端状态，见 [`apis/witness-builder-rpc.md`](../apis/witness-builder-rpc.md)）
 
 ## Normal Flow Steps
 
+自 PRF-49（ADR-012）起，prove 路径是 **multi-range**：`tz_prove` 把 `(start, end]` 切成 N (1–16) 段，
+对每段并发调用 per-sub-range 子例程 `tz_range_proof`，再用 N 份 boot_info 聚合成单份 agg proof。
+形态镜像 generic 非-tz `prove_game`（`proposer.rs:1240-1262`），但保留 tz 专属的 Solidity-ABI decode。
+N=1 时退化为单段，与旧路径字节等价（INV-1a/1b）。
+
+### tz_prove 编排（FR-1）
+
 | Step | Action | Module |
 |------|--------|--------|
 | 1 | 从链上合约读出 `start_block = game.startingBlockNumber()`、`end_block = game.l2BlockNumber()` | `fault-proof/src/proposer.rs::spawn_game_proving_task` |
-| 2 | 调 `prove_game(addr, start, end)` → 分发到 tz 实现 | `fault-proof/src/tz/proposer.rs::prove_game` |
-| 3 | `tz_prove(start, end)` 装配 witness | tz/proposer.rs |
-| 3a | `chain_client.get_dex_state_snapshot(start_block)` 内部执行异步 replay 协议（见下方"Snapshot replay 状态机"）| tz/chain_client.rs |
-| 3b | 按 `TZ_BLOCKS_PER_FETCH`（默认 1000）切片，逐段 `chain_client.get_blocks_range(cur, cur+chunk-1)` | tz/chain_client.rs::get_blocks_range |
-| 4 | 装配 `SP1Stdin`：`write_vec(snapshot)` → `write(chunk_count: u32)` → 重复 N 次 `write_vec(chunk_bytes)` | tz/proposer.rs::tz_prove |
-| 5 | 调 `self.prover.generate_range_proof(stdin)` → cluster 或 network 路径 | fault-proof/src/prover.rs |
-| 6 | 从 range proof 的 public_values 反序列化 BootInfoStruct（**`abi_decode`，不是 bincode**）| tz/proposer.rs |
-| 7 | 装配 `AggregationInputs`（boot_infos[]、`latest_l1_checkpoint_head=B256::ZERO`、`multi_block_vkey=range_vk.hash_u32()`、`prover_address`）和 agg stdin（local `aggregation_stdin()` helper：`write_proof + range_vk` × N，然后 `write(&agg_inputs)`）| tz/proposer.rs |
-| 8 | `self.prover.generate_agg_proof(agg_stdin)` → 通常 Plonk 包装 | prover.rs |
-| 9 | `agg_proof.bytes()` 作为 `proofBytes` 调 `OPSuccinctFaultDisputeGame.prove(...)` 上链 | tz/proposer.rs::prove_game |
+| 2 | 调 `prove_game(addr, start, end)` → 分发到 tz 实现；读 `game.l1Head()` 作 `game_l1_head` | `fault-proof/src/tz/proposer.rs::prove_game` |
+| 3 | `tz_prove(start, end, game_l1_head)`：`config.range_split_count.split(start, end)` → N 段 `Vec<(s_i, e_i)>`（INV-2a 连续无缝）；log `tz: proving over {N} sub-range(s)` | tz/proposer.rs::tz_prove |
+| 4 | 每段一个 future（`self.clone()` per task）；`stream::iter(tasks).buffer_unordered(min(max_concurrent_range_proofs, N)).try_collect()` 并发执行 `tz_range_proof`（见下方子例程）| tz/proposer.rs::tz_prove |
+| 5 | 收集 `(idx, SP1ProofWithPublicValues, BootInfoStruct)`，按 `idx` 重排成有序 `proofs[N]` / `boot_infos[N]`（`ok_or_else` → 缺段返 `Err`，**不 panic**）| tz/proposer.rs::tz_prove |
+| 6 | 装配 `AggregationInputs { boot_infos: N 个, latest_l1_checkpoint_head: game_l1_head, multi_block_vkey: range_vk.hash_u32(), prover_address }`；agg stdin 经 local `aggregation_stdin()` helper（`write_proof + range_vk` × N，然后 `write(&agg_inputs)`；非 Compressed 变体 → `Err`）| tz/proposer.rs::aggregation_stdin |
+| 7 | log `tz: generating aggregation proof`；`self.prover.generate_agg_proof(agg_stdin)` → 通常 Plonk 包装 | prover.rs |
+| 8 | `agg_proof.bytes()` 返回调用方 `prove_game`，作为 `proofBytes` 调 `OPSuccinctFaultDisputeGame.prove(...)` 上链 —— **单笔 tx**，经 `SignerLock` 串行化 nonce | tz/proposer.rs::prove_game |
 
-## Snapshot Replay 状态机（Step 3a 的展开）
+**并发 / 失败语义**：任一 sub-range future resolve 为 `Err` → `try_collect` 整体 abort：(a) `tz_prove` 返 `Err`；(b) 尚未启动的 future 不再 poll；(c) in-flight future 被 drop（远端 cleanup 不保证，依赖 server-side timeout）；(d) 不上链，下次 tick 重 spawn。并发 sub-range future **不**各自取 signer——只有 Step 8 的 agg-submit 取（KG concurrency [Pitfall]）。
+
+### tz_range_proof 单段子例程（FR-2，每段执行一次）
+
+| Step | Action | Module |
+|------|--------|--------|
+| R-1 | `l2_provider.fetch_dex_state_snapshot(start_i)` 内部执行异步 replay 协议（见下方"Snapshot replay 状态机"）—— snapshot@start_i = block `start_i` 的 post-state | tz/l2_provider.rs / chain_client.rs |
+| R-2 | 半开区间 `(start_i, end_i]`：first = `start_i + 1`，`total = end_i - start_i`，`chunk_count = ceil(total / TZ_BLOCKS_PER_FETCH)`（默认 1000）；逐 chunk `fetch_blocks_range(cur, chunk_end)` | tz/l2_provider.rs::fetch_blocks_range |
+| R-3 | 装配 `SP1Stdin`：`write_vec(snapshot)` → `write(chunk_count: u32)` → 重复 `chunk_count` 次 `write_vec(chunk_bytes)` | tz/proposer.rs::tz_range_proof |
+| R-4 | `TZ_LOCAL_EXECUTE=1` 时先本地 CPU `execute(range_elf, stdin)`（诊断，见 Diagnostics）| tz/proposer.rs::tz_range_proof |
+| R-5 | `self.prover.generate_range_proof(stdin)` → cluster 或 network 路径，得 compressed range proof | fault-proof/src/prover.rs |
+| R-6 | `BootInfoStruct::abi_decode(range_proof.public_values.as_slice())`（**`abi_decode`，不是 bincode**）；返回 `(SP1ProofWithPublicValues, BootInfoStruct)` | tz/proposer.rs::tz_range_proof |
+
+> **N 倍 fetch**：N 段切分 = N 次 `fetch_dex_state_snapshot` + N 次 `fetch_blocks_range`，adjacent 段之间**不复用** snapshot 缓存。小 state（e2e 实测 1.3 KB）开销可忽略；大 state（≥ 数 GB）下 N 增大会放大网络 / 反序列化峰值——运维通过调小 `RANGE_SPLIT_COUNT` / `MAX_CONCURRENT_RANGE_PROOFS` 缓解（无运行时自适应保护）。
+
+## Snapshot Replay 状态机（Step R-1 的展开）
 
 服务端 snapshot 是**稀疏存储 + 按需 forward-replay** 的，host 端通过下列循环驱动：
 
@@ -201,6 +221,8 @@ tz: loaded identity from on-chain game implementation
 - agg proof 模式默认 Plonk，链上 verifier 必须接 Plonk verifier 地址（`contracts/config/tz/opsuccinctfdgconfig.json::verifierAddress`）。
 - cluster artifact 缓存按 `(vkey, stdin_hash)` 索引；测试中反复用同一份 stdin 可能命中旧 proof。redis 清缓存：`docker exec infra-redis-1 redis-cli -a redispassword FLUSHDB`。
 - snapshot replay 任务**不主动 cancel**。即使 prove task 被 outer loop 替换，旧的服务端 replay 仍会跑完（artifact 会被缓存，下次 prove 同一 height 直接命中）。
+- **multi-range link_check 只在 N≥2 才暴露 INV-2b 破坏**：agg guest `link_check.rs` 对 `boot_infos.windows(2)` 断言 `prev.l2PostRoot == curr.l2PreRoot`。N=1 时 `windows(2)` 不触发，host snapshot RPC 编码 ↔ guest 反序列化 / `blake3_hash_state` 的任何字节漂移看不见；N≥2 切分后 link_check 才真正校验这条跨进程不变量。改 snapshot codec 或 guest deserialize/hash 任一侧 → N≥2 时 `link_check` 必 panic（pre-existing 依赖，无新协同机制）。
+- **重排 bug → boot_infos 乱序/缺段 → agg guest `link_check` panic**：`tz_prove` 用 `vec![None; N]` + idx-assign + `ok_or_else` 重排；缺段返 `Err`（不 panic），但若重排逻辑错误把不连续 boot_infos 喂给 agg，execute/verify 失败、proposer 视为 prove 失败重试。
 
 ## 相关引用
 
@@ -211,3 +233,5 @@ tz: loaded identity from on-chain game implementation
 - [`pitfalls/tz-cache.md`](../pitfalls/tz-cache.md) — `TzChainClient` 内存 checkpoint 缓存的同步 Mutex 约定
 - [`decisions/ADR-009-tz-phase-1-vkey-suppression.md`](../decisions/ADR-009-tz-phase-1-vkey-suppression.md) — Phase 1 vkey 抑制
 - [`core-flows/aggregation-proof.md`](./aggregation-proof.md) — 通用 aggregation guest 流程（tz agg guest 在 pv_digest 算法上不同 —— ABI 不是 bincode）
+- [`decisions/ADR-012-tz-prove-parallel-not-unified.md`](../decisions/ADR-012-tz-prove-parallel-not-unified.md) — 为何 `tz_prove` 与 generic `prove_game` 保持平行实现、不经 trait 统一（multi-range pipeline 的设计决策）
+- [`conventions/env-vars.md`](../conventions/env-vars.md) — `RANGE_SPLIT_COUNT` / `MAX_CONCURRENT_RANGE_PROOFS` / `TZ_BLOCKS_PER_FETCH` / `TZ_LOCAL_EXECUTE` 等 tz prove-path env 参考
