@@ -88,25 +88,25 @@ vergen = "=9.0.4"
 vergen-git2 = "=1.0.5"
 
 # kona
-kona-mpt = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-kona-derive = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
-kona-driver = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-kona-preimage = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", features = [
+kona-mpt = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-derive = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+kona-driver = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-preimage = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", features = [
     "rkyv",
     "serde",
 ] }
-kona-executor = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-kona-proof = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-executor = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-proof = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
 
-kona-client = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-kona-host = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-kona-providers-alloy = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-client = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-host = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+kona-providers-alloy = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
 # Note: kona-rpc is NOT included to avoid rollup-boost -> reth-optimism-primitives dependency
 # which causes alloy version conflicts. RPC types are defined locally in
 # utils/host/src/rpc_types.rs instead.
-kona-protocol = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
-kona-registry = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
-kona-genesis = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+kona-protocol = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+kona-registry = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+kona-genesis = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
 
 # hana / hokulea (Celestia/EigenDA DA backends) — not used by XLayer; excluded from workspace
 
@@ -170,21 +170,21 @@ alloy-sol-macro = { version = "1.6.0", default-features = false }
 alloy-chains = { version = "0.2.30", default-features = false }
 
 # OP Alloy - from the optimism monorepo (xl/kona-1.6.0-gasless)
-op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
-op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
-op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
-op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+op-alloy-consensus = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+op-alloy-rpc-types = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+op-alloy-rpc-types-engine = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+op-alloy-network = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
 
 # Execution
 alloy-evm = { version = "0.34.0", default-features = false }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+alloy-op-evm = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
 # Use kzg-rs and substrate-bn for the zkVM.
 # Versions aligned with kona v1.6.0 + gasless (revm 38 era)
 revm = { version = "38.0.0", default-features = false, features = [
     "bn",
 ] }
 revm-precompile = { version = "34.0.0", default-features = false }
-op-revm = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
+op-revm = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f", default-features = false }
 
 # SP1 v6.1.0 (Hypercube)
 sp1-sdk = { version = "=6.1.0", features = ["network", "blocking", "profiling"] }
@@ -272,9 +272,9 @@ slop-whir = { git = "https://github.com/okx/sp1", branch = "feat/gateway-proxy-v
 
 # Redirect crates.io op-alloy / alloy-op-evm to the optimism monorepo
 # so all kona path-deps resolve to the same versions.
-op-alloy-consensus = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-op-alloy-network = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-op-alloy-rpc-types = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-op-alloy-rpc-types-engine = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-alloy-op-evm = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
-op-revm = { git = "https://gitlab.okg.com/github/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+op-alloy-consensus = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+op-alloy-network = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+op-alloy-rpc-types = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+op-alloy-rpc-types-engine = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+alloy-op-evm = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
+op-revm = { git = "https://github.com/okx/optimism", rev = "bc7bb771081bd41c661f99d5de1820d48782e57f" }
