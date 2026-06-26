@@ -43,6 +43,18 @@ All secrets must be read from environment variables — never hardcode (see `kno
 | `MALICIOUS_CHALLENGE_PERCENTAGE` | No | 0 | Testing: % of valid games to challenge |
 | `PROPOSER_METRICS_PORT` | No | — | Prometheus metrics port for proposer |
 
+## TZ Proposer Prove Path (`fault-proof/src/config.rs` + `tz/proposer.rs`, feature `tz`)
+
+These govern the multi-range concurrent prove pipeline (PRF-49). They are **non-secret config**, read from env, validated at startup. `setup-tz-mock-devnet.sh` writes the first two into `.env.tz-proposer` (default `1`).
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `RANGE_SPLIT_COUNT` | No | 1 | Number of contiguous sub-ranges to split `(start, end]` into for proving. Validated 1–16 (`RangeSplitCount::MAX = 16`); non-numeric / `0` / `>16` → startup `Err("range splits must be between 1 and 16, got <value>")`. `1` is byte-equivalent to the pre-split single-segment path (INV-1a/1b). |
+| `MAX_CONCURRENT_RANGE_PROOFS` | No | 1 | Max sub-range proofs in flight at once (`NonZeroUsize`). Effective concurrency = `min(MAX_CONCURRENT_RANGE_PROOFS, RANGE_SPLIT_COUNT)`. Decoupled from split count so you can split 16 but throttle to 4 to smooth prover pressure. |
+| `TZ_BLOCKS_PER_FETCH` | No | 1000 | Block-fetch chunk size inside each sub-range (`tz_range_proof`). Absent / `0` / non-numeric → falls back to 1000. |
+| `TZ_LOCAL_EXECUTE` | No | (unset) | `=1` runs a local CPU `execute(range_elf, stdin)` before the prover backend, per sub-range — diagnostic only (`tz: local execute OK/FAILED`). Unset = zero overhead. Uses the async `ProverClient::builder().cpu().build().await` API (NOT a blocking `CpuProver` ctor — see `pitfalls/concurrency.md`). |
+| `TZ_SNAPSHOT_POLL_INTERVAL_SECS` | No | 5 | Poll interval while waiting on the Witness-Builder async snapshot replay (`core-flows/tz-prove-pipeline.md`). |
+
 ## Signer (`utils/signer/src/lib.rs` — `Signer::from_env()`)
 
 Priority: XLayer (if `XLAYER_SIGNER_ENABLED=true`) → Local (if `PRIVATE_KEY` set).
