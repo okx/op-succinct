@@ -1,0 +1,5 @@
+[unstable]
+trim-paths = true
+
+[profile.release]
+trim-paths = "none"

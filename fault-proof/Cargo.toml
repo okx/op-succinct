@@ -83,7 +83,6 @@ which = "4.4"
 
 [features]
 default = ["ethereum"]
-celestia = ["op-succinct-proof-utils/celestia"]
-eigenda = ["op-succinct-proof-utils/eigenda"]
+# celestia/eigenda excluded (DA backends not used by XLayer)
 ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
