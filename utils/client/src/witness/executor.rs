@@ -11,7 +11,7 @@ use kona_driver::{Driver, DriverPipeline, PipelineCursor};
 use kona_executor::TrieDBProvider;
 use kona_genesis::{L1ChainConfig, RollupConfig};
 use kona_preimage::CommsClient;
-use alloy_op_evm::{block::OpAlloyReceiptBuilder, post_exec::PostExecEvmFactoryAdapter};
+use alloy_op_evm::block::OpAlloyReceiptBuilder;
 use kona_proof::{
     executor::KonaExecutor,
     l1::{OracleL1ChainProvider, OraclePipeline},
@@ -136,7 +136,7 @@ pub trait WitnessExecutor {
             rollup_config.as_ref(),
             l2_provider.clone(),
             l2_provider,
-            PostExecEvmFactoryAdapter::new(ZkvmOpEvmFactory::new()),
+            ZkvmOpEvmFactory::new(),
             OpAlloyReceiptBuilder::default(),
             None,
         );
