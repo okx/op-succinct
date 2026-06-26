@@ -10475,7 +10475,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-artifact"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster?rev=6bb63d8866e5c90139ad4c6fb7a5a412d0680d76#6bb63d8866e5c90139ad4c6fb7a5a412d0680d76"
+source = "git+https://github.com/okx/sp1-cluster?rev=f3995e8aba652f3c27547eaed63fd276ea169ec2#f3995e8aba652f3c27547eaed63fd276ea169ec2"
 dependencies = [
  "anyhow",
  "async-scoped",
@@ -10501,7 +10501,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-common"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster?rev=6bb63d8866e5c90139ad4c6fb7a5a412d0680d76#6bb63d8866e5c90139ad4c6fb7a5a412d0680d76"
+source = "git+https://github.com/okx/sp1-cluster?rev=f3995e8aba652f3c27547eaed63fd276ea169ec2#f3995e8aba652f3c27547eaed63fd276ea169ec2"
 dependencies = [
  "backoff",
  "chrono",
@@ -10529,7 +10529,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-utils"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster?rev=6bb63d8866e5c90139ad4c6fb7a5a412d0680d76#6bb63d8866e5c90139ad4c6fb7a5a412d0680d76"
+source = "git+https://github.com/okx/sp1-cluster?rev=f3995e8aba652f3c27547eaed63fd276ea169ec2#f3995e8aba652f3c27547eaed63fd276ea169ec2"
 dependencies = [
  "eyre",
  "sp1-cluster-artifact",
