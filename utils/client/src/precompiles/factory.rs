@@ -2,7 +2,10 @@
 
 use super::OpZkvmPrecompiles;
 use alloy_evm::{Database, EvmEnv, EvmFactory};
-use alloy_op_evm::{OpEvm, OpEvmContext, OpTx, OpTxError};
+use alloy_op_evm::{
+    OpEvm, OpEvmContext, OpTx, OpTxError,
+    post_exec::{PostExecEvmFactoryHooks, PostExecExecutedTx, PostExecTxContext, WarmingState},
+};
 use op_revm::{L1BlockInfo, OpBuilder, OpHaltReason, OpSpecId, OpTransaction};
 use revm::{
     context::{result::EVMError, BlockEnv, CfgEnv},
@@ -27,6 +30,41 @@ impl Default for ZkvmOpEvmFactory {
     }
 }
 
+/// Bridges `ZkvmOpEvmFactory` into the `PostExecEvmFactoryAdapter` path used by kona's
+/// `KonaExecutor`. Delegates to the `PostExecEvm` methods on the concrete `OpEvm`.
+impl PostExecEvmFactoryHooks for ZkvmOpEvmFactory {
+    fn begin_post_exec_tx<DB, I>(evm: &mut Self::Evm<DB, I>, ctx: PostExecTxContext)
+    where
+        DB: alloy_evm::Database,
+        I: revm::Inspector<Self::Context<DB>>,
+    {
+        evm.begin_post_exec_tx(ctx);
+    }
+
+    fn take_last_post_exec_tx_result<DB, I>(evm: &mut Self::Evm<DB, I>) -> PostExecExecutedTx
+    where
+        DB: alloy_evm::Database,
+        I: revm::Inspector<Self::Context<DB>>,
+    {
+        evm.take_last_post_exec_tx_result()
+    }
+
+    fn warming_state<DB, I>(evm: &Self::Evm<DB, I>) -> WarmingState
+    where
+        DB: alloy_evm::Database,
+        I: revm::Inspector<Self::Context<DB>>,
+    {
+        evm.warming_state()
+    }
+
+    fn seed_warming_state<DB, I>(evm: &mut Self::Evm<DB, I>, state: WarmingState)
+    where
+        DB: alloy_evm::Database,
+        I: revm::Inspector<Self::Context<DB>>,
+    {
+        evm.seed_warming_state(state);
+    }
+}
 
 impl EvmFactory for ZkvmOpEvmFactory {
     type Evm<DB: Database, I: Inspector<OpEvmContext<DB>>> = OpEvm<DB, I, OpZkvmPrecompiles>;
