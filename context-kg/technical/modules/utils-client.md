@@ -8,9 +8,9 @@ description: "zkVM-guest shared utilities — boot info, oracle traits, precompi
 - Compile-into-the-zkVM-guest crate shared by all `programs/range/*` and `programs/aggregation`.
 - Define `BootInfoStruct`, `AggregationInputs`, `WitnessData`, `BlobData` — the wire contracts between host and guest.
 - `BlobStore` — in-guest KZG blob verification.
-- Custom EVM precompile factory (`precompiles/factory.rs`, `precompiles/mod.rs`) with cycle tracking.
+- Custom EVM precompile factory (`precompiles/factory.rs`, `precompiles/mod.rs`) with cycle tracking. As of kona v1.6.0 / revm 38: uses `PostExecEvmFactoryHooks` (delegating to `OpEvm`) and status-based precompile result classification (success/revert/OOG/halt).
 - Oracle interface (`oracle/blob_provider.rs`) wrapping the preimage oracle for blob retrieval.
-- Witness executor + preimage-store glue (`witness/executor.rs`, `witness/preimage_store.rs`).
+- Witness executor + preimage-store glue (`witness/executor.rs`, `witness/preimage_store.rs`). `KonaExecutor` constructed with `PostExecEvmFactoryAdapter` + `OpAlloyReceiptBuilder` (kona v1.6.0 signature).
 
 ## NOT Responsible For
 - DA-specific block derivation (delegated to `utils/{ethereum,celestia,eigenda}/client`).

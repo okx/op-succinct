@@ -33,9 +33,11 @@ op-succinct is a multi-crate Rust workspace for proving OP Stack L2 state transi
 4. **Produce a constraint checklist** — explicitly declare if no relevant content was found.
 5. **Cross-validate during work** — correct violations immediately.
 
-## Workspace Members (22)
+## Workspace Members (16 active + 6 pruned)
 
-`utils/{client,host,build,proof,signer,elfs}`,
-`utils/celestia/{client,host}`, `utils/eigenda/{client,host}`, `utils/ethereum/{client,host}`,
-`programs/range/{celestia,eigenda,ethereum,utils}`, `programs/aggregation`,
+Active: `utils/{client,host,build,proof,signer,elfs}`,
+`utils/ethereum/{client,host}`,
+`programs/range/{ethereum,utils}`, `programs/aggregation`,
 `scripts/{prove,utils}`, `validity`, `fault-proof`, `bindings`.
+
+Pruned (commented out in Cargo.toml, code retained): `utils/celestia/{client,host}`, `utils/eigenda/{client,host}`, `programs/range/{celestia,eigenda}`. Pruned as part of the kona v1.6.0 upgrade — XLayer uses Ethereum DA only.
