@@ -60,11 +60,12 @@ description: "Crate dependency map, storage, and external services for op-succin
 | Service | SDK/Client | Purpose |
 |---------|-----------|---------|
 | SP1 v6.1.0 (Hypercube) | `sp1-sdk`, `sp1-zkvm`, `sp1-lib`, `sp1-prover` (all patched to `okx/sp1#feat/gateway-proxy-v6.1.0`) | zkVM prover engine |
-| Kona v1.2.13 | `kona-driver`, `kona-executor`, `kona-preimage`, `kona-derive`, `kona-proof`, `kona-genesis` | Full-node execution, derivation, output-root computation |
-| Hana v1.6.0-mocha | `hana-host`, `hana-blobstream`, `hana-oracle` | Celestia blobstream oracle and blob validation |
-| Hokulea v1.1.7 | `hokulea-eigenda`, `hokulea-host-bin`, `hokulea-proof`, `hokulea-compute-proof`, canoe-sp1-cc-* | EigenDA commitment verification, KZG proofs |
-| Alloy v1.6.3 / 1.5.6 | `alloy-provider`, `alloy-signer-*`, `alloy-rpc-types-*`, `alloy-consensus`, `alloy-contract` | Ethereum RPC + contract ABI |
-| Op-Alloy v1.2.13 (monorepo) | `op-alloy-consensus`, `op-alloy-network`, `op-alloy-rpc-types*` | OP Stack types |
+| Kona v1.6.0 | `kona-driver`, `kona-executor`, `kona-preimage`, `kona-derive`, `kona-proof`, `kona-genesis` (all from okx/optimism rev bc7bb771) | Full-node execution, derivation, output-root computation |
+| Hana v1.6.0-mocha | `hana-host`, `hana-blobstream`, `hana-oracle` | Celestia blobstream oracle and blob validation (workspace members commented out — not compiled) |
+| Hokulea v1.1.7 | `hokulea-eigenda`, `hokulea-host-bin`, `hokulea-proof`, `hokulea-compute-proof`, canoe-sp1-cc-* | EigenDA commitment verification, KZG proofs (workspace members commented out — not compiled) |
+| Alloy v2.0.0 / alloy-primitives 1.6.0 | `alloy-provider`, `alloy-signer-*`, `alloy-rpc-types-*`, `alloy-consensus`, `alloy-contract` | Ethereum RPC + contract ABI |
+| Op-Alloy (okx/optimism rev bc7bb771) | `op-alloy-consensus`, `op-alloy-network`, `op-alloy-rpc-types*` | OP Stack types |
+| Revm 38.0.0 / op-revm (okx/optimism fork) | `revm`, `revm-precompile`, `op-revm`, `alloy-op-evm` | EVM execution; precompile error model uses `PrecompileHalt` + status-based classification |
 | Google Cloud KMS | `alloy-signer-gcp`, `gcloud-sdk` | HSM-backed transaction signing |
 | Web3Signer | HTTP / `alloy` | External remote signer protocol |
 | Asset-onchain remote signer (XLayer) | HTTP (custom) — `XLayerRemoteClient` | OKX-specific HSM-backed signing with AES-ECB + HMAC auth |
