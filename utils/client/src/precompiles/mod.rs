@@ -202,13 +202,14 @@ where
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use alloy_primitives::U256;
+    use alloy_primitives::{B256, U256};
     use op_revm::{precompiles::bn254_pair, DefaultOp as _, OpContext};
     use revm::{
         context::LocalContextTr as _,
         database::EmptyDB,
         handler::PrecompileProvider,
         interpreter::{CallInput, CallScheme, CallValue},
+        state::Bytecode,
         Context,
     };
     use revm_precompile::{bn254, kzg_point_evaluation, secp256k1, secp256r1, PrecompileId};
@@ -226,7 +227,7 @@ mod tests {
         OpSpecId::ISTHMUS,
         OpSpecId::JOVIAN,
         OpSpecId::INTEROP,
-        OpSpecId::OSAKA,
+        OpSpecId::KARST,
     ];
 
     // Compile-time guard: a new `OpSpecId` variant must be added to
@@ -246,7 +247,7 @@ mod tests {
             OpSpecId::ISTHMUS |
             OpSpecId::JOVIAN |
             OpSpecId::INTEROP |
-            OpSpecId::OSAKA => {}
+            OpSpecId::KARST => {}
         }
     }
 
@@ -263,7 +264,8 @@ mod tests {
             scheme: CallScheme::Call,
             is_static: false,
             return_memory_offset: 0..0,
-            known_bytecode: None,
+            reservoir: 0,
+            known_bytecode: (B256::ZERO, Bytecode::default()),
         }
     }
 
@@ -399,7 +401,8 @@ mod tests {
             scheme: CallScheme::Call,
             is_static: false,
             return_memory_offset: 0..0,
-            known_bytecode: None,
+            reservoir: 0,
+            known_bytecode: (B256::ZERO, Bytecode::default()),
         };
 
         let result = precompiles.run(&mut ctx, &call_inputs).unwrap();
@@ -605,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_jovian_family_uses_canonical_bn254_pairing_limits() {
-        for spec in [OpSpecId::JOVIAN, OpSpecId::INTEROP, OpSpecId::OSAKA] {
+        for spec in [OpSpecId::JOVIAN, OpSpecId::INTEROP, OpSpecId::KARST] {
             let oversized_pairing_input =
                 vec![0; oversized_aligned_pair_input_len(bn254_pair::JOVIAN_MAX_INPUT_SIZE)];
             let call_inputs =
