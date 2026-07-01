@@ -7,6 +7,17 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Business parameters decoded from a transaction's calldata by
+/// `parse_business_params`. Aliased to satisfy `clippy::type_complexity`.
+type ParsedBusinessParams = (
+    Option<u32>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+    Option<u64>,
+);
+
 /// Custom error types for XLayer remote signer
 #[derive(Debug, thiserror::Error)]
 pub enum XLayerSignerError {
@@ -257,7 +268,7 @@ impl XLayerRemoteClient {
 
         let operate_amount = transaction_request
             .value
-            .map(|v| Self::convert_value_to_operate_amount(v))
+            .map(Self::convert_value_to_operate_amount)
             .unwrap_or_else(|| "0".to_string());
 
         let sign_request = XLayerSignRequest {
@@ -293,7 +304,7 @@ impl XLayerRemoteClient {
                 sleep(RETRY_DELAY).await;
             }
 
-            match self.post_sign_request_and_wait_result(&sign_request, &transaction_request).await
+            match self.post_sign_request_and_wait_result(&sign_request, transaction_request).await
             {
                 Ok(signed_tx_bytes) => {
                     if attempt > 0 {
@@ -462,14 +473,7 @@ impl XLayerRemoteClient {
     fn parse_business_params(
         &self,
         data: &Bytes,
-    ) -> Result<(
-        Option<u32>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<u64>,
-        Option<u64>,
-    )> {
+    ) -> Result<ParsedBusinessParams> {
         if data.len() < 4 {
             return Ok((None, None, None, None, None, None));
         }
@@ -649,7 +653,7 @@ impl XLayerRemoteClient {
             hex::decode(hex_data).context("Failed to decode signed transaction hex")?;
 
         // 4. Verify signed transaction
-        self.verify_signed_transaction(&transaction_request, &signed_tx_bytes)?;
+        self.verify_signed_transaction(transaction_request, &signed_tx_bytes)?;
 
         Ok(Bytes::from(signed_tx_bytes))
     }
@@ -842,6 +846,10 @@ impl XLayerRemoteClient {
 
     /// Encrypts data using AES-ECB with PKCS5 padding. Accepts 16/24/32-byte
     /// keys (AES-128/192/256), matching Go's `aes.NewCipher` behavior.
+    // `aes`/`cipher` still re-export the pre-1.0 `generic_array`, which sha2's
+    // digest crate now marks deprecated. The pinned crypto stack has no
+    // non-deprecated equivalent, so allow it here — behavior is unchanged.
+    #[allow(deprecated)]
     fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
         use aes::{
             cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit},
@@ -1121,14 +1129,9 @@ impl XLayerRemoteClient {
                 }
 
                 // Verify to address
-                if let Some(to) = &original_tx.to {
-                    match to {
-                        alloy_primitives::TxKind::Call(addr) => {
-                            if Some(*addr) != signed.to() {
-                                return Err(anyhow::anyhow!("To address mismatch in blob tx"));
-                            }
-                        }
-                        _ => {}
+                if let Some(alloy_primitives::TxKind::Call(addr)) = &original_tx.to {
+                    if Some(*addr) != signed.to() {
+                        return Err(anyhow::anyhow!("To address mismatch in blob tx"));
                     }
                 }
 
