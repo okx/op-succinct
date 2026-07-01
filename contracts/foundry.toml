@@ -2,6 +2,14 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+# Exclude the Lite deploy scripts from compilation. They import the concrete
+# SP1 v6.1.0 verifier (Groth16Verifier =0.8.20 + sp1-contracts' bundled OZ v5),
+# which genuinely needs 0.8.20 and conflicts with the optimism contracts' exact
+# =0.8.15 ("Found incompatible versions"). They're only needed to deploy the
+# Lite variant — not for `forge build`, the Rust bindings' `forge bind`, or the
+# E2E tests (which use SP1MockVerifier). `skip` is honored by both forge build
+# and forge bind, so this fixes contracts-build and the bindings compile alike.
+skip = ["script/fp/DeployOPSuccinctLite*.s.sol"]
 remappings = [
     # Use openzeppelin-contracts v4.7.3 as the some contracts are not compatible with 0.8.15
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts",
