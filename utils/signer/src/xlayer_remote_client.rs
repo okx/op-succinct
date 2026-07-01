@@ -9,14 +9,8 @@ use tokio::time::sleep;
 
 /// Business parameters decoded from a transaction's calldata by
 /// `parse_business_params`. Aliased to satisfy `clippy::type_complexity`.
-type ParsedBusinessParams = (
-    Option<u32>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<u64>,
-    Option<u64>,
-);
+type ParsedBusinessParams =
+    (Option<u32>, Option<String>, Option<String>, Option<String>, Option<u64>, Option<u64>);
 
 /// Custom error types for XLayer remote signer
 #[derive(Debug, thiserror::Error)]
@@ -304,8 +298,7 @@ impl XLayerRemoteClient {
                 sleep(RETRY_DELAY).await;
             }
 
-            match self.post_sign_request_and_wait_result(&sign_request, transaction_request).await
-            {
+            match self.post_sign_request_and_wait_result(&sign_request, transaction_request).await {
                 Ok(signed_tx_bytes) => {
                     if attempt > 0 {
                         tracing::info!("Remote signing succeeded after retry: attempt={}", attempt);
@@ -470,10 +463,7 @@ impl XLayerRemoteClient {
     }
 
     /// Parses business parameters from transaction data based on method signature
-    fn parse_business_params(
-        &self,
-        data: &Bytes,
-    ) -> Result<ParsedBusinessParams> {
+    fn parse_business_params(&self, data: &Bytes) -> Result<ParsedBusinessParams> {
         if data.len() < 4 {
             return Ok((None, None, None, None, None, None));
         }

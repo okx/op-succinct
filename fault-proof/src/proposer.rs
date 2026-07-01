@@ -1562,8 +1562,7 @@ where
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
-        let extra_data =
-            (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+        let extra_data = (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
 
         tracing::info!(
             l2_block_number = %next_l2_block_number_for_proposal,
@@ -1729,7 +1728,9 @@ where
         let finalized =
             self.host.get_finalized_l2_block_number(&self.fetcher, canonical_head).await?;
         let Some(end) = finalized else {
-            tracing::warn!("Host verification: finalized L2 block not available — game creation is blocked");
+            tracing::warn!(
+                "Host verification: finalized L2 block not available — game creation is blocked"
+            );
             return Ok(false);
         };
 
