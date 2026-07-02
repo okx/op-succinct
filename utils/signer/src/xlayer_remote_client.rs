@@ -1,3 +1,8 @@
+// The #[cfg(test)] tx-builders below construct TransactionRequest by assigning
+// fields after `::default()`; allow the resulting field_reassign_with_default
+// style lint (fork-only test/helper code, no upstream equivalent).
+#![allow(clippy::field_reassign_with_default)]
+
 use alloy_consensus::{transaction::SignerRecoverable, Transaction, TxEnvelope};
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, Bytes, U256};
