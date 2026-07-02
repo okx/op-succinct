@@ -440,23 +440,17 @@ vkeys:
 build-elfs: build-range-elfs build-agg-elf
 
 # Build ELF files for range programs.
-# Only the ethereum range ELF is built: the celestia/eigenda range programs are
-# not used by XLayer and their crates are excluded from [workspace.members] /
-# [workspace.dependencies], so `cargo-prove`/`cargo metadata` can't resolve them
-# (their committed ELFs under elf/ are left untouched).
 build-range-elfs:
     #!/usr/bin/env bash
-    set -euo pipefail
 
     cd programs/range/ethereum
     ~/.sp1/bin/cargo-prove prove build --elf-name range-elf-embedded --docker --tag v6.1.0 --output-directory ../../../elf
 
-    # celestia/eigenda range ELFs (not used by XLayer — crates excluded from the workspace):
-    # cd ../celestia
-    # ~/.sp1/bin/cargo-prove prove build --elf-name celestia-range-elf-embedded --docker --tag v6.1.0 --output-directory ../../../elf
-    #
-    # cd ../eigenda
-    # ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v6.1.0 --output-directory ../../../elf
+    cd ../celestia
+    ~/.sp1/bin/cargo-prove prove build --elf-name celestia-range-elf-embedded --docker --tag v6.1.0 --output-directory ../../../elf
+
+    cd ../eigenda
+    ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v6.1.0 --output-directory ../../../elf
 
 # Build ELF file for aggregation program.
 build-agg-elf:
