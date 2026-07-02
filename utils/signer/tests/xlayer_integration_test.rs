@@ -17,7 +17,6 @@
 // Tests build TransactionRequest by assigning fields after `::default()`;
 // allow the resulting field_reassign_with_default style lint.
 #![allow(clippy::field_reassign_with_default)]
-
 #![cfg(test)]
 
 use alloy_primitives::{address, Bytes, U256};
