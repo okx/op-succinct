@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use alloy_primitives::{Address, B256};
 use anyhow::{Context, Result};
 use clap::Parser;
