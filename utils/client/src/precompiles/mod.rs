@@ -1,13 +1,13 @@
 //! [`PrecompileProvider`] for FPVM-accelerated OP Stack precompiles.
 
 use alloc::string::String;
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::Address;
 use op_revm::{precompiles::OpPrecompiles, OpSpecId};
 use revm::{
     context::{Cfg, ContextTr},
     context_interface::JournalTr,
-    handler::{EthPrecompiles, PrecompileProvider},
-    interpreter::{CallInput, CallInputs, Gas, InstructionResult, InterpreterResult},
+    handler::{precompile_output_to_interpreter_result, EthPrecompiles, PrecompileProvider},
+    interpreter::{CallInput, CallInputs, InterpreterResult},
 };
 #[cfg(any(test, target_os = "zkvm"))]
 use revm_precompile::PrecompileId;
@@ -108,17 +108,11 @@ where
         context: &mut CTX,
         inputs: &CallInputs,
     ) -> Result<Option<Self::Output>, String> {
-        // Bail before allocating `result` or materializing input bytes when
-        // the call is not to a precompile; this mirrors canonical revm and
-        // keeps the non-precompile call path cheap in the zkVM.
+        // Bail before materializing input bytes when the call is not to a
+        // precompile; this mirrors canonical revm and keeps the
+        // non-precompile call path cheap in the zkVM.
         let Some(precompile) = self.inner.precompiles.get(&inputs.bytecode_address) else {
             return Ok(None);
-        };
-
-        let mut result = InterpreterResult {
-            result: InstructionResult::Return,
-            gas: Gas::new(inputs.gas_limit),
-            output: Bytes::new(),
         };
 
         // Track cycles for accelerated precompiles. zkVM acceleration comes
@@ -158,32 +152,24 @@ where
             exec_result
         };
 
-        match exec_result {
-            Ok(output) => {
-                result.gas.record_refund(output.gas_refunded);
-                if output.status.is_success_or_revert() {
-                    let underflow = result.gas.record_regular_cost(output.gas_used);
-                    assert!(underflow, "Gas underflow is not possible");
-                    result.result = if output.status.is_revert() {
-                        InstructionResult::Revert
-                    } else {
-                        InstructionResult::Return
-                    };
-                    result.output = output.bytes;
-                } else if let Some(halt) = output.status.halt_reason() {
-                    result.result = if halt.is_oog() {
-                        InstructionResult::PrecompileOOG
-                    } else {
-                        InstructionResult::PrecompileError
-                    };
-                    if !halt.is_oog() && context.journal().depth() == 1 {
-                        context.local_mut().set_precompile_error_context(halt.to_string());
-                    }
-                }
+        // Only fatal precompile errors come back as `Err`; non-fatal halts
+        // (OOG, invalid input) are carried inside the output's `status`.
+        let output = exec_result.map_err(|e| e.to_string())?;
+
+        // Persist a top-level (depth == 1) non-OOG halt message into the local
+        // context so it surfaces as the call's output — matches canonical op-revm.
+        if let Some(halt) = output.status.halt_reason() {
+            if !halt.is_oog() && context.journal().depth() == 1 {
+                context.local_mut().set_precompile_error_context(halt.to_string());
             }
-            Err(e) => return Err(e.to_string()),
         }
 
+        // Map PrecompileOutput -> InterpreterResult via the canonical revm
+        // helper: it spends all gas on halt/error and records regular cost on
+        // success/revert. Reusing it (rather than hand-rolling the mapping) keeps
+        // gas accounting in lockstep with op-revm — the previous inlined version
+        // left gas unspent on error, so ZKVM results diverged from canonical.
+        let result = precompile_output_to_interpreter_result(output, inputs.gas_limit);
         Ok(Some(result))
     }
 
@@ -202,13 +188,14 @@ where
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use alloy_primitives::U256;
+    use alloy_primitives::{Bytes, B256, U256};
     use op_revm::{precompiles::bn254_pair, DefaultOp as _, OpContext};
     use revm::{
+        bytecode::Bytecode,
         context::LocalContextTr as _,
         database::EmptyDB,
         handler::PrecompileProvider,
-        interpreter::{CallInput, CallScheme, CallValue},
+        interpreter::{CallInput, CallScheme, CallValue, InstructionResult},
         Context,
     };
     use revm_precompile::{bn254, kzg_point_evaluation, secp256k1, secp256r1, PrecompileId};
@@ -226,7 +213,7 @@ mod tests {
         OpSpecId::ISTHMUS,
         OpSpecId::JOVIAN,
         OpSpecId::INTEROP,
-        OpSpecId::OSAKA,
+        OpSpecId::KARST,
     ];
 
     // Compile-time guard: a new `OpSpecId` variant must be added to
@@ -246,7 +233,7 @@ mod tests {
             OpSpecId::ISTHMUS |
             OpSpecId::JOVIAN |
             OpSpecId::INTEROP |
-            OpSpecId::OSAKA => {}
+            OpSpecId::KARST => {}
         }
     }
 
@@ -263,7 +250,8 @@ mod tests {
             scheme: CallScheme::Call,
             is_static: false,
             return_memory_offset: 0..0,
-            known_bytecode: None,
+            reservoir: 0,
+            known_bytecode: (B256::ZERO, Bytecode::default()),
         }
     }
 
@@ -399,7 +387,8 @@ mod tests {
             scheme: CallScheme::Call,
             is_static: false,
             return_memory_offset: 0..0,
-            known_bytecode: None,
+            reservoir: 0,
+            known_bytecode: (B256::ZERO, Bytecode::default()),
         };
 
         let result = precompiles.run(&mut ctx, &call_inputs).unwrap();
@@ -605,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_jovian_family_uses_canonical_bn254_pairing_limits() {
-        for spec in [OpSpecId::JOVIAN, OpSpecId::INTEROP, OpSpecId::OSAKA] {
+        for spec in [OpSpecId::JOVIAN, OpSpecId::INTEROP, OpSpecId::KARST] {
             let oversized_pairing_input =
                 vec![0; oversized_aligned_pair_input_len(bn254_pair::JOVIAN_MAX_INPUT_SIZE)];
             let call_inputs =

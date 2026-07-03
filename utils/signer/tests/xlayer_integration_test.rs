@@ -14,6 +14,9 @@
 // Note: auth is skipped entirely when XLAYER_ACCESS_KEY or XLAYER_SECRET_KEY
 // is empty (matches Go's addAuth behavior).
 
+// Tests build TransactionRequest by assigning fields after `::default()`;
+// allow the resulting field_reassign_with_default style lint.
+#![allow(clippy::field_reassign_with_default)]
 #![cfg(test)]
 
 use alloy_primitives::{address, Bytes, U256};

@@ -1,5 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
+use alloy_op_evm::{block::OpAlloyReceiptBuilder, post_exec::PostExecEvmFactoryAdapter};
 use alloy_primitives::Sealed;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -11,7 +12,6 @@ use kona_driver::{Driver, DriverPipeline, PipelineCursor};
 use kona_executor::TrieDBProvider;
 use kona_genesis::{L1ChainConfig, RollupConfig};
 use kona_preimage::CommsClient;
-use alloy_op_evm::{block::OpAlloyReceiptBuilder, post_exec::PostExecEvmFactoryAdapter};
 use kona_proof::{
     executor::KonaExecutor,
     l1::{OracleL1ChainProvider, OraclePipeline},

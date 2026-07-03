@@ -1555,15 +1555,14 @@ where
     #[tracing::instrument(name = "[[Proposing]]", skip(self))]
     pub async fn handle_game_creation(
         &self,
-        mut next_l2_block_number_for_proposal: U256,
+        next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
         let output_root = self
             .l2_provider
             .compute_output_root_at_block(next_l2_block_number_for_proposal)
             .await?;
-        let extra_data =
-            (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+        let extra_data = (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
 
         tracing::info!(
             l2_block_number = %next_l2_block_number_for_proposal,
@@ -1710,8 +1709,6 @@ where
         let canonical_head = canonical_head_l2_block.to::<u64>();
         drop(state);
 
-        let last_verified = self.last_verified_l2_block.load(Ordering::Relaxed);
-
         // Snap the verification baseline to canonical_head on startup/restart.
         // Blocks up to canonical_head are already covered by existing on-chain games and
         // do not need re-verification. This avoids a potentially huge re-check after restart.
@@ -1729,7 +1726,9 @@ where
         let finalized =
             self.host.get_finalized_l2_block_number(&self.fetcher, canonical_head).await?;
         let Some(end) = finalized else {
-            tracing::warn!("Host verification: finalized L2 block not available — game creation is blocked");
+            tracing::warn!(
+                "Host verification: finalized L2 block not available — game creation is blocked"
+            );
             return Ok(false);
         };
 
@@ -1889,7 +1888,7 @@ where
             let mut task_counts: HashMap<&str, usize> = HashMap::new();
             let mut proving_games: Vec<String> = Vec::new();
 
-            for (_, (_, info)) in tasks.iter() {
+            for (_, info) in tasks.values() {
                 let task_type = match info {
                     TaskInfo::GameCreation { .. } => "GameCreation",
                     TaskInfo::GameProving { game_address, .. } => {
