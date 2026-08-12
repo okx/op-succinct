@@ -399,6 +399,53 @@ impl OPStackGameValidatorConfig {
     }
 }
 
+/// RPC configuration owned by the TradeZone claim-validation backend.
+#[cfg(feature = "tz")]
+#[derive(Debug, Clone)]
+pub struct TzGameValidatorConfig {
+    /// The fixed witness-builder endpoint used for all TZ claim validation.
+    pub l2_rpc: Url,
+}
+
+#[cfg(feature = "tz")]
+impl TzGameValidatorConfig {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self { l2_rpc: Self::parse_l2_rpc(&env::var("L2_RPC")?)? })
+    }
+
+    fn parse_l2_rpc(value: &str) -> Result<Url> {
+        if value.contains(',') {
+            bail!("L2_RPC must contain exactly one fixed witness-builder URL");
+        }
+        Ok(value.parse()?)
+    }
+
+    /// Log the TZ validator configuration using structured tracing fields.
+    pub fn log(&self) {
+        tracing::info!(
+            l2_rpc = %self.l2_rpc,
+            "TradeZone game validator configuration loaded"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "tz"))]
+mod tz_game_validator_config_tests {
+    use super::TzGameValidatorConfig;
+
+    #[test]
+    fn fixed_witness_builder_url_rejects_endpoint_lists() {
+        assert!(TzGameValidatorConfig::parse_l2_rpc("http://wb-a:8545,http://wb-b:8545")
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one"));
+        assert_eq!(
+            TzGameValidatorConfig::parse_l2_rpc("http://wb-a:8545").unwrap().as_str(),
+            "http://wb-a:8545/"
+        );
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 /// The config for deploying the OPSuccinctFaultDisputeGame.

@@ -48,6 +48,7 @@ pub enum InvalidReason {
     L2BlockNumberOverflow,
     ClaimAheadOfLocalSafeHead,
     OutputRootMismatch,
+    BeyondLocalTipAtCutoff { claimed_height: u64, local_tip: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +62,9 @@ pub enum UnavailableReason {
     SafeDBHistoryMissing,
     L1CanonicalHashMismatch,
     OpNodeExecutionMismatch,
+    NeedsReplay,
+    BeyondLocalTip { local_tip: u64 },
+    DataUnavailable(String),
     RpcFailure(String),
 }
 

@@ -1279,6 +1279,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cutoff_invalid_validation_is_cached_without_backend_refetch() {
+        let invalid = GameValidation::Invalid(InvalidReason::BeyondLocalTipAtCutoff {
+            claimed_height: 123,
+            local_tip: 100,
+        });
+        let (challenger, validator, l1_asserter) =
+            challenger_with_recording_validator([invalid.clone(), GameValidation::Valid]);
+        let game = test_game(GameValidation::Unavailable(UnavailableReason::BeyondLocalTip {
+            local_tip: 100,
+        }));
+
+        let game = sync_active_game(&challenger, &l1_asserter, game, 50).await;
+        assert_eq!(game.validation, invalid);
+        assert!(game.should_attempt_to_challenge);
+
+        let game = sync_active_game(&challenger, &l1_asserter, game, 51).await;
+        assert!(matches!(
+            game.validation,
+            GameValidation::Invalid(InvalidReason::BeyondLocalTipAtCutoff { .. })
+        ));
+        assert!(game.should_attempt_to_challenge);
+        assert_eq!(validator.requests.lock().unwrap().len(), 1);
+        assert!(l1_asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
     async fn expired_game_does_not_invoke_injected_validator() {
         let (challenger, validator, l1_asserter) =
             challenger_with_recording_validator([GameValidation::Invalid(
