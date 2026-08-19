@@ -97,3 +97,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+
+# Oli delivery safety baseline
+*.keystore
+*mnemonic*
+.claude/

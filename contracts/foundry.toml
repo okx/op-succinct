@@ -2,6 +2,25 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+# The optimizer is required to compile the fault-dispute game within the EVM stack limit and to
+# keep deployable runtime bytecode under the EIP-170 24KB ceiling.
+optimizer = true
+optimizer_runs = 2000
+# via_ir is required because forcing the whole graph onto solc 0.8.15 (the version the vendored
+# optimism dispute contracts hard-pin) makes the 12-argument dispute-game constructor exceed the
+# legacy code generator's stack limit at every construction site. The IR pipeline resolves it.
+via_ir = true
+# Exclude the OP-Succinct-lite deployment scripts from compilation. They deploy the real SP1
+# Groth16/Plonk verifier gateway, whose machine-generated verifiers are hard-pinned to solc
+# =0.8.20, which cannot share a compilation unit with the vendored optimism dispute contracts
+# (hard-pinned =0.8.15). This is a pre-existing repository dependency conflict (the SP1 dependency
+# was moved off the 0.8.15-compatible fork noted in the remappings comment) and is independent of
+# this change. Restoring a 0.8.15-compatible SP1 pin removes the need for this skip.
+skip = [
+    "script/fp/DeployOPSuccinctLite.s.sol",
+    "script/fp/DeployOPSuccinctLiteTestnet.s.sol",
+    "script/fp/DeployOPSuccinctLiteTz.s.sol",
+]
 remappings = [
     # Use openzeppelin-contracts v4.7.3 as the some contracts are not compatible with 0.8.15
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts",

@@ -173,7 +173,9 @@ contract DeployOPSuccinctFDG is Script, Utils {
             sp1Config.rangeVkeyCommitment,
             config.challengerBondWei,
             IAnchorStateRegistry(address(registry)),
-            accessManager
+            accessManager,
+            config.hasRootClaimPreimage,
+            config.postAnchorAddress
         );
     }
 

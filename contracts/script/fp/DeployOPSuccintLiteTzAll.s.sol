@@ -102,7 +102,9 @@ contract DeployOPSuccinctLiteTzAll is Script {
             rangeVkeyCommitment,
             100000,
             IAnchorStateRegistry(address(asr)),
-            accessManager
+            accessManager,
+            true,
+            vm.envOr("POST_ANCHOR_ADDRESS", address(0))
         );
     }
 

@@ -21,6 +21,7 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
+import {TZBootstrapExtraData} from "../../test/helpers/TZBootstrapExtraData.sol";
 import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
 import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
 import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
@@ -33,8 +34,14 @@ import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1Verif
 ///      prove windows so the game is closable as soon as a single block passes
 ///      after creation.
 ///   2. Register it on the factory.
-///   3. Create a single bootstrap game with a known root + l2BlockNumber. This
-///      game will become the new anchor once it is resolved and closed.
+///   3. Optionally create a single bootstrap game that will become the new anchor
+///      once it is resolved and closed. This variant registers an extended
+///      (HAS_ROOT_CLAIM_PREIMAGE = true) implementation, which accepts only a
+///      164-byte four-preimage extraData bound to
+///      rootClaim = keccak256(blockHash . appHash . withdrawalRoot . forceRoot).
+///      The bootstrap game is created only when all four preimages are supplied via
+///      env; otherwise it is intentionally skipped (the approved design forbids
+///      creating an extended game with a legacy payload before activation).
 ///   4. Deploy the *production* impl (durations come from JSON) and swap the
 ///      factory implementation to point at it, so subsequent games use the real
 ///      challenge window.
@@ -49,8 +56,16 @@ import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1Verif
 ///   FACTORY_ADDRESS                     — DisputeGameFactory
 ///   ANCHOR_STATE_REGISTRY               — AnchorStateRegistry
 ///   TRANSACTOR                          — Transactor owning the factory
-///   BOOTSTRAP_ROOT_CLAIM (bytes32)      — root claim for the bootstrap game
 ///   BOOTSTRAP_L2_BLOCK_NUMBER (uint256) — l2 block number for the bootstrap game
+///
+/// Optional bootstrap-game preimages (all four required to create the bootstrap game;
+/// omit them before activation to skip creation):
+///   BOOTSTRAP_BLOCK_HASH (bytes32)      — committed block hash
+///   BOOTSTRAP_APP_HASH (bytes32)        — committed app hash
+///   BOOTSTRAP_WITHDRAWAL_ROOT (bytes32) — committed withdrawal root
+///   BOOTSTRAP_FORCE_ROOT (bytes32)      — committed force root
+///   BOOTSTRAP_ROOT_CLAIM (bytes32)      — optional; if set, must equal
+///                                         keccak256(blockHash.appHash.withdrawalRoot.forceRoot)
 ///
 /// Caller requirements:
 ///   - The broadcasting EOA must be whitelisted as a proposer in AccessManager
@@ -77,7 +92,9 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         address factoryAddress = vm.envAddress("FACTORY_ADDRESS");
         address registryAddress = vm.envAddress("ANCHOR_STATE_REGISTRY");
 
-        bytes32 bootstrapRoot = vm.envBytes32("BOOTSTRAP_ROOT_CLAIM");
+        // Optional now: for the extended TradeZone implementation the bootstrap rootClaim is derived
+        // from the four preimages (see _createBootstrapGame). When supplied it is cross-checked.
+        bytes32 bootstrapRoot = vm.envOr("BOOTSTRAP_ROOT_CLAIM", bytes32(0));
         uint256 bootstrapBlock = vm.envUint("BOOTSTRAP_L2_BLOCK_NUMBER");
 
         vm.startBroadcast();
@@ -119,9 +136,8 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         // -----------------------------------------------------------------
         // 4. Create bootstrap game (resolve + close handled by close-games.sh)
         // -----------------------------------------------------------------
-        address bootstrapGameAddr = _createBootstrapGame(
-            factoryAddress, config.gameType, config.initialBondWei, bootstrapRoot, bootstrapBlock
-        );
+        address bootstrapGameAddr =
+            _createBootstrapGame(factoryAddress, config.gameType, config.initialBondWei, bootstrapRoot, bootstrapBlock);
 
         // -----------------------------------------------------------------
         // 5. Deploy + register PRODUCTION impl (using JSON durations)
@@ -178,26 +194,63 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         IAnchorStateRegistry(registryAddress).setRespectedGameType(gt);
         console.log("Set respected game type to:", uint256(gameTypeValue));
 
-        // First game in the chain: parent index is uint32.max so the game starts
-        // from the current anchor root in the registry.
-        bytes memory extraData = abi.encodePacked(l2BlockNumber, type(uint32).max);
+        // This TradeZone deploy path registers an extended implementation
+        // (HAS_ROOT_CLAIM_PREIMAGE == true), which accepts only a 164-byte four-preimage
+        // extraData whose rootClaim equals keccak256(blockHash . appHash . withdrawalRoot .
+        // forceRoot). The four preimages are produced off-chain by the fault-proof backend, which
+        // is the activation gate and is not available at bootstrap/deploy time. The approved design
+        // forbids creating an extended Game with a legacy payload before activation, so this
+        // producer creates the bootstrap Game only when all four preimages are supplied via env;
+        // otherwise it intentionally does NOT create one (no silent legacy payload) and leaves the
+        // first valid extended Game to the backend at activation.
+        bytes32 bootBlockHash = vm.envOr("BOOTSTRAP_BLOCK_HASH", bytes32(0));
+        bytes32 bootAppHash = vm.envOr("BOOTSTRAP_APP_HASH", bytes32(0));
+        bytes32 bootWithdrawalRoot = vm.envOr("BOOTSTRAP_WITHDRAWAL_ROOT", bytes32(0));
+        bytes32 bootForceRoot = vm.envOr("BOOTSTRAP_FORCE_ROOT", bytes32(0));
 
-        IDisputeGame created = DisputeGameFactory(factoryAddress).create{value: bondWei}(
-            gt, Claim.wrap(rootClaim), extraData
+        if (
+            bootBlockHash == bytes32(0) || bootAppHash == bytes32(0) || bootWithdrawalRoot == bytes32(0)
+                || bootForceRoot == bytes32(0)
+        ) {
+            console.log("Bootstrap game skipped: extended implementation requires four preimages.");
+            console.log("Set BOOTSTRAP_BLOCK_HASH / BOOTSTRAP_APP_HASH / BOOTSTRAP_WITHDRAWAL_ROOT /");
+            console.log("BOOTSTRAP_FORCE_ROOT to create it; before activation, skipping is expected.");
+            return address(0);
+        }
+
+        // Bind the rootClaim to the four preimages exactly as the Game verifies on-chain, using the
+        // shared encoder that the deterministic tests also exercise.
+        bytes32 committedRootClaim =
+            TZBootstrapExtraData.commitRootClaim(bootBlockHash, bootAppHash, bootWithdrawalRoot, bootForceRoot);
+        require(
+            rootClaim == bytes32(0) || rootClaim == committedRootClaim,
+            "BOOTSTRAP_ROOT_CLAIM must equal keccak256(blockHash.appHash.withdrawalRoot.forceRoot)"
         );
+
+        // First game in the chain: parent index is uint32.max so the game starts from the current
+        // anchor root in the registry. The extended 164-byte payload is built by the shared encoder.
+        bytes memory extraData = TZBootstrapExtraData.encodeExtended(
+            l2BlockNumber, type(uint32).max, bootBlockHash, bootAppHash, bootWithdrawalRoot, bootForceRoot
+        );
+
+        IDisputeGame created =
+            DisputeGameFactory(factoryAddress).create{value: bondWei}(gt, Claim.wrap(committedRootClaim), extraData);
         gameAddr = address(created);
         console.log("Bootstrap game created at:", gameAddr);
         console.log("  l2BlockNumber:", l2BlockNumber);
-        console.logBytes32(rootClaim);
+        console.logBytes32(committedRootClaim);
     }
 
     // ---------------------------------------------------------------------
     // Everything below is unchanged from DeployOPSuccinctLite.s.sol
     // ---------------------------------------------------------------------
 
-    function configureFactory(address factoryAddress, uint32 gameTypeValue, uint256 initialBondWei, address gameImplAddress)
-        internal
-    {
+    function configureFactory(
+        address factoryAddress,
+        uint32 gameTypeValue,
+        uint256 initialBondWei,
+        address gameImplAddress
+    ) internal {
         address transactorAddress = vm.envAddress("TRANSACTOR");
 
         Transactor transactor = Transactor(transactorAddress);
@@ -308,7 +361,9 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
             sp1Config.rangeVkeyCommitment,
             challengerBondWei,
             registry,
-            accessManager
+            accessManager,
+            true,
+            vm.envOr("POST_ANCHOR_ADDRESS", address(0))
         );
     }
 }

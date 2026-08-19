@@ -228,7 +228,9 @@ contract DeployOPSuccinctLite is Script, Utils {
             sp1Config.rangeVkeyCommitment,
             challengerBondWei,
             registry,
-            accessManager
+            accessManager,
+            false,
+            address(0)
         );
     }
 }
