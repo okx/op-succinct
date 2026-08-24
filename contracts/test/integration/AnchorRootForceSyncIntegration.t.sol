@@ -24,7 +24,7 @@ import {AccessManager} from "src/fp/AccessManager.sol";
 import {PostAnchor} from "src/fp/PostAnchor.sol";
 import {TZRootManager} from "src/fp/TZRootManager.sol";
 import {ITZRootManager} from "src/fp/interfaces/ITZRootManager.sol";
-import {Unauthorized, StaleRoot, RootClaimPreimageDisabled} from "src/fp/lib/Errors.sol";
+import {InvalidRoot, Unauthorized, StaleRoot, RootClaimPreimageDisabled} from "src/fp/lib/Errors.sol";
 import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 import {MockOptimismPortal2} from "src/utils/MockOptimismPortal2.sol";
@@ -138,7 +138,12 @@ contract AnchorRootForceSyncIntegrationTest is Test {
             address(registryImpl),
             abi.encodeCall(
                 AnchorStateRegistry.initialize,
-                (ISystemConfig(address(mockSystemConfig)), IDisputeGameFactory(address(factory)), startingAnchorRoot, gameType)
+                (
+                    ISystemConfig(address(mockSystemConfig)),
+                    IDisputeGameFactory(address(factory)),
+                    startingAnchorRoot,
+                    gameType
+                )
             )
         );
         anchorStateRegistry = AnchorStateRegistry(address(registryProxy));
@@ -219,7 +224,11 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     {
         vm.prank(proposer);
         created = OPSuccinctFaultDisputeGame(
-            address(factory.create{value: INIT_BOND}(gameType, _root(bh, ah, wr, fr), _extendedExtraData(seq, bh, ah, wr, fr)))
+            address(
+                factory.create{value: INIT_BOND}(
+                    gameType, _root(bh, ah, wr, fr), _extendedExtraData(seq, bh, ah, wr, fr)
+                )
+            )
         );
     }
 
@@ -238,6 +247,19 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         (ok,) = address(rootManager).call(data);
     }
 
+    function _assertCheckpointRoots(uint64 height, bytes32 expectedW, bytes32 expectedF) internal view {
+        (bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getRoots(height);
+        assertEq(withdrawalRoot, expectedW, "checkpoint withdrawal root");
+        assertEq(forceTxRoot, expectedF, "checkpoint force root");
+    }
+
+    function _assertLatestRoots(uint64 expectedHeight, bytes32 expectedW, bytes32 expectedF) internal view {
+        (uint64 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getLatestRoots();
+        assertEq(height, expectedHeight, "latest checkpoint height");
+        assertEq(withdrawalRoot, expectedW, "latest withdrawal root");
+        assertEq(forceTxRoot, expectedF, "latest force root");
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Deployment / initialization.
     // ---------------------------------------------------------------------------------------------
@@ -251,9 +273,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         // Sink authorizes exactly the deployed forwarder and starts empty.
         assertEq(rootManager.L1_POST_ANCHOR(), address(postAnchor), "sink forwarder wiring");
-        assertEq(rootManager.withdrawalRoot(), bytes32(0), "sink W init");
-        assertEq(rootManager.forceRoot(), bytes32(0), "sink F init");
-        assertEq(rootManager.l2BlockNumber(), 0, "sink height init");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
 
         // Precomputed cross-chain address matched the deployed sink.
         assertEq(address(rootManager), predictedRootManager, "precompute match");
@@ -311,12 +331,9 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         emit RootsRecorded(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1));
         assertTrue(_deliverCapturedDeposit(), "record delivery");
 
-        // The sink mirrors exactly the anchor game's committed roots and height.
-        assertEq(rootManager.withdrawalRoot(), game.withdrawalRoot(), "sink W == game W");
-        assertEq(rootManager.forceRoot(), game.forceRoot(), "sink F == game F");
-        assertEq(rootManager.withdrawalRoot(), WITHDRAWAL_ROOT, "sink W value");
-        assertEq(rootManager.forceRoot(), FORCE_ROOT, "sink F value");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "sink height");
+        // The exact-height and latest queries both mirror the anchor game's committed tuple.
+        _assertCheckpointRoots(uint64(SEQ_1), game.withdrawalRoot(), game.forceRoot());
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
 
         // Credit remains claimable and pays exactly the bond; no value is stranded.
         uint256 beforeBalance = proposer.balance;
@@ -338,8 +355,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         _resolveAndFinalize(game1);
         game1.closeGame();
         assertTrue(_deliverCapturedDeposit(), "record #1");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "height after #1");
-        assertEq(rootManager.withdrawalRoot(), WITHDRAWAL_ROOT, "W after #1");
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
 
         // Second, higher game re-anchors and advances the sink monotonically.
         OPSuccinctFaultDisputeGame game2 = _createExtendedGame(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
@@ -354,11 +370,11 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         );
         assertTrue(_deliverCapturedDeposit(), "record #2");
 
-        // Latest-only state advanced to the higher height and never regressed.
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_2), "height advanced");
-        assertEq(rootManager.withdrawalRoot(), w2, "W advanced");
-        assertEq(rootManager.forceRoot(), f2, "F advanced");
-        assertGt(uint256(rootManager.l2BlockNumber()), SEQ_1, "monotonic increase");
+        // Checkpoints may be sparse: latest advances, while exact-height history remains intact.
+        _assertCheckpointRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertCheckpointRoots(uint64(SEQ_1 + 1), bytes32(0), bytes32(0));
+        _assertCheckpointRoots(uint64(SEQ_2), w2, f2);
+        _assertLatestRoots(uint64(SEQ_2), w2, f2);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -379,8 +395,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertEq(address(anchorStateRegistry.anchorGame()), address(game), "anchor set despite hook failure");
         assertEq(uint8(game.bondDistributionMode()), uint8(BondDistributionMode.NORMAL), "closed normal");
         assertEq(depositPortal.callCount(), 0, "no deposit captured while portal down");
-        assertEq(rootManager.l2BlockNumber(), 0, "sink untouched");
-        assertEq(rootManager.withdrawalRoot(), bytes32(0), "sink W untouched");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
 
         // Credit is still payable even though the cross-chain delivery failed.
         uint256 beforeBalance = proposer.balance;
@@ -396,9 +411,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         assertEq(depositPortal.callCount(), 1, "retry enqueued one deposit");
         assertTrue(_deliverCapturedDeposit(), "retry record delivery");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "sink converged after retry");
-        assertEq(rootManager.withdrawalRoot(), WITHDRAWAL_ROOT, "sink W converged");
-        assertEq(rootManager.forceRoot(), FORCE_ROOT, "sink F converged");
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -428,13 +441,24 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1));
 
         // No partial effect: the sink is still empty.
-        assertEq(rootManager.withdrawalRoot(), bytes32(0), "W unchanged");
-        assertEq(rootManager.forceRoot(), bytes32(0), "F unchanged");
-        assertEq(rootManager.l2BlockNumber(), 0, "height unchanged");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
 
         // The legitimate aliased delivery still works afterwards.
         assertTrue(_deliverCapturedDeposit(), "aliased delivery still works");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "height recorded by aliased sender");
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+    }
+
+    function test_targetChain_rejectsEitherZeroRootNoStateChange() public {
+        vm.expectRevert(InvalidRoot.selector);
+        vm.prank(aliasedForwarder);
+        rootManager.record(bytes32(0), FORCE_ROOT, uint64(SEQ_1));
+
+        vm.expectRevert(InvalidRoot.selector);
+        vm.prank(aliasedForwarder);
+        rootManager.record(WITHDRAWAL_ROOT, bytes32(0), uint64(SEQ_1));
+
+        _assertCheckpointRoots(uint64(SEQ_1), bytes32(0), bytes32(0));
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
     }
 
     function test_targetChain_staleReplayRevertsNoStateChange() public {
@@ -444,7 +468,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         // First delivery records the roots.
         assertTrue(_deliverCapturedDeposit(), "first record");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "height recorded");
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
 
         // Replaying the identical message is a stale duplicate: revert, no second event, no change.
         vm.prank(aliasedForwarder);
@@ -457,9 +481,8 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1 - 1));
 
         // No partial effect from either rejected call.
-        assertEq(rootManager.withdrawalRoot(), WITHDRAWAL_ROOT, "W unchanged after stale");
-        assertEq(rootManager.forceRoot(), FORCE_ROOT, "F unchanged after stale");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "height unchanged after stale");
+        _assertCheckpointRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
     function test_targetChain_sameHeightCorrectionOverwritesRootsKeepsHeight() public {
@@ -476,9 +499,8 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         vm.prank(aliasedForwarder);
         rootManager.record(correctedW, correctedF, uint64(SEQ_1));
 
-        assertEq(rootManager.withdrawalRoot(), correctedW, "W corrected");
-        assertEq(rootManager.forceRoot(), correctedF, "F corrected");
-        assertEq(rootManager.l2BlockNumber(), uint64(SEQ_1), "height unchanged by correction");
+        _assertCheckpointRoots(uint64(SEQ_1), correctedW, correctedF);
+        _assertLatestRoots(uint64(SEQ_1), correctedW, correctedF);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -503,8 +525,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         // Legacy game closes normally but never enqueues a deposit and never touches the sink.
         assertEq(uint8(game.bondDistributionMode()), uint8(BondDistributionMode.NORMAL), "legacy closed normal");
         assertEq(depositPortal.callCount(), 0, "no deposit from legacy game");
-        assertEq(rootManager.l2BlockNumber(), 0, "sink untouched by legacy game");
-        assertEq(rootManager.withdrawalRoot(), bytes32(0), "sink W untouched by legacy game");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
         assertEq(legacyImpl.POST_ANCHOR(), address(0), "legacy impl has no forwarder");
 
         // Four-preimage getters are disabled on the legacy game.

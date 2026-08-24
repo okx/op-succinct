@@ -22,9 +22,6 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
 import {TZBootstrapExtraData} from "../../test/helpers/TZBootstrapExtraData.sol";
-import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
-import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
-import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 /// @title DeployOPSuccinctLiteTz
 /// @notice TradeZone (tz) variant of DeployOPSuccinctLite.
@@ -111,7 +108,11 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         );
 
         SP1Config memory sp1Config = deploySP1Verifier(
-            config.useSp1MockVerifier, config.rollupConfigHash, config.aggregationVkey, config.rangeVkeyCommitment
+            config.useSp1MockVerifier,
+            config.verifierAddress,
+            config.rollupConfigHash,
+            config.aggregationVkey,
+            config.rangeVkeyCommitment
         );
 
         // -----------------------------------------------------------------
@@ -316,6 +317,7 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
 
     function deploySP1Verifier(
         bool useSp1MockVerifier,
+        address verifierAddress,
         bytes32 rollupConfigHash,
         bytes32 aggregationVkey,
         bytes32 rangeVkeyCommitment
@@ -330,13 +332,9 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
         } else {
-            SP1VerifierPlonk sp1VerifierPlonk = new SP1VerifierPlonk();
-            SP1VerifierGroth16 sp1VerifierGroth16 = new SP1VerifierGroth16();
-            SP1VerifierGateway sp1VerifierGateway = new SP1VerifierGateway(tx.origin);
-            sp1VerifierGateway.addRoute(address(sp1VerifierPlonk));
-            sp1VerifierGateway.addRoute(address(sp1VerifierGroth16));
-            sp1Config.verifierAddress = address(sp1VerifierGateway);
-            console.log("Using SP1 Verifier Gateway:", address(sp1VerifierGateway));
+            require(verifierAddress != address(0), "Missing SP1 verifier address");
+            sp1Config.verifierAddress = verifierAddress;
+            console.log("Using SP1 Verifier Gateway:", verifierAddress);
         }
 
         return sp1Config;

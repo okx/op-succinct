@@ -6,21 +6,42 @@ import {AddressAliasHelper} from "@optimism/src/vendor/AddressAliasHelper.sol";
 
 import {TZRootManager} from "src/fp/TZRootManager.sol";
 import {ITZRootManager} from "src/fp/interfaces/ITZRootManager.sol";
-import {InvalidPostAnchor, Unauthorized, StaleRoot} from "src/fp/lib/Errors.sol";
+import {InvalidPostAnchor, InvalidRoot, Unauthorized, StaleRoot} from "src/fp/lib/Errors.sol";
 
-/// @notice Minimal wiring smoke tests for TZRootManager: aliased-sender authorization, monotonic
-///         height with same-height correction, and the non-value-bearing surface. Full coverage is
-///         a later stage's responsibility.
 contract TZRootManagerTest is Test {
     TZRootManager internal manager;
     address internal constant L1_POST_ANCHOR = address(0xAB01);
     address internal aliasedSender;
 
-    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceRoot, uint64 l2BlockNumber);
+    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 checkpointBlockHeight);
 
     function setUp() public {
         manager = new TZRootManager(L1_POST_ANCHOR);
         aliasedSender = AddressAliasHelper.applyL1ToL2Alias(L1_POST_ANCHOR);
+    }
+
+    function _record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 checkpointBlockHeight) internal {
+        vm.prank(aliasedSender);
+        manager.record(withdrawalRoot, forceTxRoot, checkpointBlockHeight);
+    }
+
+    function _assertRoots(uint64 checkpointBlockHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
+        internal
+        view
+    {
+        (bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getRoots(checkpointBlockHeight);
+        assertEq(withdrawalRoot, expectedWithdrawalRoot);
+        assertEq(forceTxRoot, expectedForceTxRoot);
+    }
+
+    function _assertLatest(uint64 expectedHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
+        internal
+        view
+    {
+        (uint64 checkpointBlockHeight, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
+        assertEq(checkpointBlockHeight, expectedHeight);
+        assertEq(withdrawalRoot, expectedWithdrawalRoot);
+        assertEq(forceTxRoot, expectedForceTxRoot);
     }
 
     function test_constructor_revertsOnZeroForwarder() public {
@@ -28,85 +49,120 @@ contract TZRootManagerTest is Test {
         new TZRootManager(address(0));
     }
 
-    function test_initialState_isZero() public view {
-        assertEq(manager.l2BlockNumber(), 0);
-        assertEq(manager.withdrawalRoot(), bytes32(0));
-        assertEq(manager.forceRoot(), bytes32(0));
+    function test_initialState_queriesReturnZero() public view {
         assertEq(manager.L1_POST_ANCHOR(), L1_POST_ANCHOR);
+        assertEq(manager.l2BlockNumber(), 0);
+        _assertRoots(0, bytes32(0), bytes32(0));
+        _assertRoots(42, bytes32(0), bytes32(0));
+        _assertLatest(0, bytes32(0), bytes32(0));
     }
 
-    function test_record_higherHeight_updatesAndEmits() public {
+    function test_record_higherHeight_updatesQueriesAndEmitsMatchingValues() public {
         bytes32 w = keccak256("w1");
         bytes32 f = keccak256("f1");
+
         vm.expectEmit(false, false, false, true, address(manager));
         emit RootsRecorded(w, f, 10);
-        vm.prank(aliasedSender);
-        manager.record(w, f, 10);
-        assertEq(manager.withdrawalRoot(), w);
-        assertEq(manager.forceRoot(), f);
-        assertEq(manager.l2BlockNumber(), 10);
+        _record(w, f, 10);
+
+        _assertRoots(10, w, f);
+        _assertLatest(10, w, f);
     }
 
-    /// @notice Guarded-entry negative smoke: a non-aliased caller must revert with the exact
-    ///         design error Unauthorized, never a generic revert.
+    function test_record_sparseCheckpoints_preservesExactHeightHistory() public {
+        bytes32 w10 = keccak256("w10");
+        bytes32 f10 = keccak256("f10");
+        bytes32 w100 = keccak256("w100");
+        bytes32 f100 = keccak256("f100");
+
+        _record(w10, f10, 10);
+        _record(w100, f100, 100);
+
+        _assertRoots(10, w10, f10);
+        _assertRoots(11, bytes32(0), bytes32(0));
+        _assertRoots(99, bytes32(0), bytes32(0));
+        _assertRoots(100, w100, f100);
+        _assertLatest(100, w100, f100);
+    }
+
+    function test_record_checkpointZero_isDistinguishedByNonZeroRoots() public {
+        bytes32 w = keccak256("checkpoint-zero-w");
+        bytes32 f = keccak256("checkpoint-zero-f");
+
+        _record(w, f, 0);
+
+        _assertRoots(0, w, f);
+        _assertLatest(0, w, f);
+    }
+
+    function test_record_zeroWithdrawalRoot_revertsInvalidRootNoStateChange() public {
+        vm.expectRevert(InvalidRoot.selector);
+        vm.prank(aliasedSender);
+        manager.record(bytes32(0), keccak256("f"), 10);
+
+        _assertRoots(10, bytes32(0), bytes32(0));
+        _assertLatest(0, bytes32(0), bytes32(0));
+    }
+
+    function test_record_zeroForceTxRoot_revertsInvalidRootNoStateChange() public {
+        vm.expectRevert(InvalidRoot.selector);
+        vm.prank(aliasedSender);
+        manager.record(keccak256("w"), bytes32(0), 10);
+
+        _assertRoots(10, bytes32(0), bytes32(0));
+        _assertLatest(0, bytes32(0), bytes32(0));
+    }
+
     function test_record_nonAliasedSender_revertsUnauthorized() public {
         vm.expectRevert(Unauthorized.selector);
         vm.prank(address(0xBEEF));
         manager.record(keccak256("w"), keccak256("f"), 1);
     }
 
-    /// @notice The raw (un-aliased) L1 forwarder address must not be authorized directly.
     function test_record_rawL1SenderWithoutAlias_revertsUnauthorized() public {
         vm.expectRevert(Unauthorized.selector);
         vm.prank(L1_POST_ANCHOR);
         manager.record(keccak256("w"), keccak256("f"), 1);
     }
 
-    function test_record_lowerHeight_revertsStaleRoot() public {
-        vm.prank(aliasedSender);
-        manager.record(keccak256("w"), keccak256("f"), 10);
+    function test_record_lowerHeight_revertsStaleRootAndPreservesHistory() public {
+        bytes32 w = keccak256("w");
+        bytes32 f = keccak256("f");
+        _record(w, f, 10);
+
         vm.expectRevert(StaleRoot.selector);
         vm.prank(aliasedSender);
         manager.record(keccak256("w2"), keccak256("f2"), 9);
+
+        _assertRoots(9, bytes32(0), bytes32(0));
+        _assertRoots(10, w, f);
+        _assertLatest(10, w, f);
     }
 
     function test_record_sameHeightIdenticalRoots_revertsStaleRoot() public {
         bytes32 w = keccak256("w");
         bytes32 f = keccak256("f");
-        vm.prank(aliasedSender);
-        manager.record(w, f, 10);
+        _record(w, f, 10);
+
         vm.expectRevert(StaleRoot.selector);
         vm.prank(aliasedSender);
         manager.record(w, f, 10);
+
+        _assertRoots(10, w, f);
+        _assertLatest(10, w, f);
     }
 
-    function test_record_sameHeightDifferentRoots_correctsKeepingHeight() public {
-        vm.prank(aliasedSender);
-        manager.record(keccak256("w"), keccak256("f"), 10);
-        bytes32 w2 = keccak256("w2");
-        bytes32 f2 = keccak256("f2");
+    function test_record_sameHeightDifferentRoots_correctsHistoryAndLatest() public {
+        _record(keccak256("w"), keccak256("f"), 10);
+        bytes32 correctedW = keccak256("w2");
+        bytes32 correctedF = keccak256("f2");
+
         vm.expectEmit(false, false, false, true, address(manager));
-        emit RootsRecorded(w2, f2, 10);
-        vm.prank(aliasedSender);
-        manager.record(w2, f2, 10);
-        assertEq(manager.withdrawalRoot(), w2);
-        assertEq(manager.forceRoot(), f2);
-        assertEq(manager.l2BlockNumber(), 10);
-    }
+        emit RootsRecorded(correctedW, correctedF, 10);
+        _record(correctedW, correctedF, 10);
 
-    function test_record_outOfOrderHigherWinsThenLowerFails() public {
-        bytes32 highW = keccak256("high-w");
-        bytes32 highF = keccak256("high-f");
-        vm.prank(aliasedSender);
-        manager.record(highW, highF, 100);
-
-        vm.expectRevert(StaleRoot.selector);
-        vm.prank(aliasedSender);
-        manager.record(keccak256("low-w"), keccak256("low-f"), 99);
-
-        assertEq(manager.withdrawalRoot(), highW);
-        assertEq(manager.forceRoot(), highF);
-        assertEq(manager.l2BlockNumber(), 100);
+        _assertRoots(10, correctedW, correctedF);
+        _assertLatest(10, correctedW, correctedF);
     }
 
     function testFuzz_record_monotonicDecisionTree(
@@ -117,38 +173,36 @@ contract TZRootManagerTest is Test {
         bytes32 secondW,
         bytes32 secondF
     ) public {
-        vm.assume(firstW != firstF);
-        vm.assume(secondW != secondF);
-        vm.assume(firstHeight > 0 || firstW != bytes32(0) || firstF != bytes32(0));
+        vm.assume(firstW != bytes32(0));
+        vm.assume(firstF != bytes32(0));
+        vm.assume(secondW != bytes32(0));
+        vm.assume(secondF != bytes32(0));
 
-        vm.prank(aliasedSender);
-        manager.record(firstW, firstF, firstHeight);
+        _record(firstW, firstF, firstHeight);
 
         if (secondHeight < firstHeight) {
             vm.expectRevert(StaleRoot.selector);
             vm.prank(aliasedSender);
             manager.record(secondW, secondF, secondHeight);
-            assertEq(manager.withdrawalRoot(), firstW);
-            assertEq(manager.forceRoot(), firstF);
-            assertEq(manager.l2BlockNumber(), firstHeight);
+            _assertRoots(secondHeight, bytes32(0), bytes32(0));
+            _assertRoots(firstHeight, firstW, firstF);
+            _assertLatest(firstHeight, firstW, firstF);
         } else if (secondHeight == firstHeight && secondW == firstW && secondF == firstF) {
             vm.expectRevert(StaleRoot.selector);
             vm.prank(aliasedSender);
             manager.record(secondW, secondF, secondHeight);
-            assertEq(manager.withdrawalRoot(), firstW);
-            assertEq(manager.forceRoot(), firstF);
-            assertEq(manager.l2BlockNumber(), firstHeight);
+            _assertRoots(firstHeight, firstW, firstF);
+            _assertLatest(firstHeight, firstW, firstF);
         } else {
-            vm.prank(aliasedSender);
-            manager.record(secondW, secondF, secondHeight);
-            assertEq(manager.withdrawalRoot(), secondW);
-            assertEq(manager.forceRoot(), secondF);
-            assertEq(manager.l2BlockNumber(), secondHeight > firstHeight ? secondHeight : firstHeight);
+            _record(secondW, secondF, secondHeight);
+            _assertRoots(secondHeight, secondW, secondF);
+            _assertLatest(secondHeight, secondW, secondF);
+            if (secondHeight > firstHeight) {
+                _assertRoots(firstHeight, firstW, firstF);
+            }
         }
     }
 
-    /// @notice Payable-surface negative smoke: record() is non-payable by design (no value flow),
-    ///         so a nonzero-value call must revert.
     function test_record_rejectsValue() public {
         vm.deal(aliasedSender, 1 ether);
         vm.prank(aliasedSender);

@@ -21,9 +21,6 @@ import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
-import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
-import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
     function run()
@@ -47,19 +44,14 @@ contract DeployOPSuccinctLite is Script, Utils {
         AccessManager accessManagerContract = AccessManager(0x33D211daB418F65Ca71035055bCF557808aCa13f);
         console.log("Using existing AccessManager at:", address(accessManagerContract));
 
-        // Step 5: Deploy or get SP1 verifier
-        // SP1Config memory sp1Config = deploySP1Verifier(registryAddress
-        //     config.useSp1MockVerifier,
-        //     config.rollupConfigHash,
-        //     config.aggregationVkey,
-        //     config.rangeVkeyCommitment
-        // );
-
-        SP1Config memory sp1Config;
-        sp1Config.rollupConfigHash = config.rollupConfigHash;
-        sp1Config.aggregationVkey = config.aggregationVkey;
-        sp1Config.rangeVkeyCommitment = config.rangeVkeyCommitment;
-        sp1Config.verifierAddress = address(0x397A5f7f3dBd538f23DE225B51f532c34448dA9B);
+        // Step 5: Deploy a mock verifier or use the configured production verifier.
+        SP1Config memory sp1Config = deploySP1Verifier(
+            config.useSp1MockVerifier,
+            config.verifierAddress,
+            config.rollupConfigHash,
+            config.aggregationVkey,
+            config.rangeVkeyCommitment
+        );
 
         // Step 6: Deploy OPSuccinctFaultDisputeGame implementation
         OPSuccinctFaultDisputeGame gameImpl = deployGameImplementation(
@@ -181,6 +173,7 @@ contract DeployOPSuccinctLite is Script, Utils {
 
     function deploySP1Verifier(
         bool useSp1MockVerifier,
+        address verifierAddress,
         bytes32 rollupConfigHash,
         bytes32 aggregationVkey,
         bytes32 rangeVkeyCommitment
@@ -196,14 +189,9 @@ contract DeployOPSuccinctLite is Script, Utils {
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
         } else {
-            SP1VerifierPlonk sp1VerifierPlonk = new SP1VerifierPlonk();
-            SP1VerifierGroth16 sp1VerifierGroth16 = new SP1VerifierGroth16();
-            // Deploy gateway with current transaction sender as owner
-            SP1VerifierGateway sp1VerifierGateway = new SP1VerifierGateway(tx.origin);
-            sp1VerifierGateway.addRoute(address(sp1VerifierPlonk));
-            sp1VerifierGateway.addRoute(address(sp1VerifierGroth16));
-            sp1Config.verifierAddress = address(sp1VerifierGateway);
-            console.log("Using SP1 Verifier Gateway:", address(sp1VerifierGateway));
+            require(verifierAddress != address(0), "Missing SP1 verifier address");
+            sp1Config.verifierAddress = verifierAddress;
+            console.log("Using SP1 Verifier Gateway:", verifierAddress);
         }
 
         return sp1Config;

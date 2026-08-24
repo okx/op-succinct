@@ -15,9 +15,11 @@ contract TZRootManagerHandler is Test {
     address public ordinaryCaller = address(0xB0B);
     address public otherAlias;
 
-    bytes32 public modelWithdrawalRoot;
-    bytes32 public modelForceRoot;
-    uint64 public modelHeight;
+    mapping(uint64 => bytes32) public modelWithdrawalRoots;
+    mapping(uint64 => bytes32) public modelForceTxRoots;
+    bytes32 public modelLatestWithdrawalRoot;
+    bytes32 public modelLatestForceTxRoot;
+    uint64 public modelLatestHeight;
     uint64 public highestObservedHeight;
     uint256 public successfulRecords;
     uint256 public rejectedRecords;
@@ -29,45 +31,60 @@ contract TZRootManagerHandler is Test {
         otherAlias = AddressAliasHelper.applyL1ToL2Alias(address(0xCAFE));
     }
 
-    function record(bytes32 withdrawalRoot, bytes32 forceRoot, uint64 height, uint8 actorSeed) external {
-        uint64 beforeHeight = manager.l2BlockNumber();
-        bytes32 beforeWithdrawalRoot = manager.withdrawalRoot();
-        bytes32 beforeForceRoot = manager.forceRoot();
+    function record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 height, uint8 actorSeed) external {
+        (uint64 beforeHeight, bytes32 beforeLatestW, bytes32 beforeLatestF) = manager.getLatestRoots();
+        (bytes32 beforeHeightW, bytes32 beforeHeightF) = manager.getRoots(height);
         uint8 actorKind = actorSeed % 4;
         bool authorized = actorKind == 0;
 
         if (authorized) {
-            bool shouldSucceed = height > beforeHeight
-                || (height == beforeHeight && (withdrawalRoot != beforeWithdrawalRoot || forceRoot != beforeForceRoot));
+            bool rootsValid = withdrawalRoot != bytes32(0) && forceTxRoot != bytes32(0);
+            bool fresh = height > beforeHeight
+                || (height == beforeHeight && (withdrawalRoot != beforeLatestW || forceTxRoot != beforeLatestF));
+            bool shouldSucceed = rootsValid && fresh;
 
             vm.prank(aliasedSender);
             (bool ok,) =
-                address(manager).call(abi.encodeCall(ITZRootManager.record, (withdrawalRoot, forceRoot, height)));
+                address(manager).call(abi.encodeCall(ITZRootManager.record, (withdrawalRoot, forceTxRoot, height)));
 
             if (shouldSucceed) {
-                require(ok, "authorized record unexpectedly failed");
-                modelWithdrawalRoot = withdrawalRoot;
-                modelForceRoot = forceRoot;
-                if (height > modelHeight) {
-                    modelHeight = height;
-                }
+                require(ok, "authorized valid record unexpectedly failed");
+                modelWithdrawalRoots[height] = withdrawalRoot;
+                modelForceTxRoots[height] = forceTxRoot;
+                modelLatestWithdrawalRoot = withdrawalRoot;
+                modelLatestForceTxRoot = forceTxRoot;
+                modelLatestHeight = height;
                 successfulRecords++;
             } else {
-                require(!ok, "stale record unexpectedly succeeded");
+                require(!ok, "invalid or stale record unexpectedly succeeded");
                 rejectedRecords++;
             }
         } else {
             address caller = actorKind == 1 ? ordinaryCaller : actorKind == 2 ? rawForwarder : otherAlias;
             vm.prank(caller);
             (bool ok,) =
-                address(manager).call(abi.encodeCall(ITZRootManager.record, (withdrawalRoot, forceRoot, height)));
+                address(manager).call(abi.encodeCall(ITZRootManager.record, (withdrawalRoot, forceTxRoot, height)));
             require(!ok, "unauthorized record unexpectedly succeeded");
             rejectedRecords++;
         }
 
-        require(manager.l2BlockNumber() >= beforeHeight, "height decreased");
-        if (manager.l2BlockNumber() > highestObservedHeight) {
-            highestObservedHeight = manager.l2BlockNumber();
+        (uint64 afterHeight, bytes32 afterLatestW, bytes32 afterLatestF) = manager.getLatestRoots();
+        require(afterHeight >= beforeHeight, "latest height decreased");
+        require(afterHeight == modelLatestHeight, "latest height model mismatch");
+        require(afterLatestW == modelLatestWithdrawalRoot, "latest withdrawal root model mismatch");
+        require(afterLatestF == modelLatestForceTxRoot, "latest force root model mismatch");
+
+        (bytes32 afterHeightW, bytes32 afterHeightF) = manager.getRoots(height);
+        if (afterHeightW != modelWithdrawalRoots[height] || afterHeightF != modelForceTxRoots[height]) {
+            revert("checkpoint history model mismatch");
+        }
+        if (afterHeightW != beforeHeightW || afterHeightF != beforeHeightF) {
+            require(authorized, "unauthorized history mutation");
+            require(withdrawalRoot != bytes32(0) && forceTxRoot != bytes32(0), "zero-root history mutation");
+        }
+
+        if (afterHeight > highestObservedHeight) {
+            highestObservedHeight = afterHeight;
         }
     }
 }
@@ -83,10 +100,16 @@ contract TZRootManagerInvariantTest is StdInvariant, Test {
         targetContract(address(handler));
     }
 
-    function invariant_rootManagerMatchesModelAndNeverDecreases() public view {
-        assertEq(manager.withdrawalRoot(), handler.modelWithdrawalRoot());
-        assertEq(manager.forceRoot(), handler.modelForceRoot());
-        assertEq(manager.l2BlockNumber(), handler.modelHeight());
-        assertGe(manager.l2BlockNumber(), handler.highestObservedHeight());
+    function invariant_latestRootsMatchModelAndHeightNeverDecreases() public view {
+        (uint64 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
+        assertEq(height, handler.modelLatestHeight());
+        assertEq(withdrawalRoot, handler.modelLatestWithdrawalRoot());
+        assertEq(forceTxRoot, handler.modelLatestForceTxRoot());
+        assertGe(height, handler.highestObservedHeight());
+    }
+
+    function invariant_latestRootsAreBothZeroOrBothNonZero() public view {
+        (, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
+        assertEq(withdrawalRoot == bytes32(0), forceTxRoot == bytes32(0));
     }
 }

@@ -79,6 +79,10 @@ error SequenceNumberOverflow();
 /// @notice Thrown when the caller is not the aliased authorized forwarder.
 error Unauthorized();
 
+/// @notice Thrown when either submitted root is zero. Zero roots are reserved to identify an
+///         unrecorded checkpoint in the query API.
+error InvalidRoot();
+
 /// @notice Thrown when a submitted root is not newer than the stored latest root: a lower
 ///         height, or an exact duplicate of the current same-height roots.
 error StaleRoot();
