@@ -161,7 +161,9 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
             bytes32(0), // rangeVkeyCommitment
             CHALLENGER_BOND_AMOUNT, // challengerBond
             IAnchorStateRegistry(address(anchorStateRegistry)),
-            accessManager
+            accessManager,
+            false, // hasRootClaimPreimage (legacy layout)
+            address(0) // postAnchor (auto delivery disabled)
         );
 
         factory.setInitBond(gameType, INIT_BOND);

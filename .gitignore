@@ -68,3 +68,38 @@ settings.local.json
 
 # ci-env runtime data (PID files, logs, test-env)
 dev/data/
+
+# Oli pipeline safety baseline
+.env
+.env.*
+*.key
+*.pem
+*.p12
+keystore/
+mnemonic*
+.idea/
+.vscode/
+.claude/skills/
+.claude/settings.local.json
+.claude/.cache/
+.oli-work/
+out/
+cache/
+broadcast/
+lib/
+dependencies/
+.github/
+.forge-snapshots/
+coverage/
+lcov.info
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# Oli delivery safety baseline
+*.keystore
+*mnemonic*
+.claude/

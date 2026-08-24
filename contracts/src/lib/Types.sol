@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.15;
+pragma solidity ^0.8.15;
 
 // The game type for the OP Succinct Fault Dispute Game.
 // Eventually will be enshrined in the game type enum.

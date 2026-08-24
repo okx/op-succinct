@@ -19,6 +19,7 @@ import {
     AlreadyInitialized,
     AnchorRootNotFound,
     BadAuth,
+    BadExtraData,
     BondTransferFailed,
     ClaimAlreadyResolved,
     ClockTimeExceeded,
@@ -38,6 +39,7 @@ import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
+import {IPostAnchor} from "src/fp/interfaces/IPostAnchor.sol";
 
 // Contracts
 import {AccessManager} from "src/fp/AccessManager.sol";
@@ -91,6 +93,12 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice Emitted when the game is closed.
     event GameClosed(BondDistributionMode bondDistributionMode);
 
+    /// @notice Emitted when the best-effort auto-delivery call to the forwarder failed. The
+    ///         anchor update, bond distribution, and game closure are unaffected; recovery is a
+    ///         permissionless retry on the forwarder.
+    /// @param game The address of this game.
+    event PostAnchorFailed(address indexed game);
+
     ////////////////////////////////////////////////////////////////
     //                         State Vars                         //
     ////////////////////////////////////////////////////////////////
@@ -131,9 +139,22 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @notice The access manager.
     AccessManager internal immutable ACCESS_MANAGER;
 
+    /// @notice Whether this implementation carries the four-preimage root-claim layout. When
+    ///         false, the game is a legacy 36-byte game: the four preimage getters revert and no
+    ///         commitment check runs at initialization. Set per implementation, not per clone.
+    bool public immutable HAS_ROOT_CLAIM_PREIMAGE;
+
+    /// @notice The auto-delivery forwarder called after a successful anchor update, or the zero
+    ///         address to disable auto delivery. Set per implementation, not per clone.
+    address public immutable POST_ANCHOR;
+
+    /// @notice The maximum L1 gas forwarded to the auto-delivery call. The fixed cap keeps a
+    ///         forwarder failure from ever blocking game closure or bond distribution.
+    uint256 internal constant POST_ANCHOR_GAS = 300_000;
+
     /// @notice Semantic version.
-    /// @custom:semver 2.0.0
-    string public constant version = "2.0.0";
+    /// @custom:semver 2.1.0
+    string public constant version = "2.1.0";
 
     /// @notice The starting timestamp of the game.
     Timestamp public createdAt;
@@ -175,6 +196,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     /// @param _rangeVkeyCommitment The commitment to the range vkey.
     /// @param _challengerBond The bond amount that must be submitted by the challenger.
     /// @param _anchorStateRegistry The anchor state registry for the L2 network.
+    /// @param _accessManager The access manager that gates allowed proposers and challengers.
+    /// @param hasRootClaimPreimage_ Whether this implementation uses the four-preimage layout.
+    /// @param postAnchor_ The auto-delivery forwarder address, or the zero address to disable it.
     constructor(
         Duration _maxChallengeDuration,
         Duration _maxProveDuration,
@@ -185,7 +209,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         bytes32 _rangeVkeyCommitment,
         uint256 _challengerBond,
         IAnchorStateRegistry _anchorStateRegistry,
-        AccessManager _accessManager
+        AccessManager _accessManager,
+        bool hasRootClaimPreimage_,
+        address postAnchor_
     ) {
         // Set up initial game state.
         GAME_TYPE = GameType.wrap(OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE);
@@ -199,6 +225,16 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         CHALLENGER_BOND = _challengerBond;
         ANCHOR_STATE_REGISTRY = _anchorStateRegistry;
         ACCESS_MANAGER = _accessManager;
+
+        // Auto-delivery configuration guards: a forwarder is only valid on a four-preimage game,
+        // and when set it must be a deployed contract. Both switches may be independently disabled
+        // (a zero forwarder address, and/or the legacy layout flag).
+        if (postAnchor_ != address(0)) {
+            if (!hasRootClaimPreimage_) revert InvalidPostAnchorConfig();
+            if (postAnchor_.code.length == 0) revert InvalidPostAnchor();
+        }
+        HAS_ROOT_CLAIM_PREIMAGE = hasRootClaimPreimage_;
+        POST_ANCHOR = postAnchor_;
     }
 
     /// @notice Initializes the contract.
@@ -226,11 +262,11 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Revert if the calldata size is not the expected length.
         //
-        // This is to prevent adding extra or omitting bytes from to `extraData` that result in a different game UUID
-        // in the factory, but are not used by the game, which would allow for multiple dispute games for the same
-        // output proposal to be created.
+        // This prevents adding extra or omitting bytes from `extraData` that would produce a
+        // different game UUID in the factory while not being used by the game, which would allow
+        // multiple dispute games for the same output proposal to be created.
         //
-        // Expected length: 0x7E
+        // Legacy layout length: 0x7E
         // - 0x04 selector
         // - 0x14 creator address
         // - 0x20 root claim
@@ -238,12 +274,15 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // - 0x20 extraData (l2BlockNumber)
         // - 0x04 extraData (parentIndex)
         // - 0x02 CWIA bytes
-        assembly {
-            if iszero(eq(calldatasize(), 0x7E)) {
-                // Store the selector for `BadExtraData()` & revert
-                mstore(0x00, 0x9824bdab)
-                revert(0x1C, 0x04)
-            }
+        // Four-preimage layout appends 0x80 bytes (block hash, app hash, withdrawal root, force
+        // root), for a total of 0xFE.
+        if (msg.data.length != (HAS_ROOT_CLAIM_PREIMAGE ? 0xFE : 0x7E)) revert BadExtraData();
+
+        // In four-preimage mode, bind the root claim to the four committed preimages before any
+        // state write, so a mismatched commitment prevents game creation with no persisted state.
+        // The check lives in a helper to keep this function's stack shallow.
+        if (HAS_ROOT_CLAIM_PREIMAGE) {
+            _checkRootClaimCommitment();
         }
 
         // The first game is initialized with a parent index of uint32.max
@@ -547,7 +586,19 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Try to update the anchor game first. Won't always succeed because delays can lead
         // to situations in which this game might not be eligible to be a new anchor game.
-        try ANCHOR_STATE_REGISTRY.setAnchorState(IDisputeGame(address(this))) {} catch {}
+        //
+        // On a successful anchor update, best-effort forward the current roots to the target
+        // chain. The forwarder call is gas-capped and isolated by an inner try/catch: a failure
+        // only emits an event and never rolls back the anchor update, bond distribution, or game
+        // closure. The forwarder reads the current anchor itself, so the game passes no arguments.
+        try ANCHOR_STATE_REGISTRY.setAnchorState(IDisputeGame(address(this))) {
+            if (POST_ANCHOR != address(0)) {
+                try IPostAnchor(POST_ANCHOR).push{gas: POST_ANCHOR_GAS}() {}
+                catch {
+                    emit PostAnchorFailed(address(this));
+                }
+            }
+        } catch {}
 
         // Check if the game is a proper game, which will determine the bond distribution mode.
         bool properGame = ANCHOR_STATE_REGISTRY.isGameProper(IDisputeGame(address(this)));
@@ -599,13 +650,59 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         l1Head_ = Hash.wrap(_getArgBytes32(0x34));
     }
 
+    /// @notice The block hash preimage committed at creation. Four-preimage games only.
+    /// @dev `clones-with-immutable-args` argument, four-preimage layout.
+    /// @return blockHash_ The committed block hash.
+    function blockHash() public view returns (bytes32 blockHash_) {
+        _requireRootClaimPreimage();
+        blockHash_ = _getArgBytes32(0x78);
+    }
+
+    /// @notice The app hash preimage committed at creation. Four-preimage games only.
+    /// @return appHash_ The committed app hash.
+    function appHash() public view returns (bytes32 appHash_) {
+        _requireRootClaimPreimage();
+        appHash_ = _getArgBytes32(0x98);
+    }
+
+    /// @notice The withdrawal root preimage committed at creation. Four-preimage games only.
+    /// @return withdrawalRoot_ The committed withdrawal root.
+    function withdrawalRoot() public view returns (bytes32 withdrawalRoot_) {
+        _requireRootClaimPreimage();
+        withdrawalRoot_ = _getArgBytes32(0xB8);
+    }
+
+    /// @notice The force root preimage committed at creation. Four-preimage games only.
+    /// @return forceRoot_ The committed force root.
+    function forceRoot() public view returns (bytes32 forceRoot_) {
+        _requireRootClaimPreimage();
+        forceRoot_ = _getArgBytes32(0xD8);
+    }
+
+    /// @notice Reverts when a four-preimage getter is called on a legacy game.
+    function _requireRootClaimPreimage() internal view {
+        if (!HAS_ROOT_CLAIM_PREIMAGE) revert RootClaimPreimageDisabled();
+    }
+
+    /// @notice Reverts unless the root claim equals the keccak256 commitment over the four
+    ///         committed preimages, in the fixed order block hash, app hash, withdrawal root,
+    ///         force root.
+    function _checkRootClaimCommitment() internal view {
+        bytes32 expectedRootClaim = keccak256(abi.encodePacked(blockHash(), appHash(), withdrawalRoot(), forceRoot()));
+        if (rootClaim().raw() != expectedRootClaim) revert InvalidRootClaimPreimage();
+    }
+
     /// @notice Getter for the extra data.
-    /// @dev `clones-with-immutable-args` argument #4
+    /// @dev `clones-with-immutable-args` argument #4. Stays `pure` to match the inherited
+    ///      interface; the returned length is derived from the clone's immutable-args calldata,
+    ///      so it is 36 bytes for legacy games and 164 bytes for four-preimage games.
     /// @return extraData_ Any extra data supplied to the dispute game contract by the creator.
     function extraData() public pure returns (bytes memory extraData_) {
-        // The extra data starts at the second word within the cwia calldata and
-        // is 36 bytes long. 32 bytes are for the l2BlockNumber, 4 bytes are for the parentIndex.
-        extraData_ = _getArgBytes(0x54, 0x24);
+        // The extra data starts at offset 0x54 (l2BlockNumber and parentIndex, plus the four
+        // committed preimages in four-preimage mode) and runs to the end of the immutable-args
+        // blob. The total args length is read from calldata, keeping this function `pure`.
+        uint256 argsLength = _getArgBytes().length;
+        extraData_ = _getArgBytes(0x54, argsLength - 0x54);
     }
 
     /// @notice A compliant implementation of this interface should return the components of the

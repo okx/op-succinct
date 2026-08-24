@@ -7,6 +7,8 @@
   "maxChallengeDuration": 3600,
   "maxProveDuration": 604800,
   "permissionlessMode": false,
+  "hasRootClaimPreimage": true,
+  "postAnchorAddress": "0x0000000000000000000000000000000000000000",
   "proposerAddresses": [
     "0x829D57F38D2A94514a3dbA2297fDD1Bc52bB1938"
   ],

@@ -152,7 +152,9 @@ contract OPSuccinctFaultDisputeGameTest is Test {
             rangeVkeyCommitment,
             proofReward,
             IAnchorStateRegistry(address(anchorStateRegistry)),
-            accessManager
+            accessManager,
+            false,
+            address(0)
         );
 
         // Set the init bond on the factory for the OPSuccinctFDG specific GameType.
