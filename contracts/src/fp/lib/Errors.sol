@@ -83,6 +83,6 @@ error Unauthorized();
 ///         unrecorded checkpoint in the query API.
 error InvalidRoot();
 
-/// @notice Thrown when a submitted root is not newer than the stored latest root: a lower
-///         height, or an exact duplicate of the current same-height roots.
+/// @notice Thrown after initialization when a submitted checkpoint height is not strictly newer
+///         than the stored latest height.
 error StaleRoot();

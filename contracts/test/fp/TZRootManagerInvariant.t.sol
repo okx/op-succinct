@@ -32,15 +32,15 @@ contract TZRootManagerHandler is Test {
     }
 
     function record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 height, uint8 actorSeed) external {
-        (uint64 beforeHeight, bytes32 beforeLatestW, bytes32 beforeLatestF) = manager.getLatestRoots();
+        (uint64 beforeHeight, bytes32 beforeLatestW,) = manager.getLatestRoots();
         (bytes32 beforeHeightW, bytes32 beforeHeightF) = manager.getRoots(height);
         uint8 actorKind = actorSeed % 4;
         bool authorized = actorKind == 0;
 
         if (authorized) {
             bool rootsValid = withdrawalRoot != bytes32(0) && forceTxRoot != bytes32(0);
-            bool fresh = height > beforeHeight
-                || (height == beforeHeight && (withdrawalRoot != beforeLatestW || forceTxRoot != beforeLatestF));
+            bool hasRecordedCheckpoint = beforeLatestW != bytes32(0);
+            bool fresh = !hasRecordedCheckpoint || height > beforeHeight;
             bool shouldSucceed = rootsValid && fresh;
 
             vm.prank(aliasedSender);

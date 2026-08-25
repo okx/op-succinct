@@ -485,22 +485,21 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
-    function test_targetChain_sameHeightCorrectionOverwritesRootsKeepsHeight() public {
+    function test_targetChain_sameHeightDifferentRootsRevertsNoStateChange() public {
         OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
         game.closeGame();
         assertTrue(_deliverCapturedDeposit(), "initial record");
 
-        // A same-height message with different roots is a correction: overwrite roots, keep height.
+        // A same-height message is stale even if its roots differ: checkpoint history is immutable.
         bytes32 correctedW = bytes32(uint256(0x7777));
         bytes32 correctedF = bytes32(uint256(0x8888));
-        vm.expectEmit(false, false, false, true, address(rootManager));
-        emit RootsRecorded(correctedW, correctedF, uint64(SEQ_1));
+        vm.expectRevert(StaleRoot.selector);
         vm.prank(aliasedForwarder);
         rootManager.record(correctedW, correctedF, uint64(SEQ_1));
 
-        _assertCheckpointRoots(uint64(SEQ_1), correctedW, correctedF);
-        _assertLatestRoots(uint64(SEQ_1), correctedW, correctedF);
+        _assertCheckpointRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
     // ---------------------------------------------------------------------------------------------

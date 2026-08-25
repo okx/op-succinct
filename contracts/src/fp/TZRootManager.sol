@@ -9,9 +9,9 @@ import {InvalidPostAnchor, InvalidRoot, Unauthorized, StaleRoot} from "src/fp/li
 /// @title TZRootManager
 /// @notice Target-chain sink for cross-chain root synchronization. It authenticates the single
 ///         L1 forwarder by its OP-Stack alias, stores committed roots by checkpoint, tracks the
-///         latest checkpoint, enforces height non-regression, and allows a same-height root
-///         correction. It holds no owner, admin, or upgrade surface: every trust address is a
-///         constructor immutable.
+///         latest checkpoint, and enforces strictly increasing checkpoint heights after the first
+///         record. It holds no owner, admin, or upgrade surface: every trust address is a constructor
+///         immutable.
 contract TZRootManager is ITZRootManager {
     /// @notice The root pair recorded atomically for one checkpoint.
     struct CheckpointRoots {
@@ -26,12 +26,11 @@ contract TZRootManager is ITZRootManager {
     /// @notice The height (L2 block number) of the latest recorded roots. Never decreases.
     uint64 public l2BlockNumber;
 
-    /// @dev Exact-height history. Since record rejects either zero root, a zero-valued entry
-    ///      unambiguously means that the checkpoint has not been recorded.
-    mapping(uint64 => CheckpointRoots) private _rootsByCheckpoint;
+    /// @notice Exact-height history. Since record rejects either zero root, a zero-valued entry
+    ///         unambiguously means that the checkpoint has not been recorded.
+    mapping(uint64 => CheckpointRoots) public _rootsByCheckpoint;
 
-    /// @notice Emitted when roots advance to a higher checkpoint or a same-height correction
-    ///         overwrites the pair stored for that checkpoint.
+    /// @notice Emitted for the first recorded checkpoint or a strictly newer checkpoint.
     /// @param withdrawalRoot The recorded withdrawal root.
     /// @param forceTxRoot The recorded force-transaction root.
     /// @param checkpointBlockHeight The checkpoint height of the recorded roots.
@@ -55,18 +54,10 @@ contract TZRootManager is ITZRootManager {
         if (newWithdrawalRoot == bytes32(0) || newForceTxRoot == bytes32(0)) revert InvalidRoot();
 
         uint64 currentHeight = l2BlockNumber;
-        if (newCheckpointBlockHeight < currentHeight) {
-            // A lower height is always stale.
-            revert StaleRoot();
-        } else if (newCheckpointBlockHeight == currentHeight) {
-            // Same height: an exact duplicate is stale; any differing root is a correction that
-            // overwrites both roots together while keeping the height unchanged. Before the first
-            // checkpoint-zero write, the mapping value is the all-zero pair, so it is not stale.
-            CheckpointRoots storage current = _rootsByCheckpoint[newCheckpointBlockHeight];
-            if (newWithdrawalRoot == current.withdrawalRoot && newForceTxRoot == current.forceTxRoot) {
-                revert StaleRoot();
-            }
-        }
+        // A non-zero root at the latest height distinguishes an initialized manager from the
+        // all-zero initial state. This preserves support for a first checkpoint at height zero.
+        bool hasRecordedCheckpoint = _rootsByCheckpoint[currentHeight].withdrawalRoot != bytes32(0);
+        if (hasRecordedCheckpoint && newCheckpointBlockHeight <= currentHeight) revert StaleRoot();
 
         _rootsByCheckpoint[newCheckpointBlockHeight] = CheckpointRoots(newWithdrawalRoot, newForceTxRoot);
         l2BlockNumber = newCheckpointBlockHeight;

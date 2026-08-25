@@ -32,6 +32,10 @@ contract TZRootManagerTest is Test {
         (bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getRoots(checkpointBlockHeight);
         assertEq(withdrawalRoot, expectedWithdrawalRoot);
         assertEq(forceTxRoot, expectedForceTxRoot);
+
+        (bytes32 publicWithdrawalRoot, bytes32 publicForceTxRoot) = manager._rootsByCheckpoint(checkpointBlockHeight);
+        assertEq(publicWithdrawalRoot, expectedWithdrawalRoot);
+        assertEq(publicForceTxRoot, expectedForceTxRoot);
     }
 
     function _assertLatest(uint64 expectedHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
@@ -152,17 +156,19 @@ contract TZRootManagerTest is Test {
         _assertLatest(10, w, f);
     }
 
-    function test_record_sameHeightDifferentRoots_correctsHistoryAndLatest() public {
-        _record(keccak256("w"), keccak256("f"), 10);
+    function test_record_sameHeightDifferentRoots_revertsStaleRootAndPreservesHistory() public {
+        bytes32 originalW = keccak256("w");
+        bytes32 originalF = keccak256("f");
+        _record(originalW, originalF, 10);
         bytes32 correctedW = keccak256("w2");
         bytes32 correctedF = keccak256("f2");
 
-        vm.expectEmit(false, false, false, true, address(manager));
-        emit RootsRecorded(correctedW, correctedF, 10);
-        _record(correctedW, correctedF, 10);
+        vm.expectRevert(StaleRoot.selector);
+        vm.prank(aliasedSender);
+        manager.record(correctedW, correctedF, 10);
 
-        _assertRoots(10, correctedW, correctedF);
-        _assertLatest(10, correctedW, correctedF);
+        _assertRoots(10, originalW, originalF);
+        _assertLatest(10, originalW, originalF);
     }
 
     function testFuzz_record_monotonicDecisionTree(
@@ -180,26 +186,20 @@ contract TZRootManagerTest is Test {
 
         _record(firstW, firstF, firstHeight);
 
-        if (secondHeight < firstHeight) {
+        if (secondHeight <= firstHeight) {
             vm.expectRevert(StaleRoot.selector);
             vm.prank(aliasedSender);
             manager.record(secondW, secondF, secondHeight);
-            _assertRoots(secondHeight, bytes32(0), bytes32(0));
-            _assertRoots(firstHeight, firstW, firstF);
-            _assertLatest(firstHeight, firstW, firstF);
-        } else if (secondHeight == firstHeight && secondW == firstW && secondF == firstF) {
-            vm.expectRevert(StaleRoot.selector);
-            vm.prank(aliasedSender);
-            manager.record(secondW, secondF, secondHeight);
+            if (secondHeight < firstHeight) {
+                _assertRoots(secondHeight, bytes32(0), bytes32(0));
+            }
             _assertRoots(firstHeight, firstW, firstF);
             _assertLatest(firstHeight, firstW, firstF);
         } else {
             _record(secondW, secondF, secondHeight);
             _assertRoots(secondHeight, secondW, secondF);
             _assertLatest(secondHeight, secondW, secondF);
-            if (secondHeight > firstHeight) {
-                _assertRoots(firstHeight, firstW, firstF);
-            }
+            _assertRoots(firstHeight, firstW, firstF);
         }
     }
 
