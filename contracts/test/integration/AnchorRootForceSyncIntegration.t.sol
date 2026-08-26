@@ -75,8 +75,8 @@ contract IntegrationRecordingPortal {
 ///         closeGame -> setAnchorState -> push -> portal deposit -> (aliased) record path.
 contract AnchorRootForceSyncIntegrationTest is Test {
     // Events under observation (mirrors of the production declarations).
-    event RootsEnqueued(address indexed game, uint64 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
-    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceRoot, uint64 l2BlockNumber);
+    event RootsEnqueued(address indexed game, uint256 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
+    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceRoot, uint256 l2BlockNumber);
     event PostAnchorFailed(address indexed game);
     event GameClosed(BondDistributionMode bondDistributionMode);
 
@@ -247,14 +247,14 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         (ok,) = address(rootManager).call(data);
     }
 
-    function _assertCheckpointRoots(uint64 height, bytes32 expectedW, bytes32 expectedF) internal view {
+    function _assertCheckpointRoots(uint256 height, bytes32 expectedW, bytes32 expectedF) internal view {
         (bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getRoots(height);
         assertEq(withdrawalRoot, expectedW, "checkpoint withdrawal root");
         assertEq(forceTxRoot, expectedF, "checkpoint force root");
     }
 
-    function _assertLatestRoots(uint64 expectedHeight, bytes32 expectedW, bytes32 expectedF) internal view {
-        (uint64 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getLatestRoots();
+    function _assertLatestRoots(uint256 expectedHeight, bytes32 expectedW, bytes32 expectedF) internal view {
+        (uint256 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getLatestRoots();
         assertEq(height, expectedHeight, "latest checkpoint height");
         assertEq(withdrawalRoot, expectedW, "latest withdrawal root");
         assertEq(forceTxRoot, expectedF, "latest force root");
@@ -299,11 +299,11 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
 
-        // closeGame emits the forwarder enqueue (from the real PostAnchor) and the game closure.
-        vm.expectEmit(true, true, false, true, address(postAnchor));
-        emit RootsEnqueued(address(game), uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        // closeGame finalizes its own state before making the best-effort forwarder call.
         vm.expectEmit(false, false, false, true, address(game));
         emit GameClosed(BondDistributionMode.NORMAL);
+        vm.expectEmit(true, true, false, true, address(postAnchor));
+        emit RootsEnqueued(address(game), SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
         game.closeGame();
 
         // The anchor really advanced to this game and bonds distribute normally.
@@ -320,7 +320,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertFalse(depositPortal.lastIsCreation(), "not a creation deposit");
         assertEq(
             depositPortal.lastData(),
-            abi.encodeCall(ITZRootManager.record, (WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1))),
+            abi.encodeCall(ITZRootManager.record, (WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1)),
             "deposit calldata is record(W,F,seq)"
         );
         // Forwarder holds no funds.
@@ -328,12 +328,12 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         // Deliver the captured message on the target chain from the aliased forwarder identity.
         vm.expectEmit(false, false, false, true, address(rootManager));
-        emit RootsRecorded(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1));
+        emit RootsRecorded(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
         assertTrue(_deliverCapturedDeposit(), "record delivery");
 
         // The exact-height and latest queries both mirror the anchor game's committed tuple.
-        _assertCheckpointRoots(uint64(SEQ_1), game.withdrawalRoot(), game.forceRoot());
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertCheckpointRoots(SEQ_1, game.withdrawalRoot(), game.forceRoot());
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
 
         // Credit remains claimable and pays exactly the bond; no value is stranded.
         uint256 beforeBalance = proposer.balance;
@@ -355,7 +355,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         _resolveAndFinalize(game1);
         game1.closeGame();
         assertTrue(_deliverCapturedDeposit(), "record #1");
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
 
         // Second, higher game re-anchors and advances the sink monotonically.
         OPSuccinctFaultDisputeGame game2 = _createExtendedGame(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
@@ -365,16 +365,72 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertEq(depositPortal.callCount(), 2, "second deposit enqueued");
         assertEq(
             depositPortal.lastData(),
-            abi.encodeCall(ITZRootManager.record, (w2, f2, uint64(SEQ_2))),
+            abi.encodeCall(ITZRootManager.record, (w2, f2, SEQ_2)),
             "second deposit carries game2 roots"
         );
         assertTrue(_deliverCapturedDeposit(), "record #2");
 
         // Checkpoints may be sparse: latest advances, while exact-height history remains intact.
-        _assertCheckpointRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
-        _assertCheckpointRoots(uint64(SEQ_1 + 1), bytes32(0), bytes32(0));
-        _assertCheckpointRoots(uint64(SEQ_2), w2, f2);
-        _assertLatestRoots(uint64(SEQ_2), w2, f2);
+        _assertCheckpointRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertCheckpointRoots(SEQ_1 + 1, bytes32(0), bytes32(0));
+        _assertCheckpointRoots(SEQ_2, w2, f2);
+        _assertLatestRoots(SEQ_2, w2, f2);
+    }
+
+    function test_e2e_externalAnchorAdvanceBeforeCloseStillPushesLatest() public {
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _resolveAndFinalize(game);
+
+        // setAnchorState is permissionless. Simulate another caller advancing the ASR before the
+        // game's close hook executes.
+        vm.prank(address(0xBEEF));
+        anchorStateRegistry.setAnchorState(IDisputeGame(address(game)));
+        assertEq(address(anchorStateRegistry.anchorGame()), address(game), "anchor pre-advanced");
+        assertEq(depositPortal.callCount(), 0, "direct ASR advance does not enqueue");
+
+        game.closeGame();
+
+        assertEq(depositPortal.callCount(), 1, "close catches up latest anchor");
+        assertEq(
+            depositPortal.lastData(),
+            abi.encodeCall(ITZRootManager.record, (WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1)),
+            "latest roots enqueued"
+        );
+        assertEq(uint8(game.bondDistributionMode()), uint8(BondDistributionMode.NORMAL), "closed normal");
+    }
+
+    function test_e2e_multipleExternalAnchorAdvancesPushOnlyCurrentLatest() public {
+        bytes32 w2 = bytes32(uint256(0x5555));
+        bytes32 f2 = bytes32(uint256(0x6666));
+        OPSuccinctFaultDisputeGame game1 = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game2 = _createExtendedGame(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
+
+        // Finalize both before an external caller advances through both anchors.
+        (,,,,, Timestamp deadline1) = game1.claimData();
+        (,,,,, Timestamp deadline2) = game2.claimData();
+        uint64 latestDeadline = deadline1.raw() > deadline2.raw() ? deadline1.raw() : deadline2.raw();
+        vm.warp(latestDeadline + 1);
+        game1.resolve();
+        game2.resolve();
+        vm.warp(block.timestamp + FINALITY_DELAY + 1);
+
+        vm.startPrank(address(0xBEEF));
+        anchorStateRegistry.setAnchorState(IDisputeGame(address(game1)));
+        anchorStateRegistry.setAnchorState(IDisputeGame(address(game2)));
+        vm.stopPrank();
+
+        // Closing the older game catches up directly to the current ASR anchor. Since only the
+        // latest checkpoint matters, game1 is intentionally not enqueued.
+        game1.closeGame();
+        assertEq(depositPortal.callCount(), 1, "only current latest enqueued");
+        assertEq(
+            depositPortal.lastData(), abi.encodeCall(ITZRootManager.record, (w2, f2, SEQ_2)), "game2 roots enqueued"
+        );
+
+        // Closing game2 enqueues the current anchor again. The target-chain sink, rather than an
+        // L1 enqueue watermark, is responsible for making the duplicate harmless.
+        game2.closeGame();
+        assertEq(depositPortal.callCount(), 2, "latest anchor remains retryable");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -387,6 +443,8 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         // Portal is down: the hook fails but the game must still close cleanly.
         depositPortal.setShouldRevert(true);
+        vm.expectEmit(false, false, false, true, address(game));
+        emit GameClosed(BondDistributionMode.NORMAL);
         vm.expectEmit(true, false, false, true, address(game));
         emit PostAnchorFailed(address(game));
         game.closeGame();
@@ -405,13 +463,56 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         // Portal recovers; an arbitrary relayer converges the sink through the same entry point.
         depositPortal.setShouldRevert(false);
         vm.expectEmit(true, true, false, true, address(postAnchor));
-        emit RootsEnqueued(address(game), uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        emit RootsEnqueued(address(game), SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
         vm.prank(relayer);
         postAnchor.push();
 
         assertEq(depositPortal.callCount(), 1, "retry enqueued one deposit");
         assertTrue(_deliverCapturedDeposit(), "retry record delivery");
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+    }
+
+    function test_e2e_enqueuedButUndeliveredMessageCanBeRetried() public {
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _resolveAndFinalize(game);
+
+        // The close hook successfully enqueues, but simulate that the captured message has not
+        // executed on the target chain.
+        game.closeGame();
+        assertEq(depositPortal.callCount(), 1, "initial enqueue");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
+
+        // Any relayer can enqueue the same current anchor again, and the retry can land.
+        vm.prank(relayer);
+        postAnchor.push();
+        assertEq(depositPortal.callCount(), 2, "same-height retry enqueued");
+        assertTrue(_deliverCapturedDeposit(), "retry delivery succeeds");
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+
+        // If the original delivery later lands too, strict monotonicity rejects the duplicate.
+        assertFalse(_deliverCapturedDeposit(), "late duplicate is stale");
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+    }
+
+    function test_e2e_currentAnchorRemainsRetryableAfterRetirement() public {
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _resolveAndFinalize(game);
+
+        game.closeGame();
+        assertEq(depositPortal.callCount(), 1, "initial enqueue");
+
+        // Retirement affects whether a game may become a new anchor, but ASR intentionally keeps
+        // the existing anchor as its recovery starting point.
+        anchorStateRegistry.updateRetirementTimestamp();
+        assertEq(address(anchorStateRegistry.anchorGame()), address(game), "current anchor retained");
+        assertFalse(anchorStateRegistry.isGameClaimValid(IDisputeGame(address(game))), "candidate validity changed");
+
+        // PostAnchor trusts the ASR's stored anchor and can still retry its missed delivery.
+        vm.prank(relayer);
+        postAnchor.push();
+        assertEq(depositPortal.callCount(), 2, "retired current anchor remains retryable");
+        assertTrue(_deliverCapturedDeposit(), "retirement retry delivery succeeds");
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -438,68 +539,68 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         // Direct typed call surfaces the specific error.
         vm.prank(relayer);
         vm.expectRevert(Unauthorized.selector);
-        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1));
+        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
 
         // No partial effect: the sink is still empty.
         _assertLatestRoots(0, bytes32(0), bytes32(0));
 
         // The legitimate aliased delivery still works afterwards.
         assertTrue(_deliverCapturedDeposit(), "aliased delivery still works");
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
     function test_targetChain_rejectsEitherZeroRootNoStateChange() public {
         vm.expectRevert(InvalidRoot.selector);
         vm.prank(aliasedForwarder);
-        rootManager.record(bytes32(0), FORCE_ROOT, uint64(SEQ_1));
+        rootManager.record(bytes32(0), FORCE_ROOT, SEQ_1);
 
         vm.expectRevert(InvalidRoot.selector);
         vm.prank(aliasedForwarder);
-        rootManager.record(WITHDRAWAL_ROOT, bytes32(0), uint64(SEQ_1));
+        rootManager.record(WITHDRAWAL_ROOT, bytes32(0), SEQ_1);
 
-        _assertCheckpointRoots(uint64(SEQ_1), bytes32(0), bytes32(0));
+        _assertCheckpointRoots(SEQ_1, bytes32(0), bytes32(0));
         _assertLatestRoots(0, bytes32(0), bytes32(0));
     }
 
-    function test_targetChain_staleReplayRevertsNoStateChange() public {
+    function test_targetChain_exactReplayAndLowerHeightRevert() public {
         OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
         game.closeGame();
 
         // First delivery records the roots.
         assertTrue(_deliverCapturedDeposit(), "first record");
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
 
-        // Replaying the identical message is a stale duplicate: revert, no second event, no change.
+        // Replaying the identical message is not strictly newer and therefore reverts.
         vm.prank(aliasedForwarder);
         vm.expectRevert(StaleRoot.selector);
-        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1));
+        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
 
         // A strictly lower height also reverts as stale.
         vm.prank(aliasedForwarder);
         vm.expectRevert(StaleRoot.selector);
-        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, uint64(SEQ_1 - 1));
+        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1 - 1);
 
-        // No partial effect from either rejected call.
-        _assertCheckpointRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        // Neither rejected delivery changes state.
+        _assertCheckpointRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
-    function test_targetChain_sameHeightDifferentRootsRevertsNoStateChange() public {
+    function test_targetChain_sameHeightDifferentRootsRevert() public {
         OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
         game.closeGame();
         assertTrue(_deliverCapturedDeposit(), "initial record");
 
-        // A same-height message is stale even if its roots differ: checkpoint history is immutable.
+        // A differing same-height tuple is not strictly newer and therefore reverts.
         bytes32 correctedW = bytes32(uint256(0x7777));
         bytes32 correctedF = bytes32(uint256(0x8888));
         vm.expectRevert(StaleRoot.selector);
         vm.prank(aliasedForwarder);
-        rootManager.record(correctedW, correctedF, uint64(SEQ_1));
+        rootManager.record(correctedW, correctedF, SEQ_1);
 
-        _assertCheckpointRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
-        _assertLatestRoots(uint64(SEQ_1), WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertCheckpointRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
     // ---------------------------------------------------------------------------------------------

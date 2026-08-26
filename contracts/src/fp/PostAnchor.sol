@@ -8,22 +8,14 @@ import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IPostAnchor} from "src/fp/interfaces/IPostAnchor.sol";
 import {ITZClaimGame} from "src/fp/interfaces/ITZClaimGame.sol";
 import {ITZRootManager} from "src/fp/interfaces/ITZRootManager.sol";
-import {
-    InvalidASR,
-    InvalidPortal,
-    InvalidRootManager,
-    InvalidPushGasLimit,
-    NoAnchorGame,
-    InvalidAnchorGame,
-    SequenceNumberOverflow
-} from "src/fp/lib/Errors.sol";
+import {InvalidASR, InvalidPortal, InvalidRootManager, InvalidPushGasLimit, NoAnchorGame} from "src/fp/lib/Errors.sol";
 
 /// @title PostAnchor
-/// @notice Fixed, owner-less L1 forwarder. On each call it reads the current valid anchor game
+/// @notice Fixed, owner-less L1 forwarder. On each call it reads the current anchor game
 ///         from the registry (never from the caller), reads that game's roots and height, and
 ///         enqueues one fixed cross-chain delivery through the portal. It holds no mutable
-///         storage and transfers no value: safety comes from the trusted data source and the
-///         fixed message surface, not from caller identity.
+///         delivery watermark because an L1 enqueue does not prove target-chain execution;
+///         duplicate and stale deliveries are handled by the target-chain root manager.
 contract PostAnchor is IPostAnchor {
     /// @notice The anchor state registry that selects and validates the current anchor game.
     IAnchorStateRegistry public immutable ASR;
@@ -44,7 +36,7 @@ contract PostAnchor is IPostAnchor {
     /// @param l2BlockNumber The forwarded height.
     /// @param withdrawalRoot The forwarded withdrawal root.
     /// @param forceRoot The forwarded force root.
-    event RootsEnqueued(address indexed game, uint64 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
+    event RootsEnqueued(address indexed game, uint256 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
 
     /// @param asr_ The anchor state registry (must have contract code).
     /// @param xlPortal_ The L1 portal (must have contract code).
@@ -66,20 +58,19 @@ contract PostAnchor is IPostAnchor {
         // Structural source of truth: the caller cannot supply a game, root, or height.
         IDisputeGame game = IDisputeGame(address(ASR.anchorGame()));
         if (address(game) == address(0)) revert NoAnchorGame();
-        if (!ASR.isGameClaimValid(game)) revert InvalidAnchorGame();
 
-        // Read the source height and narrow it to 64 bits, then cache each root exactly once.
-        uint256 seq = game.l2SequenceNumber();
-        if (seq > type(uint64).max) revert SequenceNumberOverflow();
+        uint256 height = game.l2SequenceNumber();
         bytes32 w = ITZClaimGame(address(game)).withdrawalRoot();
         bytes32 f = ITZClaimGame(address(game)).forceRoot();
 
         // Enqueue exactly one fixed delivery: fixed target, zero value, fixed gas, not a
         // creation, and the frozen record(w, f, height) calldata. No field is caller-controlled.
+        // Repeated calls intentionally enqueue again so a delivery that did not execute on the
+        // target chain can be retried permissionlessly.
         XL_PORTAL.depositTransaction(
-            XL_ROOT_MANAGER, 0, PUSH_GAS_LIMIT, false, abi.encodeCall(ITZRootManager.record, (w, f, uint64(seq)))
+            XL_ROOT_MANAGER, 0, PUSH_GAS_LIMIT, false, abi.encodeCall(ITZRootManager.record, (w, f, height))
         );
 
-        emit RootsEnqueued(address(game), uint64(seq), w, f);
+        emit RootsEnqueued(address(game), height, w, f);
     }
 }

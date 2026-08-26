@@ -15,12 +15,12 @@ contract TZRootManagerHandler is Test {
     address public ordinaryCaller = address(0xB0B);
     address public otherAlias;
 
-    mapping(uint64 => bytes32) public modelWithdrawalRoots;
-    mapping(uint64 => bytes32) public modelForceTxRoots;
+    mapping(uint256 => bytes32) public modelWithdrawalRoots;
+    mapping(uint256 => bytes32) public modelForceTxRoots;
     bytes32 public modelLatestWithdrawalRoot;
     bytes32 public modelLatestForceTxRoot;
-    uint64 public modelLatestHeight;
-    uint64 public highestObservedHeight;
+    uint256 public modelLatestHeight;
+    uint256 public highestObservedHeight;
     uint256 public successfulRecords;
     uint256 public rejectedRecords;
 
@@ -31,16 +31,15 @@ contract TZRootManagerHandler is Test {
         otherAlias = AddressAliasHelper.applyL1ToL2Alias(address(0xCAFE));
     }
 
-    function record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 height, uint8 actorSeed) external {
-        (uint64 beforeHeight, bytes32 beforeLatestW,) = manager.getLatestRoots();
+    function record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint256 height, uint8 actorSeed) external {
+        (uint256 beforeHeight,,) = manager.getLatestRoots();
         (bytes32 beforeHeightW, bytes32 beforeHeightF) = manager.getRoots(height);
         uint8 actorKind = actorSeed % 4;
         bool authorized = actorKind == 0;
 
         if (authorized) {
             bool rootsValid = withdrawalRoot != bytes32(0) && forceTxRoot != bytes32(0);
-            bool hasRecordedCheckpoint = beforeLatestW != bytes32(0);
-            bool fresh = !hasRecordedCheckpoint || height > beforeHeight;
+            bool fresh = height > beforeHeight;
             bool shouldSucceed = rootsValid && fresh;
 
             vm.prank(aliasedSender);
@@ -68,7 +67,7 @@ contract TZRootManagerHandler is Test {
             rejectedRecords++;
         }
 
-        (uint64 afterHeight, bytes32 afterLatestW, bytes32 afterLatestF) = manager.getLatestRoots();
+        (uint256 afterHeight, bytes32 afterLatestW, bytes32 afterLatestF) = manager.getLatestRoots();
         require(afterHeight >= beforeHeight, "latest height decreased");
         require(afterHeight == modelLatestHeight, "latest height model mismatch");
         require(afterLatestW == modelLatestWithdrawalRoot, "latest withdrawal root model mismatch");
@@ -101,7 +100,7 @@ contract TZRootManagerInvariantTest is StdInvariant, Test {
     }
 
     function invariant_latestRootsMatchModelAndHeightNeverDecreases() public view {
-        (uint64 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
+        (uint256 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
         assertEq(height, handler.modelLatestHeight());
         assertEq(withdrawalRoot, handler.modelLatestWithdrawalRoot());
         assertEq(forceTxRoot, handler.modelLatestForceTxRoot());

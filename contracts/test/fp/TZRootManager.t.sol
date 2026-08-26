@@ -13,19 +13,19 @@ contract TZRootManagerTest is Test {
     address internal constant L1_POST_ANCHOR = address(0xAB01);
     address internal aliasedSender;
 
-    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 checkpointBlockHeight);
+    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint256 checkpointBlockHeight);
 
     function setUp() public {
         manager = new TZRootManager(L1_POST_ANCHOR);
         aliasedSender = AddressAliasHelper.applyL1ToL2Alias(L1_POST_ANCHOR);
     }
 
-    function _record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint64 checkpointBlockHeight) internal {
+    function _record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint256 checkpointBlockHeight) internal {
         vm.prank(aliasedSender);
         manager.record(withdrawalRoot, forceTxRoot, checkpointBlockHeight);
     }
 
-    function _assertRoots(uint64 checkpointBlockHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
+    function _assertRoots(uint256 checkpointBlockHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
         internal
         view
     {
@@ -38,11 +38,11 @@ contract TZRootManagerTest is Test {
         assertEq(publicForceTxRoot, expectedForceTxRoot);
     }
 
-    function _assertLatest(uint64 expectedHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
+    function _assertLatest(uint256 expectedHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
         internal
         view
     {
-        (uint64 checkpointBlockHeight, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
+        (uint256 checkpointBlockHeight, bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getLatestRoots();
         assertEq(checkpointBlockHeight, expectedHeight);
         assertEq(withdrawalRoot, expectedWithdrawalRoot);
         assertEq(forceTxRoot, expectedForceTxRoot);
@@ -89,14 +89,27 @@ contract TZRootManagerTest is Test {
         _assertLatest(100, w100, f100);
     }
 
-    function test_record_checkpointZero_isDistinguishedByNonZeroRoots() public {
+    function test_record_supportsHeightAboveUint64Max() public {
+        uint256 height = uint256(type(uint64).max) + 1;
+        bytes32 w = keccak256("w-above-uint64");
+        bytes32 f = keccak256("f-above-uint64");
+
+        _record(w, f, height);
+
+        _assertRoots(height, w, f);
+        _assertLatest(height, w, f);
+    }
+
+    function test_record_checkpointZero_revertsStaleRoot() public {
         bytes32 w = keccak256("checkpoint-zero-w");
         bytes32 f = keccak256("checkpoint-zero-f");
 
-        _record(w, f, 0);
+        vm.expectRevert(StaleRoot.selector);
+        vm.prank(aliasedSender);
+        manager.record(w, f, 0);
 
-        _assertRoots(0, w, f);
-        _assertLatest(0, w, f);
+        _assertRoots(0, bytes32(0), bytes32(0));
+        _assertLatest(0, bytes32(0), bytes32(0));
     }
 
     function test_record_zeroWithdrawalRoot_revertsInvalidRootNoStateChange() public {
@@ -172,13 +185,14 @@ contract TZRootManagerTest is Test {
     }
 
     function testFuzz_record_monotonicDecisionTree(
-        uint64 firstHeight,
+        uint256 firstHeight,
         bytes32 firstW,
         bytes32 firstF,
-        uint64 secondHeight,
+        uint256 secondHeight,
         bytes32 secondW,
         bytes32 secondF
     ) public {
+        vm.assume(firstHeight > 0);
         vm.assume(firstW != bytes32(0));
         vm.assume(firstF != bytes32(0));
         vm.assume(secondW != bytes32(0));

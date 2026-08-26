@@ -144,8 +144,9 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ///         commitment check runs at initialization. Set per implementation, not per clone.
     bool public immutable HAS_ROOT_CLAIM_PREIMAGE;
 
-    /// @notice The auto-delivery forwarder called after a successful anchor update, or the zero
-    ///         address to disable auto delivery. Set per implementation, not per clone.
+    /// @notice The auto-delivery forwarder called after game closure to enqueue the ASR's latest
+    ///         non-zero anchor, or the zero address to disable auto delivery. Set per
+    ///         implementation, not per clone.
     address public immutable POST_ANCHOR;
 
     /// @notice The maximum L1 gas forwarded to the auto-delivery call. The fixed cap keeps a
@@ -586,19 +587,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Try to update the anchor game first. Won't always succeed because delays can lead
         // to situations in which this game might not be eligible to be a new anchor game.
-        //
-        // On a successful anchor update, best-effort forward the current roots to the target
-        // chain. The forwarder call is gas-capped and isolated by an inner try/catch: a failure
-        // only emits an event and never rolls back the anchor update, bond distribution, or game
-        // closure. The forwarder reads the current anchor itself, so the game passes no arguments.
-        try ANCHOR_STATE_REGISTRY.setAnchorState(IDisputeGame(address(this))) {
-            if (POST_ANCHOR != address(0)) {
-                try IPostAnchor(POST_ANCHOR).push{gas: POST_ANCHOR_GAS}() {}
-                catch {
-                    emit PostAnchorFailed(address(this));
-                }
-            }
-        } catch {}
+        try ANCHOR_STATE_REGISTRY.setAnchorState(IDisputeGame(address(this))) {} catch {}
 
         // Check if the game is a proper game, which will determine the bond distribution mode.
         bool properGame = ANCHOR_STATE_REGISTRY.isGameProper(IDisputeGame(address(this)));
@@ -613,6 +602,25 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
 
         // Emit an event to signal that the game has been closed.
         emit GameClosed(bondDistributionMode);
+
+        // Best-effort enqueue the ASR's latest anchor after all game closure state is finalized.
+        // This is intentionally independent of whether this call advanced the ASR: another caller
+        // may have done so first. Target-chain height checks make duplicate deliveries harmless.
+        _pushLatestAnchor();
+    }
+
+    /// @notice Asks PostAnchor to enqueue the ASR's latest anchor.
+    /// @dev The forwarder interaction is gas-capped and isolated so delivery cannot block game
+    ///      closure or bond distribution. PostAnchor remains permissionless for retries after this
+    ///      one-shot close hook. A zero anchor game represents the starting anchor root, which has
+    ///      no game roots to forward.
+    function _pushLatestAnchor() internal {
+        if (POST_ANCHOR == address(0) || address(ANCHOR_STATE_REGISTRY.anchorGame()) == address(0)) return;
+
+        try IPostAnchor(POST_ANCHOR).push{gas: POST_ANCHOR_GAS}() {}
+        catch {
+            emit PostAnchorFailed(address(this));
+        }
     }
 
     /// @notice Determines if the game is finished.

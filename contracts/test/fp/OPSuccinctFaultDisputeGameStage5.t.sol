@@ -61,6 +61,7 @@ contract Stage5PostAnchorProbe {
 
 contract OPSuccinctFaultDisputeGameStage5Test is Test {
     event PostAnchorFailed(address indexed game);
+    event GameClosed(BondDistributionMode mode);
 
     DisputeGameFactory internal factory;
     ProxyAdmin internal proxyAdmin;
@@ -334,12 +335,30 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         assertEq(postAnchorProbe.calls(), 1, "repeat close must not resend");
     }
 
+    function test_closeGame_anchorSetByAnotherCallerStillPushesLatest() public {
+        _registerImpl(true, address(postAnchorProbe));
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+
+        _resolveAndFinalize(game);
+        vm.prank(address(0xBEEF));
+        anchorStateRegistry.setAnchorState(IDisputeGame(address(game)));
+
+        assertEq(postAnchorProbe.calls(), 0, "direct ASR update must not call forwarder");
+        game.closeGame();
+
+        assertEq(address(anchorStateRegistry.anchorGame()), address(game));
+        assertEq(postAnchorProbe.calls(), 1, "close must sync an anchor advanced by another caller");
+        _assertClosedNormal(game);
+    }
+
     function test_closeGame_postAnchorRevertEmitsFailureButCloses() public {
         _registerImpl(true, address(postAnchorProbe));
         OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
         postAnchorProbe.setMode(Stage5PostAnchorProbe.Mode.Revert);
 
         _resolveAndFinalize(game);
+        vm.expectEmit(false, false, false, true, address(game));
+        emit GameClosed(BondDistributionMode.NORMAL);
         vm.expectEmit(true, false, false, true, address(game));
         emit PostAnchorFailed(address(game));
         game.closeGame();
@@ -354,6 +373,8 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         postAnchorProbe.setMode(Stage5PostAnchorProbe.Mode.BurnGas);
 
         _resolveAndFinalize(game);
+        vm.expectEmit(false, false, false, true, address(game));
+        emit GameClosed(BondDistributionMode.NORMAL);
         vm.expectEmit(true, false, false, true, address(game));
         emit PostAnchorFailed(address(game));
         game.closeGame();
@@ -382,6 +403,8 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
         _resolveAndFinalize(game);
         uint256 beforeBalance = proposer.balance;
+        vm.expectEmit(false, false, false, true, address(game));
+        emit GameClosed(BondDistributionMode.NORMAL);
         vm.expectEmit(true, false, false, true, address(game));
         emit PostAnchorFailed(address(game));
         game.claimCredit(proposer);

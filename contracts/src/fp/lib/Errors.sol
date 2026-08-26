@@ -68,12 +68,6 @@ error InvalidPushGasLimit();
 /// @notice Thrown when the anchor state registry reports no current anchor game.
 error NoAnchorGame();
 
-/// @notice Thrown when the current anchor game's claim is not valid.
-error InvalidAnchorGame();
-
-/// @notice Thrown when the source sequence number does not fit within 64 bits.
-error SequenceNumberOverflow();
-
 // -- TZRootManager (target-chain sink) --
 
 /// @notice Thrown when the caller is not the aliased authorized forwarder.
@@ -83,6 +77,5 @@ error Unauthorized();
 ///         unrecorded checkpoint in the query API.
 error InvalidRoot();
 
-/// @notice Thrown after initialization when a submitted checkpoint height is not strictly newer
-///         than the stored latest height.
+/// @notice Thrown when a checkpoint height is not strictly greater than the latest recorded height.
 error StaleRoot();
