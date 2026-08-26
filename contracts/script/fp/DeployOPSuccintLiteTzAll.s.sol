@@ -11,8 +11,8 @@ import { IAnchorStateRegistry } from "interfaces/dispute/IAnchorStateRegistry.so
 import { ISystemConfig } from "interfaces/L1/ISystemConfig.sol";
 import { MockSystemConfig } from "src/utils/MockSystemConfig.sol";
 import {AccessManager} from "../../src/fp/AccessManager.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
 import { Duration, GameType, Hash, Proposal } from "src/dispute/lib/Types.sol";
 import { OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE } from "src/lib/Types.sol";

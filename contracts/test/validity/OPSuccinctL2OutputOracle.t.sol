@@ -4,7 +4,7 @@ pragma solidity ^0.8.15;
 import {Test} from "forge-std/Test.sol";
 import {Utils} from "../helpers/Utils.sol";
 import {OPSuccinctL2OutputOracle} from "../../src/validity/OPSuccinctL2OutputOracle.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 import {console} from "forge-std/console.sol";
 
 contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {

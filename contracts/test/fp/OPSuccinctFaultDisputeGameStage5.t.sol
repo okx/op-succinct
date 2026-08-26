@@ -28,8 +28,8 @@ import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 
 contract Stage5PostAnchorProbe {
     enum Mode {

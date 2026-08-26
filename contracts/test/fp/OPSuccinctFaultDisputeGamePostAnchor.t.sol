@@ -4,7 +4,7 @@ pragma solidity ^0.8.15;
 import {Test} from "forge-std/Test.sol";
 import {Duration} from "src/dispute/lib/Types.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 import {AccessManager} from "src/fp/AccessManager.sol";
 import {OPSuccinctFaultDisputeGame} from "src/fp/OPSuccinctFaultDisputeGame.sol";

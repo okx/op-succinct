@@ -6,7 +6,7 @@ import {ISemver} from "interfaces/universal/ISemver.sol";
 import {Types} from "@optimism/src/libraries/Types.sol";
 import {AggregationOutputs} from "../lib/Types.sol";
 import {Constants} from "@optimism/src/libraries/Constants.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {GameType, GameTypes, Claim} from "@optimism/src/dispute/lib/Types.sol";
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";

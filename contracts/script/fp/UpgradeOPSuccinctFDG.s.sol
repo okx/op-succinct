@@ -9,7 +9,7 @@ import {GameType, Duration} from "src/dispute/lib/Types.sol";
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 // Contracts

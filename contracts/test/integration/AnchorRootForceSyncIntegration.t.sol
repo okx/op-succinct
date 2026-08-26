@@ -36,8 +36,8 @@ import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 import {IOptimismPortal2} from "interfaces/L1/IOptimismPortal2.sol";
 import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 
 /// @notice Cross-chain deposit surface stand-in for the OptimismPortal. It records the exact
 ///         deposit arguments the forwarder emits so an integration test can replay the message on

@@ -9,14 +9,14 @@ import {GameType, Duration} from "src/dispute/lib/Types.sol";
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 // Contracts
 import {AccessManager} from "../../src/fp/AccessManager.sol";
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
