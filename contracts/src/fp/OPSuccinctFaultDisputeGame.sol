@@ -149,10 +149,6 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     ///         implementation, not per clone.
     address public immutable POST_ANCHOR;
 
-    /// @notice The maximum L1 gas forwarded to the auto-delivery call. The fixed cap keeps a
-    ///         forwarder failure from ever blocking game closure or bond distribution.
-    uint256 internal constant POST_ANCHOR_GAS = 300_000;
-
     /// @notice Semantic version.
     /// @custom:semver 2.1.0
     string public constant version = "2.1.0";
@@ -610,14 +606,14 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     }
 
     /// @notice Asks PostAnchor to enqueue the ASR's latest anchor.
-    /// @dev The forwarder interaction is gas-capped and isolated so delivery cannot block game
-    ///      closure or bond distribution. PostAnchor remains permissionless for retries after this
-    ///      one-shot close hook. A zero anchor game represents the starting anchor root, which has
-    ///      no game roots to forward.
+    /// @dev The forwarder interaction is isolated so delivery failure cannot block game closure or
+    ///      bond distribution. PostAnchor remains permissionless for retries after this one-shot
+    ///      close hook. A zero anchor game represents the starting anchor root, which has no game
+    ///      roots to forward.
     function _pushLatestAnchor() internal {
         if (POST_ANCHOR == address(0) || address(ANCHOR_STATE_REGISTRY.anchorGame()) == address(0)) return;
 
-        try IPostAnchor(POST_ANCHOR).push{gas: POST_ANCHOR_GAS}() {}
+        try IPostAnchor(POST_ANCHOR).push() {}
         catch {
             emit PostAnchorFailed(address(this));
         }
