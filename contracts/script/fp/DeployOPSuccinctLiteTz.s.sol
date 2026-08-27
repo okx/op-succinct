@@ -64,6 +64,13 @@ import {TZBootstrapExtraData} from "../../test/helpers/TZBootstrapExtraData.sol"
 ///   BOOTSTRAP_ROOT_CLAIM (bytes32)      — optional; if set, must equal
 ///                                         keccak256(blockHash.appHash.withdrawalRoot.forceRoot)
 ///
+/// PostAnchor configuration:
+///   - `config/tz/opsuccinctfdgconfig.json` is the sole source of the implementation's
+///     `hasRootClaimPreimage` and `postAnchorAddress` constructor arguments.
+///   - A zero `postAnchorAddress` is rejected by default. Set
+///     `ALLOW_DEGRADED_POST_ANCHOR=true` only when intentionally deploying without automatic
+///     anchor synchronization.
+///
 /// Caller requirements:
 ///   - The broadcasting EOA must be whitelisted as a proposer in AccessManager
 ///     (or AccessManager must be in permissionless mode), otherwise initialize()
@@ -71,6 +78,12 @@ import {TZBootstrapExtraData} from "../../test/helpers/TZBootstrapExtraData.sol"
 ///   - The broadcasting EOA must hold at least config.initialBondWei to fund
 ///     factory.create{value: ...}().
 contract DeployOPSuccinctLiteTz is Script, Utils {
+    /// @notice Resolved constructor configuration shared by bootstrap and production implementations.
+    struct ImplementationConfig {
+        bool hasRootClaimPreimage;
+        address postAnchor;
+    }
+
     /// @notice Bundle returned by run() for downstream tooling.
     struct DeployResult {
         address bootstrapImpl;
@@ -85,6 +98,7 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         // 1. Load config + env
         // -----------------------------------------------------------------
         FDGConfig memory config = readFDGJson("config/tz/opsuccinctfdgconfig.json");
+        ImplementationConfig memory implementationConfig = _resolveImplementationConfig(config);
 
         address factoryAddress = vm.envAddress("FACTORY_ADDRESS");
         address registryAddress = vm.envAddress("ANCHOR_STATE_REGISTRY");
@@ -128,7 +142,8 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
             sp1Config,
             IAnchorStateRegistry(registryAddress),
             accessManagerContract,
-            config.challengerBondWei
+            config.challengerBondWei,
+            implementationConfig
         );
         console.log("Bootstrap impl deployed at:", address(bootstrapImpl));
 
@@ -150,7 +165,8 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
             sp1Config,
             IAnchorStateRegistry(registryAddress),
             accessManagerContract,
-            config.challengerBondWei
+            config.challengerBondWei,
+            implementationConfig
         );
         console.log("Production impl deployed at:", address(productionImpl));
 
@@ -347,9 +363,10 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         SP1Config memory sp1Config,
         IAnchorStateRegistry registry,
         AccessManager accessManager,
-        uint256 challengerBondWei
+        uint256 challengerBondWei,
+        ImplementationConfig memory implementationConfig
     ) internal returns (OPSuccinctFaultDisputeGame) {
-        return new OPSuccinctFaultDisputeGame(
+        OPSuccinctFaultDisputeGame implementation = new OPSuccinctFaultDisputeGame(
             Duration.wrap(uint64(maxChallengeDuration)),
             Duration.wrap(uint64(maxProveDuration)),
             IDisputeGameFactory(address(factory)),
@@ -360,8 +377,44 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
             challengerBondWei,
             registry,
             accessManager,
-            true,
-            vm.envOr("POST_ANCHOR_ADDRESS", address(0))
+            implementationConfig.hasRootClaimPreimage,
+            implementationConfig.postAnchor
         );
+
+        require(
+            implementation.HAS_ROOT_CLAIM_PREIMAGE() == implementationConfig.hasRootClaimPreimage,
+            "HAS_ROOT_CLAIM_PREIMAGE mismatch"
+        );
+        require(implementation.POST_ANCHOR() == implementationConfig.postAnchor, "POST_ANCHOR mismatch");
+
+        return implementation;
+    }
+
+    /// @dev Resolves the immutable implementation configuration before broadcasting any transaction.
+    ///      TradeZone always requires the extended 164-byte claim layout. Automatic synchronization
+    ///      may be disabled only through an explicit degraded-mode opt-in.
+    function _resolveImplementationConfig(FDGConfig memory config)
+        internal
+        view
+        returns (ImplementationConfig memory implementationConfig)
+    {
+        bool allowDegradedPostAnchor = vm.envOr("ALLOW_DEGRADED_POST_ANCHOR", false);
+        return _validateImplementationConfig(config, allowDegradedPostAnchor);
+    }
+
+    function _validateImplementationConfig(FDGConfig memory config, bool allowDegradedPostAnchor)
+        internal
+        pure
+        returns (ImplementationConfig memory implementationConfig)
+    {
+        require(config.hasRootClaimPreimage, "TradeZone requires root-claim preimages");
+        require(
+            config.postAnchorAddress != address(0) || allowDegradedPostAnchor,
+            "postAnchorAddress is zero; explicitly enable degraded mode"
+        );
+
+        implementationConfig = ImplementationConfig({
+            hasRootClaimPreimage: config.hasRootClaimPreimage, postAnchor: config.postAnchorAddress
+        });
     }
 }

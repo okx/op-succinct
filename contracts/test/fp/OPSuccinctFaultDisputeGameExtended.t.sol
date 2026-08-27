@@ -178,9 +178,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         parentGame = OPSuccinctFaultDisputeGame(
             address(
                 factory.create{value: INIT_BOND}(
-                    gameType,
-                    Claim.wrap(keccak256("genesis")),
-                    abi.encodePacked(uint256(1000), type(uint32).max)
+                    gameType, Claim.wrap(keccak256("genesis")), abi.encodePacked(uint256(1000), type(uint32).max)
                 )
             )
         );
@@ -194,13 +192,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         // claimCredit() triggers closeGame() which advances anchor to parentGame's l2SeqNum,
         // after which parentGame can no longer be used as a parent via index.
         game = OPSuccinctFaultDisputeGame(
-            address(
-                factory.create{value: INIT_BOND}(
-                    gameType,
-                    rootClaim,
-                    abi.encodePacked(l2BlockNumber, parentIndex)
-                )
-            )
+            address(factory.create{value: INIT_BOND}(gameType, rootClaim, abi.encodePacked(l2BlockNumber, parentIndex)))
         );
 
         parentGame.claimCredit(proposer);
@@ -222,9 +214,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         return OPSuccinctFaultDisputeGame(
             address(
                 factory.create{value: INIT_BOND}(
-                    gameType,
-                    Claim.wrap(_claimSeed),
-                    abi.encodePacked(_l2Block, _parentIdx)
+                    gameType, Claim.wrap(_claimSeed), abi.encodePacked(_l2Block, _parentIdx)
                 )
             )
         );
@@ -290,9 +280,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         vm.deal(proposer, INIT_BOND);
         vm.expectRevert(InvalidParentGame.selector);
         factory.create{value: INIT_BOND}(
-            gameType,
-            Claim.wrap(keccak256("child-of-loser")),
-            abi.encodePacked(uint256(3000), uint32(1))
+            gameType, Claim.wrap(keccak256("child-of-loser")), abi.encodePacked(uint256(3000), uint32(1))
         );
     }
 

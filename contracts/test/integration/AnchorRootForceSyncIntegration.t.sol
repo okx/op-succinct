@@ -422,6 +422,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         // Closing the older game catches up directly to the current ASR anchor. Since only the
         // latest checkpoint matters, game1 is intentionally not enqueued.
         game1.closeGame();
+        assertEq(uint8(game1.bondDistributionMode()), uint8(BondDistributionMode.NORMAL), "older game closed normally");
         assertEq(depositPortal.callCount(), 1, "only current latest enqueued");
         assertEq(
             depositPortal.lastData(), abi.encodeCall(ITZRootManager.record, (w2, f2, SEQ_2)), "game2 roots enqueued"

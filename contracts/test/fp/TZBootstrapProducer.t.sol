@@ -31,13 +31,11 @@ import {MockSystemConfig} from "../../src/utils/MockSystemConfig.sol";
 import {TZBootstrapExtraData} from "../helpers/TZBootstrapExtraData.sol";
 
 /// @notice Deterministic verification of the TradeZone bootstrap producer/encoder.
-/// @dev The TradeZone deploy script (`script/fp/DeployOPSuccinctLiteTz.s.sol`) is excluded from
-///      compilation by `foundry.toml` because of a pre-existing SP1-verifier pragma conflict, so it
-///      cannot be exercised directly here. Its bootstrap-game creation path calls
+/// @dev The TradeZone deploy script (`script/fp/DeployOPSuccinctLiteTz.s.sol`) compiles as part of
+///      the Foundry project. Its bootstrap-game creation path calls
 ///      `TZBootstrapExtraData.encodeExtended` / `TZBootstrapExtraData.commitRootClaim`; this suite
-///      compiles and exercises those exact functions, so the tested encoding IS the encoding the
-///      script performs (no drift). It asserts the 164-byte layout and the keccak commitment order
-///      in isolation, and round-trips the encoder output through a real extended
+///      exercises those exact functions and asserts the 164-byte layout and keccak commitment order
+///      in isolation. It also round-trips the encoder output through a real extended
 ///      `OPSuccinctFaultDisputeGame` created via the factory: the extended implementation accepts
 ///      the encoder's 164-byte payload (getters return the committed preimages) and rejects the old
 ///      36-byte legacy payload with the design error `BadExtraData` (the IR-001 failure reproduced).
