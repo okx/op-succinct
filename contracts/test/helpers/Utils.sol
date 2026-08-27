@@ -7,7 +7,7 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {Proxy} from "@optimism/src/universal/Proxy.sol";
 import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 import {OPSuccinctL2OutputOracle} from "../../src/validity/OPSuccinctL2OutputOracle.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 
 contract Utils is Test, JSONDecoder {
     function deployWithConfig(L2OOConfig memory cfg) public returns (address) {

@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.15;
 
-import { Script, console2 } from "forge-std/Script.sol";
-import { Proxy } from "src/universal/Proxy.sol";
-import { DisputeGameFactory } from "src/dispute/DisputeGameFactory.sol";
-import { AnchorStateRegistry } from "src/dispute/AnchorStateRegistry.sol";
-import { IDisputeGameFactory } from "interfaces/dispute/IDisputeGameFactory.sol";
-import { IDisputeGame } from "interfaces/dispute/IDisputeGame.sol";
-import { IAnchorStateRegistry } from "interfaces/dispute/IAnchorStateRegistry.sol";
-import { ISystemConfig } from "interfaces/L1/ISystemConfig.sol";
-import { MockSystemConfig } from "src/utils/MockSystemConfig.sol";
+import {Script, console2} from "forge-std/Script.sol";
+import {Proxy} from "src/universal/Proxy.sol";
+import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
+import {AnchorStateRegistry} from "src/dispute/AnchorStateRegistry.sol";
+import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
+import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
+import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
+import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
+import {MockSystemConfig} from "src/utils/MockSystemConfig.sol";
 import {AccessManager} from "../../src/fp/AccessManager.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
-import { Duration, GameType, Hash, Proposal } from "src/dispute/lib/Types.sol";
-import { OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE } from "src/lib/Types.sol";
+import {Duration, GameType, Hash, Proposal} from "src/dispute/lib/Types.sol";
+import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 contract DeployOPSuccinctLiteTzAll is Script {
     struct DeployResult {
@@ -47,7 +47,8 @@ contract DeployOPSuccinctLiteTzAll is Script {
 
         AnchorStateRegistry asr = _deployASR(deployer, factory, anchorBlockHash, anchorStateHash, anchorL2Block);
 
-        AccessManager accessManager = _deployAccessManager(fallbackTimeoutFpSecs, address(factory), proposer_, challenger_);
+        AccessManager accessManager =
+            _deployAccessManager(fallbackTimeoutFpSecs, address(factory), proposer_, challenger_);
 
         OPSuccinctFaultDisputeGame gameImpl = _deployGameImpl(factory, asr, accessManager);
 
@@ -69,9 +70,13 @@ contract DeployOPSuccinctLiteTzAll is Script {
         });
     }
 
-    function configureFactory(address, address factoryAddress, uint32 gameTypeValue, uint256 initialBondWei, address gameImplAddress)
-        internal
-    {
+    function configureFactory(
+        address,
+        address factoryAddress,
+        uint32 gameTypeValue,
+        uint256 initialBondWei,
+        address gameImplAddress
+    ) internal {
         DisputeGameFactory factory = DisputeGameFactory(factoryAddress);
         GameType gameType = GameType.wrap(gameTypeValue);
 
@@ -81,16 +86,14 @@ contract DeployOPSuccinctLiteTzAll is Script {
         console2.log("Factory configured with game type:", uint256(gameTypeValue));
     }
 
-
-    function _deployGameImpl(
-        DisputeGameFactory factory,
-        AnchorStateRegistry asr,
-        AccessManager accessManager
-    ) internal returns (OPSuccinctFaultDisputeGame) {
+    function _deployGameImpl(DisputeGameFactory factory, AnchorStateRegistry asr, AccessManager accessManager)
+        internal
+        returns (OPSuccinctFaultDisputeGame)
+    {
         SP1MockVerifier sp1Verifier = new SP1MockVerifier();
         bytes32 rollupConfigHash = vm.envOr("ROLLUP_CONFIG_HASH", bytes32(0));
-        // in ci, sp1 proof is mocked. So we donot concern the AGGREGATION_VKEY correctness. So leave it zero. 
-        bytes32 aggregationVkey = vm.envOr("AGGREGATION_VKEY", bytes32(0)); 
+        // in ci, sp1 proof is mocked. So we donot concern the AGGREGATION_VKEY correctness. So leave it zero.
+        bytes32 aggregationVkey = vm.envOr("AGGREGATION_VKEY", bytes32(0));
         bytes32 rangeVkeyCommitment = vm.envOr("RANGE_VKEY_COMMITMENT", bytes32(0));
         return new OPSuccinctFaultDisputeGame(
             Duration.wrap(3600),
@@ -102,7 +105,9 @@ contract DeployOPSuccinctLiteTzAll is Script {
             rangeVkeyCommitment,
             100000,
             IAnchorStateRegistry(address(asr)),
-            accessManager
+            accessManager,
+            true,
+            vm.envOr("POST_ANCHOR_ADDRESS", address(0))
         );
     }
 
@@ -137,10 +142,7 @@ contract DeployOPSuccinctLiteTzAll is Script {
         bytes32 anchorBlockHash,
         bytes32 anchorStateHash,
         uint256 anchorL2Block
-    )
-        internal
-        returns (AnchorStateRegistry)
-    {
+    ) internal returns (AnchorStateRegistry) {
         MockSystemConfig sc = new MockSystemConfig(deployer);
         AnchorStateRegistry asrImpl = new AnchorStateRegistry(0);
         Proxy p = new Proxy(deployer);

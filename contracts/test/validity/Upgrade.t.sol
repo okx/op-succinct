@@ -49,6 +49,10 @@ contract UpgradeTest is Test, Utils {
     /// NOTE: On the next upgrade, this test should additionally check that the non-genesis
     ///       opSuccinctConfigs are preserved.
     function testUpgradeExistingContract() public {
+        if (!vm.envExists("L1_RPC")) {
+            vm.skip(true, "L1_RPC is required for the Sepolia fork upgrade test");
+        }
+
         // Fork Sepolia to test with real deployed contract
         vm.createSelectFork(vm.envString("L1_RPC"), 8621548);
 

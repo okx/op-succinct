@@ -9,31 +9,21 @@ import {GameType, Duration} from "src/dispute/lib/Types.sol";
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 // Contracts
 import {AccessManager} from "../../src/fp/AccessManager.sol";
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 import {Transactor} from "@optimism/src/periphery/Transactor.sol";
 
 // Utils
 import {Utils} from "../../test/helpers/Utils.sol";
-import {SP1Verifier as SP1VerifierPlonk} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierPlonk.sol";
-import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
-import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
-    function run()
-        public
-        returns (
-            address gameImplementation,
-            address sp1Verifier,
-            address accessManager
-        )
-    {
+    function run() public returns (address gameImplementation, address sp1Verifier, address accessManager) {
         vm.startBroadcast();
 
         // Load configuration from JSON file (priority)
@@ -47,19 +37,14 @@ contract DeployOPSuccinctLite is Script, Utils {
         AccessManager accessManagerContract = AccessManager(0x33D211daB418F65Ca71035055bCF557808aCa13f);
         console.log("Using existing AccessManager at:", address(accessManagerContract));
 
-        // Step 5: Deploy or get SP1 verifier
-        // SP1Config memory sp1Config = deploySP1Verifier(registryAddress
-        //     config.useSp1MockVerifier,
-        //     config.rollupConfigHash,
-        //     config.aggregationVkey,
-        //     config.rangeVkeyCommitment
-        // );
-
-        SP1Config memory sp1Config;
-        sp1Config.rollupConfigHash = config.rollupConfigHash;
-        sp1Config.aggregationVkey = config.aggregationVkey;
-        sp1Config.rangeVkeyCommitment = config.rangeVkeyCommitment;
-        sp1Config.verifierAddress = address(0x397A5f7f3dBd538f23DE225B51f532c34448dA9B);
+        // Step 5: Deploy a mock verifier or use the configured production verifier.
+        SP1Config memory sp1Config = deploySP1Verifier(
+            config.useSp1MockVerifier,
+            config.verifierAddress,
+            config.rollupConfigHash,
+            config.aggregationVkey,
+            config.rangeVkeyCommitment
+        );
 
         // Step 6: Deploy OPSuccinctFaultDisputeGame implementation
         OPSuccinctFaultDisputeGame gameImpl = deployGameImplementation(
@@ -77,15 +62,9 @@ contract DeployOPSuccinctLite is Script, Utils {
         // Step 7: Configure factory with initial bond and game implementation
         //configureFactory(factoryAddress, config.gameType, config.initialBondWei, address(gameImpl));
 
-
-
         vm.stopBroadcast();
 
-        return (
-            address(gameImpl),
-            sp1Config.verifierAddress,
-            address(accessManagerContract)
-        );
+        return (address(gameImpl), sp1Config.verifierAddress, address(accessManagerContract));
     }
 
     function configureFactory(
@@ -96,18 +75,15 @@ contract DeployOPSuccinctLite is Script, Utils {
     ) internal {
         // Note: Factory owner is a Transactor contract, we need to use CALL through it
         address transactorAddress = vm.envAddress("TRANSACTOR");
-        
+
         Transactor transactor = Transactor(transactorAddress);
         GameType gameType = GameType.wrap(gameTypeValue);
-        
+
         // Call setInitBond through Transactor's CALL
         // CALL executes Factory code with msg.sender = Transactor address
-        bytes memory setInitBondData = abi.encodeWithSelector(
-            DisputeGameFactory.setInitBond.selector,
-            gameType,
-            initialBondWei
-        );
-        
+        bytes memory setInitBondData =
+            abi.encodeWithSelector(DisputeGameFactory.setInitBond.selector, gameType, initialBondWei);
+
         // Note: Transactor.CALL will revert if the call fails, so we use try-catch
         // to get better error messages
         try transactor.CALL(factoryAddress, setInitBondData, 0) returns (bool success1, bytes memory) {
@@ -117,15 +93,12 @@ contract DeployOPSuccinctLite is Script, Utils {
         } catch (bytes memory) {
             revert("Failed to set initial bond via Transactor: low-level call reverted");
         }
-        
+
         // Call setImplementation through Transactor's CALL
         // Use explicit signature for overloaded function (setImplementation has multiple overloads)
-        bytes memory setImplementationData = abi.encodeWithSignature(
-            "setImplementation(uint32,address)",
-            GameType.unwrap(gameType),
-            gameImplAddress
-        );
-        
+        bytes memory setImplementationData =
+            abi.encodeWithSignature("setImplementation(uint32,address)", GameType.unwrap(gameType), gameImplAddress);
+
         try transactor.CALL(factoryAddress, setImplementationData, 0) returns (bool success2, bytes memory) {
             require(success2, "Transactor.CALL returned false for setImplementation");
         } catch Error(string memory reason) {
@@ -145,10 +118,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         address[] memory challengerAddresses
     ) internal returns (AccessManager) {
         // Deploy the access manager contract
-        AccessManager accessManager = new AccessManager(
-            fallbackTimeoutFpSecs,
-            IDisputeGameFactory(factoryAddress)
-        );
+        AccessManager accessManager = new AccessManager(fallbackTimeoutFpSecs, IDisputeGameFactory(factoryAddress));
         console.log("Access manager deployed at:", address(accessManager));
         console.log("Permissionless fallback timeout (seconds):", fallbackTimeoutFpSecs);
 
@@ -181,6 +151,7 @@ contract DeployOPSuccinctLite is Script, Utils {
 
     function deploySP1Verifier(
         bool useSp1MockVerifier,
+        address verifierAddress,
         bytes32 rollupConfigHash,
         bytes32 aggregationVkey,
         bytes32 rangeVkeyCommitment
@@ -196,14 +167,9 @@ contract DeployOPSuccinctLite is Script, Utils {
             sp1Config.verifierAddress = address(sp1Verifier);
             console.log("Using SP1 Mock Verifier:", address(sp1Verifier));
         } else {
-            SP1VerifierPlonk sp1VerifierPlonk = new SP1VerifierPlonk();
-            SP1VerifierGroth16 sp1VerifierGroth16 = new SP1VerifierGroth16();
-            // Deploy gateway with current transaction sender as owner
-            SP1VerifierGateway sp1VerifierGateway = new SP1VerifierGateway(tx.origin);
-            sp1VerifierGateway.addRoute(address(sp1VerifierPlonk));
-            sp1VerifierGateway.addRoute(address(sp1VerifierGroth16));
-            sp1Config.verifierAddress = address(sp1VerifierGateway);
-            console.log("Using SP1 Verifier Gateway:", address(sp1VerifierGateway));
+            require(verifierAddress != address(0), "Missing SP1 verifier address");
+            sp1Config.verifierAddress = verifierAddress;
+            console.log("Using SP1 Verifier Gateway:", verifierAddress);
         }
 
         return sp1Config;
@@ -228,7 +194,9 @@ contract DeployOPSuccinctLite is Script, Utils {
             sp1Config.rangeVkeyCommitment,
             challengerBondWei,
             registry,
-            accessManager
+            accessManager,
+            false,
+            address(0)
         );
     }
 }

@@ -17,7 +17,12 @@ set -euo pipefail
 #   BOOTSTRAP_L2_BLOCK_NUMBER  uint256 l2 block number for the bootstrap game
 #
 # Optional envs:
-#   RPC_URL                    defaults to http://127.0.0.1:8545
+#   RPC_URL                       defaults to http://127.0.0.1:8545
+#   ALLOW_DEGRADED_POST_ANCHOR    set to true only to intentionally deploy with
+#                                  config.postAnchorAddress == address(0)
+#
+# PostAnchor is configured only by config/tz/opsuccinctfdgconfig.json. Production
+# deployments must set a non-zero postAnchorAddress in that file.
 #
 # The broadcasting EOA must:
 #   - be a whitelisted proposer (or AccessManager in permissionless mode)

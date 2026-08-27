@@ -9,7 +9,7 @@ import {GameType, Duration} from "src/dispute/lib/Types.sol";
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
 // Contracts
@@ -39,7 +39,9 @@ contract UpgradeOPSuccinctFDG is Script {
             vm.envBytes32("RANGE_VKEY_COMMITMENT"),
             vm.envOr("CHALLENGER_BOND_WEI", uint256(0.001 ether)),
             IAnchorStateRegistry(vm.envAddress("ANCHOR_STATE_REGISTRY")),
-            AccessManager(vm.envAddress("ACCESS_MANAGER"))
+            AccessManager(vm.envAddress("ACCESS_MANAGER")),
+            vm.envOr("HAS_ROOT_CLAIM_PREIMAGE", false),
+            vm.envOr("POST_ANCHOR_ADDRESS", address(0))
         );
 
         console.log("New OPSuccinctFaultDisputeGame implementation deployed at: ", address(newImpl));
@@ -70,7 +72,9 @@ contract UpgradeOPSuccinctFDG is Script {
             vm.envBytes32("RANGE_VKEY_COMMITMENT"),
             vm.envOr("CHALLENGER_BOND_WEI", uint256(0.001 ether)),
             IAnchorStateRegistry(vm.envAddress("ANCHOR_STATE_REGISTRY")),
-            AccessManager(vm.envAddress("ACCESS_MANAGER"))
+            AccessManager(vm.envAddress("ACCESS_MANAGER")),
+            vm.envOr("HAS_ROOT_CLAIM_PREIMAGE", false),
+            vm.envOr("POST_ANCHOR_ADDRESS", address(0))
         );
 
         // Generate the calldata for setImplementation (using explicit signature for overloaded function).
