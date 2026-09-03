@@ -405,12 +405,18 @@ impl OPStackGameValidatorConfig {
 pub struct TzGameValidatorConfig {
     /// The fixed witness-builder endpoint used for all TZ claim validation.
     pub l2_rpc: Url,
+    /// The locally-configured TZ chain id. Used to reject witness-builder responses that
+    /// belong to a different chain (spec §7.3 — "防查错链"); MUST be non-zero.
+    pub chain_id: u64,
 }
 
 #[cfg(feature = "tz")]
 impl TzGameValidatorConfig {
     pub fn from_env() -> Result<Self> {
-        Ok(Self { l2_rpc: Self::parse_l2_rpc(&env::var("L2_RPC")?)? })
+        Ok(Self {
+            l2_rpc: Self::parse_l2_rpc(&env::var("L2_RPC")?)?,
+            chain_id: Self::parse_chain_id(&env::var("TZ_CHAIN_ID")?)?,
+        })
     }
 
     fn parse_l2_rpc(value: &str) -> Result<Url> {
@@ -420,10 +426,22 @@ impl TzGameValidatorConfig {
         Ok(value.parse()?)
     }
 
+    fn parse_chain_id(value: &str) -> Result<u64> {
+        let id: u64 = match value.trim().parse() {
+            Ok(v) => v,
+            Err(_) => bail!("TZ_CHAIN_ID must be a non-negative integer"),
+        };
+        if id == 0 {
+            bail!("TZ_CHAIN_ID must be non-zero");
+        }
+        Ok(id)
+    }
+
     /// Log the TZ validator configuration using structured tracing fields.
     pub fn log(&self) {
         tracing::info!(
             l2_rpc = %self.l2_rpc,
+            chain_id = self.chain_id,
             "TradeZone game validator configuration loaded"
         );
     }

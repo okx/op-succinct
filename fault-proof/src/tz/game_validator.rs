@@ -35,8 +35,12 @@ where
     pub fn new(
         anchor_state_registry: AnchorStateRegistryInstance<P>,
         witness_builder_url: Url,
+        chain_id: u64,
     ) -> Result<Self> {
-        Ok(Self { anchor_state_registry, root_client: TzRootClient::new(witness_builder_url)? })
+        Ok(Self {
+            anchor_state_registry,
+            root_client: TzRootClient::new(witness_builder_url, chain_id)?,
+        })
     }
 
     #[cfg(test)]
@@ -161,16 +165,22 @@ where
 struct TzRootClient {
     base_url: Url,
     client: reqwest::Client,
+    /// Locally-configured TZ chain id; witness-builder responses that carry a different
+    /// `chainId` are rejected (spec §7.3 — guard against querying the wrong chain).
+    chain_id: u64,
 }
 
 impl TzRootClient {
-    fn new(base_url: Url) -> Result<Self> {
-        Self::new_with_timeout(base_url, ROOT_QUERY_TIMEOUT)
+    fn new(base_url: Url, chain_id: u64) -> Result<Self> {
+        Self::new_with_timeout(base_url, chain_id, ROOT_QUERY_TIMEOUT)
     }
 
-    fn new_with_timeout(mut base_url: Url, timeout: Duration) -> Result<Self> {
+    fn new_with_timeout(mut base_url: Url, chain_id: u64, timeout: Duration) -> Result<Self> {
         if !matches!(base_url.scheme(), "http" | "https") {
             bail!("witness-builder URL must use http or https");
+        }
+        if chain_id == 0 {
+            bail!("TZ chain_id must be non-zero");
         }
         if !base_url.path().ends_with('/') {
             let path = format!("{}/", base_url.path());
@@ -180,7 +190,7 @@ impl TzRootClient {
             .timeout(timeout)
             .build()
             .context("failed to build TZ witness-builder HTTP client")?;
-        Ok(Self { base_url, client })
+        Ok(Self { base_url, client, chain_id })
     }
 
     async fn query(&self, height: u64) -> Result<RootQuery> {
@@ -227,7 +237,9 @@ impl TzRootClient {
         }
 
         match data.status.as_str() {
-            "ready" => Ok(RootQuery::Ready { claim_root: validate_ready_response(data)? }),
+            "ready" => {
+                Ok(RootQuery::Ready { claim_root: validate_ready_response(data, self.chain_id)? })
+            }
             "running" => Ok(RootQuery::Running),
             "above_local_tip" => {
                 let local_tip = data
@@ -248,7 +260,20 @@ impl TzRootClient {
     }
 }
 
-fn validate_ready_response(data: RootResponse) -> Result<B256> {
+fn validate_ready_response(data: RootResponse, configured_chain_id: u64) -> Result<B256> {
+    // Guard against consuming a checkpoint that belongs to a different chain (spec §7.3). When the
+    // witness-builder advertises a chainId (v2 wire), it MUST be non-zero and match local config.
+    if let Some(chain_id) = data.chain_id {
+        if chain_id == 0 {
+            bail!("ready response chainId must be non-zero");
+        }
+        if chain_id != configured_chain_id {
+            bail!(
+                "ready response chainId {chain_id} does not match configured TZ chain id {configured_chain_id}"
+            );
+        }
+    }
+
     let canonical_block_hash = data
         .canonical_block_hash
         .ok_or_else(|| anyhow!("ready response missing canonicalBlockHash"))?;
@@ -296,6 +321,8 @@ struct ApiEnvelope<T> {
 struct RootResponse {
     height: u64,
     status: String,
+    #[serde(default)]
+    chain_id: Option<u64>,
     canonical_block_hash: Option<B256>,
     claim_root: Option<B256>,
     components: Option<RootComponents>,
@@ -324,6 +351,8 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
+    const TEST_CHAIN_ID: u64 = 196;
+
     fn request(now_timestamp: u64, deadline: u64) -> GameValidationRequest {
         GameValidationRequest {
             game_index: U256::ZERO,
@@ -342,7 +371,7 @@ mod tests {
         let asr = crate::contract::AnchorStateRegistry::new(Address::ZERO, provider);
         TzGameValidator::with_root_client(
             asr,
-            TzRootClient::new(server.uri().parse().unwrap()).unwrap(),
+            TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap(),
         )
     }
 
@@ -434,7 +463,7 @@ mod tests {
         let asr = crate::contract::AnchorStateRegistry::new(Address::ZERO, provider);
         let validator = TzGameValidator::with_root_client(
             asr,
-            TzRootClient::new(server.uri().parse().unwrap()).unwrap(),
+            TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap(),
         );
         let anchor_root = B256::repeat_byte(0xaa);
         asserter.push_success(&(anchor_root, U256::from(77)).abi_encode());
@@ -477,7 +506,7 @@ mod tests {
             let asr = crate::contract::AnchorStateRegistry::new(Address::ZERO, provider);
             let validator = TzGameValidator::with_root_client(
                 asr,
-                TzRootClient::new(server.uri().parse().unwrap()).unwrap(),
+                TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap(),
             );
             asserter.push_success(&(B256::repeat_byte(0xaa), U256::from(77)).abi_encode());
             mount_response_at_height(&server, 77, data).await;
@@ -510,7 +539,7 @@ mod tests {
             let asr = crate::contract::AnchorStateRegistry::new(Address::ZERO, provider);
             let validator = TzGameValidator::with_root_client(
                 asr,
-                TzRootClient::new(server.uri().parse().unwrap()).unwrap(),
+                TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap(),
             );
             asserter.push_success(&(B256::repeat_byte(0xaa), U256::from(77)).abi_encode());
             mount_template_at_height(&server, 77, template).await;
@@ -537,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn accepts_tradezone_production_root_wire_shapes() {
         let server = MockServer::start().await;
-        let client = TzRootClient::new(server.uri().parse().unwrap()).unwrap();
+        let client = TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap();
 
         mount_response(&server, ready_data(B256::repeat_byte(0xaa))).await;
         assert_eq!(
@@ -784,11 +813,71 @@ mod tests {
         .await;
         let client = TzRootClient::new_with_timeout(
             server.uri().parse().unwrap(),
+            TEST_CHAIN_ID,
             Duration::from_millis(10),
         )
         .unwrap();
 
         assert!(client.query(123).await.unwrap_err().to_string().contains("request"));
+    }
+
+    #[tokio::test]
+    async fn matching_chain_id_is_accepted() {
+        let server = MockServer::start().await;
+        mount_response(
+            &server,
+            serde_json::json!({
+                "height": 123,
+                "chainId": TEST_CHAIN_ID,
+                "status": "ready",
+                "canonicalBlockHash": B256::repeat_byte(0x11),
+                "claimRoot": B256::repeat_byte(0xaa)
+            }),
+        )
+        .await;
+        assert_eq!(validator(&server).validate(&request(0, 10_000)).await, GameValidation::Valid);
+    }
+
+    #[tokio::test]
+    async fn mismatched_chain_id_is_rejected_not_challenged() {
+        // A checkpoint that belongs to a different chain must NOT be trusted: reject as
+        // Unavailable (retry/alert) rather than silently passing or wrongly challenging (spec §7.3).
+        let server = MockServer::start().await;
+        mount_response(
+            &server,
+            serde_json::json!({
+                "height": 123,
+                "chainId": TEST_CHAIN_ID + 1,
+                "status": "ready",
+                "canonicalBlockHash": B256::repeat_byte(0x11),
+                "claimRoot": B256::repeat_byte(0xaa)
+            }),
+        )
+        .await;
+        assert!(matches!(
+            validator(&server).validate(&request(0, 10_000)).await,
+            GameValidation::Unavailable(UnavailableReason::DataUnavailable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn zero_chain_id_is_rejected() {
+        let server = MockServer::start().await;
+        mount_response(
+            &server,
+            serde_json::json!({
+                "height": 123,
+                "chainId": 0,
+                "status": "ready",
+                "canonicalBlockHash": B256::repeat_byte(0x11),
+                "claimRoot": B256::repeat_byte(0xaa)
+            }),
+        )
+        .await;
+        assert!(matches!(
+            validator(&server).validate(&request(0, 10_000)).await,
+            GameValidation::Unavailable(UnavailableReason::DataUnavailable(_))
+        ));
     }
 
     #[tokio::test]

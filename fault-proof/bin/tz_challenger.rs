@@ -62,8 +62,11 @@ async fn run() -> Result<()> {
     );
     let factory = DisputeGameFactory::new(challenger_config.factory_address, l1_provider.clone());
 
-    let game_validator =
-        Arc::new(TzGameValidator::new(anchor_state_registry.clone(), validator_config.l2_rpc)?);
+    let game_validator = Arc::new(TzGameValidator::new(
+        anchor_state_registry.clone(),
+        validator_config.l2_rpc,
+        validator_config.chain_id,
+    )?);
 
     let mut challenger = OPSuccinctChallenger::new_with_game_validator(
         challenger_config,
