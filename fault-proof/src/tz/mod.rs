@@ -22,3 +22,4 @@ pub mod chain_client;
 pub mod config;
 pub mod game_validator;
 pub mod l2_provider;
+pub mod withdraw;
