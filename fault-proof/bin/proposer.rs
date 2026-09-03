@@ -1,3 +1,10 @@
+// The proposer's `spawn_game_proving_task` future layout over the deeply-nested alloy
+// `FillProvider` type exceeds rustc's default query/recursion depth (128) when the crate is
+// compiled with additional feature-gated dependencies (e.g. `--features tz` pulls this bin into
+// the build graph). This is a compile-time layout-computation limit only; it does not change any
+// runtime behavior. rustc recommends raising the limit.
+#![recursion_limit = "256"]
+
 use std::sync::Arc;
 
 use alloy_provider::ProviderBuilder;

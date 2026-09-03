@@ -30,6 +30,11 @@ name = "tz-challenger"
 path = "bin/tz_challenger.rs"
 required-features = ["tz"]
 
+[[bin]]
+name = "tz-defender"
+path = "bin/tz_defender.rs"
+required-features = ["tz"]
+
 [dependencies]
 # local
 op-succinct-client-utils.workspace = true

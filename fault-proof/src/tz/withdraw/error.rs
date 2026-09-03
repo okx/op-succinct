@@ -8,7 +8,7 @@
 use thiserror::Error;
 
 /// A classified Witness Builder v2 client error.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum WbError {
     /// The request itself was malformed (4xx that is not one of the specific cases below).
     #[error("witness-builder rejected the request as invalid")]

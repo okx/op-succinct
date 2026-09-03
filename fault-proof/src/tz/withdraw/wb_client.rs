@@ -186,6 +186,16 @@ impl WbClient {
         Ok(d.into_record())
     }
 
+    /// Fetch the canonical block height at which the record for `record_hash` was included. The
+    /// height is taken from the WB (never the caller). A record that carries no canonical height
+    /// yet is treated as not-yet-included (`WithdrawalNotFound`).
+    pub async fn get_canonical_record_height(&self, record_hash: B256) -> Result<u64, WbError> {
+        let d: RecordDto = self
+            .get(ROUTE_RECORD, &[("recordHash", format!("{record_hash:#x}"))])
+            .await?;
+        d.canonical_block_height.ok_or(WbError::WithdrawalNotFound)
+    }
+
     /// Fetch a historical inclusion proof bound to an exact `(checkpoint_height, withdrawal_root)`.
     pub async fn get_historical_inclusion_proof(
         &self,
@@ -289,6 +299,8 @@ struct RecordDto {
     amounts: Vec<U256>,
     from: Address,
     to: Address,
+    #[serde(default)]
+    canonical_block_height: Option<u64>,
 }
 
 impl RecordDto {

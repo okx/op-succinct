@@ -53,6 +53,12 @@ pub fn empty_inner_root() -> B256 {
     empty_subtree_hashes()[TREE_DEPTH]
 }
 
+/// The full empty-subtree hash vector `z[0..=TREE_DEPTH]` (spec §4). Exposed so callers building
+/// inclusion proofs / boundary frontiers reuse the same independently-computed zero hashes.
+pub fn zero_hashes() -> [B256; TREE_DEPTH + 1] {
+    empty_subtree_hashes()
+}
+
 /// The empty Withdrawal root: `business_root(empty_inner_root, 0, WITHDRAWAL_TAG)`.
 pub fn empty_withdrawal_root() -> B256 {
     business_root(empty_inner_root(), 0, WITHDRAWAL_TAG)
