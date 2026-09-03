@@ -94,7 +94,7 @@ pub fn root_from_frontier(active_branches: &[B256], count: u32) -> Result<B256, 
     let z = empty_subtree_hashes();
     let mut node = B256::ZERO;
     let mut next_branch = 0usize;
-    for h in 0..TREE_DEPTH {
+    for (h, z_h) in z.iter().enumerate().take(TREE_DEPTH) {
         let mut buf = [0u8; 64];
         if (count >> h) & 1 == 1 {
             // A stored frontier node sits on the left at this level.
@@ -105,7 +105,7 @@ pub fn root_from_frontier(active_branches: &[B256], count: u32) -> Result<B256, 
         } else {
             // Empty subtree on the right.
             buf[..32].copy_from_slice(node.as_slice());
-            buf[32..].copy_from_slice(z[h].as_slice());
+            buf[32..].copy_from_slice(z_h.as_slice());
         }
         node = keccak256(buf);
     }
