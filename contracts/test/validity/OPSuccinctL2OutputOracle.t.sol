@@ -4,7 +4,7 @@ pragma solidity ^0.8.15;
 import {Test} from "forge-std/Test.sol";
 import {Utils} from "../helpers/Utils.sol";
 import {OPSuccinctL2OutputOracle} from "../../src/validity/OPSuccinctL2OutputOracle.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 import {console} from "forge-std/console.sol";
 
 contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
@@ -53,6 +53,12 @@ contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
         vm.warp(block.timestamp + 1000);
     }
 
+    function _checkpointUsableL1Block() internal returns (uint256 l1BlockNumber) {
+        l1BlockNumber = 100;
+        vm.roll(l1BlockNumber + 1);
+        l2oo.checkpointBlockHash(l1BlockNumber);
+    }
+
     function testFallbackProposal_TimeoutElapsed_NonApprovedCanPropose() public {
         // Get the next block number to propose
         uint256 nextBlockNumber = l2oo.nextBlockNumber();
@@ -62,9 +68,8 @@ contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
         uint256 lastProposalTime = l2oo.lastProposalTimestamp();
         vm.warp(lastProposalTime + FALLBACK_TIMEOUT + 1);
 
-        // Checkpoint the current block hash
-        uint256 currentL1Block = block.number;
-        checkpointAndRoll(l2oo, currentL1Block);
+        // Checkpoint an L1 block hash and propose against the exact checkpointed block.
+        uint256 currentL1Block = _checkpointUsableL1Block();
 
         // Non-approved proposer should be able to propose after timeout
         vm.prank(nonApprovedProposer);
@@ -84,9 +89,8 @@ contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
         uint256 lastProposalTime = l2oo.lastProposalTimestamp();
         vm.warp(lastProposalTime + FALLBACK_TIMEOUT - 1); // Just before timeout
 
-        // Checkpoint the current block hash
-        uint256 currentL1Block = block.number;
-        checkpointAndRoll(l2oo, currentL1Block);
+        // Checkpoint an L1 block hash and propose against the exact checkpointed block.
+        uint256 currentL1Block = _checkpointUsableL1Block();
 
         // Non-approved proposer should NOT be able to propose before timeout
         vm.prank(nonApprovedProposer);
@@ -103,9 +107,8 @@ contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
         uint256 lastProposalTime = l2oo.lastProposalTimestamp();
         vm.warp(lastProposalTime + FALLBACK_TIMEOUT - 1); // Just before timeout
 
-        // Checkpoint the current block hash
-        uint256 currentL1Block = block.number;
-        checkpointAndRoll(l2oo, currentL1Block);
+        // Checkpoint an L1 block hash and propose against the exact checkpointed block.
+        uint256 currentL1Block = _checkpointUsableL1Block();
 
         // Approved proposer should still be able to propose before timeout
         vm.prank(approvedProposer, approvedProposer);
@@ -125,9 +128,8 @@ contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
         uint256 lastProposalTime = l2oo.lastProposalTimestamp();
         vm.warp(lastProposalTime + FALLBACK_TIMEOUT + 1);
 
-        // Checkpoint the current block hash
-        uint256 currentL1Block = block.number;
-        checkpointAndRoll(l2oo, currentL1Block);
+        // Checkpoint an L1 block hash and propose against the exact checkpointed block.
+        uint256 currentL1Block = _checkpointUsableL1Block();
 
         // Approved proposer should still be able to propose after timeout
         vm.prank(approvedProposer);
@@ -151,9 +153,8 @@ contract OPSuccinctL2OutputOracleFallbackTest is Test, Utils {
 
         vm.warp(proposalTime);
 
-        // Checkpoint the current block hash
-        uint256 currentL1Block = block.number;
-        checkpointAndRoll(l2oo, currentL1Block);
+        // Checkpoint an L1 block hash and propose against the exact checkpointed block.
+        uint256 currentL1Block = _checkpointUsableL1Block();
 
         vm.prank(approvedProposer, approvedProposer);
         l2oo.proposeL2Output(genesisConfigName, outputRoot, nextBlockNumber, currentL1Block, proof, proverAddress);
@@ -188,6 +189,12 @@ contract OPSuccinctL2OutputOracleDeleteOutputsTest is Test, Utils {
         vm.warp(block.timestamp + 1000);
     }
 
+    function _checkpointUsableL1Block() internal returns (uint256 l1BlockNumber) {
+        l1BlockNumber = 100;
+        vm.roll(l1BlockNumber + 1);
+        l2oo.checkpointBlockHash(l1BlockNumber);
+    }
+
     function testDeleteL2Outputs_CannotDeleteGenesisOutput() public {
         vm.prank(challenger);
         vm.expectRevert("L2OutputOracle: cannot delete genesis output");
@@ -199,8 +206,7 @@ contract OPSuccinctL2OutputOracleDeleteOutputsTest is Test, Utils {
         bytes32 outputRoot = keccak256("test_output");
 
         vm.warp(l2oo.computeL2Timestamp(nextBlockNumber) + 1);
-        uint256 currentL1Block = block.number;
-        checkpointAndRoll(l2oo, currentL1Block);
+        uint256 currentL1Block = _checkpointUsableL1Block();
 
         vm.prank(approvedProposer, approvedProposer);
         l2oo.proposeL2Output(genesisConfigName, outputRoot, nextBlockNumber, currentL1Block, proof, proverAddress);

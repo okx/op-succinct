@@ -11,7 +11,7 @@ import {LibString} from "@solady/utils/LibString.sol";
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
 
@@ -22,7 +22,7 @@ import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {Proxy} from "@optimism/src/universal/Proxy.sol";
 import {ProxyAdmin} from "@optimism/src/universal/ProxyAdmin.sol";
 import {OPSuccinctFaultDisputeGame} from "../../src/fp/OPSuccinctFaultDisputeGame.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 import {MockSystemConfig} from "../../src/utils/MockSystemConfig.sol";
 
 // Utils
@@ -173,7 +173,9 @@ contract DeployOPSuccinctFDG is Script, Utils {
             sp1Config.rangeVkeyCommitment,
             config.challengerBondWei,
             IAnchorStateRegistry(address(registry)),
-            accessManager
+            accessManager,
+            config.hasRootClaimPreimage,
+            config.postAnchorAddress
         );
     }
 

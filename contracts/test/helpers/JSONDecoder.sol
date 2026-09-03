@@ -41,11 +41,13 @@ contract JSONDecoder {
         address existingDisputeGameFactoryProxy;
         uint256 fallbackTimeoutFpSecs;
         uint32 gameType;
+        bool hasRootClaimPreimage;
         uint256 initialBondWei;
         uint256 maxChallengeDuration;
         uint256 maxProveDuration;
         address optimismPortal2Address;
         bool permissionlessMode;
+        address postAnchorAddress;
         address[] proposerAddresses;
         bytes32 rangeVkeyCommitment;
         bytes32 rollupConfigHash;

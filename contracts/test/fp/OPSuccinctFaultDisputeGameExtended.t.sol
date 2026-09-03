@@ -41,14 +41,14 @@ import {AggregationOutputs, OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/T
 // Contracts
 import {DisputeGameFactory} from "src/dispute/DisputeGameFactory.sol";
 import {OPSuccinctFaultDisputeGame} from "src/fp/OPSuccinctFaultDisputeGame.sol";
-import {SP1MockVerifier} from "@sp1-contracts/src/SP1MockVerifier.sol";
+import {SP1MockVerifier} from "src/utils/SP1MockVerifier.sol";
 import {AnchorStateRegistry} from "src/dispute/AnchorStateRegistry.sol";
 import {AccessManager} from "src/fp/AccessManager.sol";
 
 // Interfaces
 import {IDisputeGame} from "interfaces/dispute/IDisputeGame.sol";
 import {IDisputeGameFactory} from "interfaces/dispute/IDisputeGameFactory.sol";
-import {ISP1Verifier} from "@sp1-contracts/src/ISP1Verifier.sol";
+import {ISP1Verifier} from "src/fp/interfaces/ISP1Verifier.sol";
 import {ISystemConfig} from "interfaces/L1/ISystemConfig.sol";
 import {IAnchorStateRegistry} from "interfaces/dispute/IAnchorStateRegistry.sol";
 
@@ -161,7 +161,9 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
             bytes32(0), // rangeVkeyCommitment
             CHALLENGER_BOND_AMOUNT, // challengerBond
             IAnchorStateRegistry(address(anchorStateRegistry)),
-            accessManager
+            accessManager,
+            false, // hasRootClaimPreimage (legacy layout)
+            address(0) // postAnchor (auto delivery disabled)
         );
 
         factory.setInitBond(gameType, INIT_BOND);
@@ -176,9 +178,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         parentGame = OPSuccinctFaultDisputeGame(
             address(
                 factory.create{value: INIT_BOND}(
-                    gameType,
-                    Claim.wrap(keccak256("genesis")),
-                    abi.encodePacked(uint256(1000), type(uint32).max)
+                    gameType, Claim.wrap(keccak256("genesis")), abi.encodePacked(uint256(1000), type(uint32).max)
                 )
             )
         );
@@ -192,13 +192,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         // claimCredit() triggers closeGame() which advances anchor to parentGame's l2SeqNum,
         // after which parentGame can no longer be used as a parent via index.
         game = OPSuccinctFaultDisputeGame(
-            address(
-                factory.create{value: INIT_BOND}(
-                    gameType,
-                    rootClaim,
-                    abi.encodePacked(l2BlockNumber, parentIndex)
-                )
-            )
+            address(factory.create{value: INIT_BOND}(gameType, rootClaim, abi.encodePacked(l2BlockNumber, parentIndex)))
         );
 
         parentGame.claimCredit(proposer);
@@ -220,9 +214,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         return OPSuccinctFaultDisputeGame(
             address(
                 factory.create{value: INIT_BOND}(
-                    gameType,
-                    Claim.wrap(_claimSeed),
-                    abi.encodePacked(_l2Block, _parentIdx)
+                    gameType, Claim.wrap(_claimSeed), abi.encodePacked(_l2Block, _parentIdx)
                 )
             )
         );
@@ -288,9 +280,7 @@ contract OPSuccinctFaultDisputeGameExtendedTest is Test {
         vm.deal(proposer, INIT_BOND);
         vm.expectRevert(InvalidParentGame.selector);
         factory.create{value: INIT_BOND}(
-            gameType,
-            Claim.wrap(keccak256("child-of-loser")),
-            abi.encodePacked(uint256(3000), uint32(1))
+            gameType, Claim.wrap(keccak256("child-of-loser")), abi.encodePacked(uint256(3000), uint32(1))
         );
     }
 
