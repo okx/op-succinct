@@ -362,7 +362,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_not_found_before_deadline_retries() {
-        let (cc, handler, _r) = setup(10_000, Some(20));
+        let (cc, _handler, _r) = setup(10_000, Some(20));
         // Rebuild handler with a witness that reports WithdrawalNotFound.
         let l = leaf();
         let (proof, root) = valid_proof(l);

@@ -15,7 +15,7 @@
 //! watcher, handler state machine, and local verification are unchanged.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_provider::{Provider, ProviderBuilder};
 use anyhow::{Context, Result};

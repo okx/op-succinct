@@ -1,81 +1,119 @@
-# Hand-off: TZ four-field claim — ELF/vkey rebuild, redeploy, and access-gated remainder
+# Hand-off: TZ four-field claim — tradezone dep switch, ELF/vkey rebuild, redeploy
 
 > Operational hand-off produced by the Execute-and-Validate stage. **No build/deploy is performed
-> here.** This records the deferred steps (spec §8, §12) plus the items blocked by the execution
-> environment's dependency-access limits, so the plan-execution operator (or a re-run in a
-> provisioned environment) can complete them.
+> here.** It records the steps that are mandatorily gated on the SP1 guest toolchain (Spec §8, §12)
+> and therefore deferred to a provisioned environment, so a re-run there can complete them
+> deterministically.
 
 Jira: [TRDZN-1339](https://okcoin.atlassian.net/browse/TRDZN-1339) ·
-Spec: `docs/superpowers/specs/2026-09-03-tz-withdraw-forcetx-root-and-defender-design.md` ·
-Plan: `docs/superpowers/plans/2026-09-03-tz-withdraw-forcetx-root-and-defender-plan.md`
+Spec: `docs/superpowers/specs/2026-09-03-tz-withdraw-forcetx-four-field-claim-and-defender-design.md` ·
+Plan: `docs/superpowers/plans/2026-09-03-tz-withdraw-forcetx-four-field-claim-and-defender-plan.md`
 
-## 1. Why a rebuild + redeploy is required (spec §8)
+## 1. Why a dep switch + rebuild + redeploy is required (Spec §8, §12; Plan Tasks 1, 4, 9)
 
 Threading the four-field `claimRoot = keccak256(blockHash ‖ appHash ‖ withdrawalRoot ‖ forceRoot)`
 through the SP1 range guest changes what the guest commits and (once the boundary witness is added
 to the guest's `SP1Stdin`) its input layout. Therefore **both the range vkey and the aggregation
 vkey change**. Until the on-chain config is updated, `prove` will revert on a vkey mismatch — so
-the MR is build-/test-green but NOT deploy-complete (spec §14 criterion 7; §5 "compile- & test-green
-MR"). No dual-mode: wire mixing is protocol-forbidden (spec §8).
+the MR is host-side build-/test-green but NOT deploy-complete. No dual-mode: wire mixing is
+protocol-forbidden (Spec §8).
 
-## 2. Required sequence (run in an environment with SP1 + private-dep access)
+Spec §8 makes the tz-* dependency switch a **hard, mandatorily-gated** change:
+> 编译门槛（硬性）：实现阶段必须在 SP1 guest target 实测 `cargo check` 通过 … 不能只停留纸面。
 
-1. `just build-tz-elfs` — rebuild `tz-range-elf-embedded` + `tz-aggregation-elf`.
-2. `just tz-vkeys` — regenerate the vkey hashes (`cargo run --release --bin tz-config`).
-3. Update `contracts/config/tz/opsuccinctfdgconfig.json` `rangeVkeyCommitment` + `aggregationVkey`
-   with the new hashes (current values on this branch: `rangeVkeyCommitment=0x584fd7b9…`,
-   `aggregationVkey=0x00be73c0…` — confirm against the file before editing).
-4. Redeploy the tz Game config (deploy-tz).
-5. Cross-process version note (spec §12): the tradezone (`x2.git`) rev used to build the ELF and the
-   Claim Tree Core version MUST match the WB side; a bump requires rebuild + redeploy.
+That gate (Plan Task 1 Step 5) **cannot run in the current execution environment** — the SP1
+toolchain (`cargo-prove`, `~/.sp1/`) is absent. Committing the guest-dep switch without passing
+the guest `cargo check` would violate Spec §8, so it is deferred rather than applied blindly.
 
-## 3. Environment access blockers observed during execution (MUST provision to finish)
+## 2. AC-3 / Plan Task 1 — resolved inputs (ready to apply where SP1 is available)
 
-This execution environment's git credentials are scoped to `github/op-succinct` only. The following
-private dependencies could **not** be fetched, so the corresponding steps were deferred:
+Task 1 Step 1 (resolve the exact feature-branch HEAD) **is done** in this run:
 
-| Dependency | Host | Needed for | Status here |
+- `git ls-remote https://gitlab.okg.com/xlayer-dex/tradezone.git refs/heads/feature/witness-builder-withdraw-v1`
+  → **`e56881eb29879166752294c87b207a23bb2dcc26`** (reachable over HTTPS from this environment;
+  supersedes the prior hand-off's `a3f3079b7`).
+
+Apply this stanza to the workspace-root `Cargo.toml` (currently lines ~155-158) in an
+SP1-provisioned environment, then run Task 1 Steps 3-6:
+
+```toml
+# tradezone (range guest deps) — TradeZone GitLab feature branch, fixed rev (WB Withdraw/Force work)
+tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26", features = ["tee"] }
+tz-dex             = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26", features = ["zkvm"] }
+tz-primitives      = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26" }
+tz-witness         = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26" }
+```
+
+> Verify the crate names/paths (`crates/witness` etc.) and feature flags against the branch's own
+> `Cargo.toml` before committing (Spec §7.4). After the switch: `cargo metadata` (confirm all four
+> resolve to the rev, no `x2.git` remnant in `Cargo.lock`), host build, then the **mandatory** SP1
+> guest `cargo check` gate.
+
+## 3. Required sequence (run in an environment with SP1 + private-dep access)
+
+1. Apply the §2 dep switch; regenerate `Cargo.lock`.
+2. `cargo build -p op-succinct-fp --features tz` (host gate).
+3. **SP1 guest compile gate (hard, Spec §8):** `cd programs/tz/range && ~/.sp1/bin/cargo-prove prove build …`.
+4. Implement the guest four-field wiring (§5 below), then `just build-tz-elfs` — rebuild
+   `tz-range-elf-embedded` + `tz-aggregation-elf` (Plan Task 9).
+5. `just tz-vkeys` — regenerate the vkey hashes (`cargo run --release --bin tz-config`).
+6. Update `contracts/config/tz/opsuccinctfdgconfig.json` `rangeVkeyCommitment` + `aggregationVkey`
+   with the new hashes (confirm the current on-branch values against the file before editing).
+7. Redeploy the tz Game config (deploy-tz).
+
+## 4. Environment access / toolchain blockers observed during this execution
+
+Git access here reaches `github/op-succinct` **and** `gitlab.okg.com` over HTTPS, but not SSH,
+and there is no SP1 toolchain:
+
+| Dependency / tool | Host / transport | Needed for | Status here |
 |---|---|---|---|
-| `tz-dex`, `tz-block-processor`, `tz-primitives` (`x2.git` @ `b3e2cf98…`) | github.com/okx | SP1 range guest (`programs/tz/range`) | **unreachable** (SSH publickey denied) |
-| TradeZone Claim Tree Core (`tradezone` @ `feature/witness-builder-withdraw-v1`, HEAD `a3f3079b7`, `crates/chain/src/witness/`) | gitlab.okg.com `xlayer-dex/tradezone` | guest tree rebuild + host tree cross-check | **unreachable** (deploy key not authorized for that project) |
-| `ok-kms-rust` (`v1.0.0`) | gitlab.okg.com `okcoin-commons` | optional `kms` signer feature (OFF for tz) | **unreachable** (not authorized) |
-| SP1 toolchain (`cargo-prove`) | — | building the guest ELF | **absent** |
+| `tz-dex`, `tz-block-processor`, `tz-primitives` (`x2.git` @ `b3e2cf98…`) | github.com/okx, **SSH** | SP1 range guest (`programs/tz/range`) | **unreachable** (SSH publickey denied; private repo, HTTPS auth also fails) |
+| TradeZone `tz-witness`/core (`tradezone` @ `feature/witness-builder-withdraw-v1`) | gitlab.okg.com, **HTTPS** | guest tree rebuild + host verifier delegation (AC-1) | **reachable** over HTTPS; HEAD `e56881eb…` resolved. SSH denied. |
+| `ok-kms-rust` (`v1.0.0`) | gitlab.okg.com, HTTPS | optional `kms` signer feature (OFF for tz) | reachable over HTTPS (ssh→https rewrite used for host resolution) |
+| SP1 toolchain (`cargo-prove`) | — | building/checking the guest ELF (Spec §8 gate) | **absent** — the blocking item for AC-3 / Task 1 completion |
 
-To build/test the host-side `fault-proof --features tz` crate here, the optional/guest-only private
-deps were replaced with **local empty stubs via a cargo `[patch]` in the workspace-root `Cargo.toml`
-plus a parent-directory `.cargo/config.toml` `paths` override — both OUTSIDE the committed tree and
-reverted before finishing** (they are NOT part of the branch). In a provisioned environment, remove
-any such shim and let the real deps resolve.
+**Host-side validation harness used this run (NOT committed):** to run `cargo test -p op-succinct-fp
+--features tz` while `programs/tz/range` (the only `x2.git` consumer) is unreachable, that guest
+member was temporarily removed from the workspace `[workspace].members` (moved to `exclude`), and the
+optional `ok-kms-rust` git dep was fetched over HTTPS via a per-command
+`url."https://gitlab.okg.com/".insteadOf "ssh://git@gitlab.okg.com/"` rewrite with
+`CARGO_NET_GIT_FETCH_WITH_CLI=true`. **Both are validation-harness only and reverted before commit**
+— they are NOT part of the branch. In a provisioned environment, keep `programs/tz/range` in the
+workspace and let the real deps resolve.
 
-## 4. Deferred code that requires the above access (paired, vkey-affecting — land together)
+## 5. Deferred code that requires the above access (paired, vkey-affecting — land together)
 
-The host-side building blocks are implemented and unit-tested on this branch; the following runtime
-wiring must be completed where the guest can compile against the real Claim Tree Core:
+The host-side building blocks are implemented and unit-tested on this branch (§6); the following
+runtime wiring must be completed where the guest can compile against the real TradeZone tree core:
 
-- **SP1 range guest (`programs/tz/range/src/main.rs`, plan T8):** read the boundary-witness fields
-  from `SP1Stdin` after `chunk_count`; rebuild the two pre `innerRoot`s from `count + activeBranches`
-  via the tradezone Claim Tree Core; wrap with `count + tag` for pre `withdrawalRoot`/`forceRoot`;
-  replay canonical blocks and let the Claim Tree Core extract records/leaves and compute the post
-  roots (the guest MUST NOT trust host-supplied leaves); commit the full four-field claim as
-  `l2PreRoot`/`l2PostRoot` (ABI shape unchanged, 160 B). Replace `keccak_join(block_hash, state_hash)`.
-  Blocked here because `programs/tz/range` depends on `x2.git` + the tradezone core (unreachable) and
-  no SP1 toolchain is present; the exact tradezone `crates/chain/src/witness/` API must be linked
-  rather than guessed.
-- **Proposer stdin splice (`fault-proof/src/tz/proposer.rs::prove_range`, plan T7):** after
+- **SP1 range guest (`programs/tz/range/src/main.rs`, Plan Task 4):** read the boundary-witness
+  fields from `SP1Stdin` after `chunk_count`; rebuild the two pre `innerRoot`s from
+  `count + activeBranches` via the tradezone `tz-witness`; wrap with `count + tag` for pre
+  `withdrawalRoot`/`forceRoot`; replay canonical blocks and let `tz-block-processor::extract_withdrawals`
+  + `tz-witness` compute the post roots (the guest MUST NOT trust host-supplied leaves); commit the
+  four-field claim as `l2PreRoot`/`l2PostRoot`. Blocked here: `programs/tz/range` depends on the
+  unreachable `x2.git` deps and no SP1 toolchain is present; the exact `tz-witness` API must be
+  linked, not guessed.
+- **Proposer stdin splice (`fault-proof/src/tz/proposer.rs`, Plan Task 5):** after
   `range_stdin.write(&chunk_count)`, append the boundary fields produced by the unit-tested
-  `boundary_stdin_fields` helper (already on this branch). This is the host half of the same
-  vkey-affecting change as the guest read above — land them together.
-- **Four-preimage Game creation (`handle_game_creation`, plan T9):** write the 164-byte four-preimage
-  `extraData` (`l2BlockNumber ‖ parentIndex ‖ blockHash ‖ appHash ‖ withdrawalRoot ‖ forceRoot`) and
-  set `rootClaim` to the four-field claim, gated by `assert_extra_data_self_consistent` (already on
-  this branch). Requires the four-preimage Game impl (`HAS_ROOT_CLAIM_PREIMAGE`) to be the deployed
-  game type. The `compute_output_root_at_block` four-field path (WB-backed) is already implemented.
+  `boundary_stdin_fields` helper (already on this branch). Host half of the same vkey-affecting
+  change as the guest read above — land together.
+- **Single-computation-source (AC-1, Spec §5.4):** re-point the host Defender local verifier
+  (`fault-proof/src/tz/defender/verifier.rs` → `tz/withdraw/tree_adapter.rs`) to delegate to
+  `tz_witness::verify_proof` once `tz-witness` is a resolvable dependency of `fault-proof`, so the
+  proof/tree math has a single byte-source. The current native implementation is spec-faithful and
+  unit-tested against the published empty vectors, and is retained as the cross-check oracle.
 
-## 5. What IS complete and verified on this branch (host-side, crates.io-only)
+## 6. What IS complete and verified on this branch (host-side)
 
-`cargo test -p op-succinct-fp --features tz` (lib + `tz_defender_integration`) is green:
-the four-field shared library (`tz/withdraw/`), the L1 challenger chainId guard, the WB-backed
-`compute_output_root_at_block`, the boundary fetch + cross-check + stdin-ordering helpers, and the
-full independent Defender (mock challenge seam, config, RootManager source, LRU cache, local
-verifier, watcher, handler state machine, `tz-defender` binary). Empty-tree vectors are computed
-independently and asserted against the spec's published values (no frozen fixture required).
+`cargo test -p op-succinct-fp --features tz --lib --test tz_defender_integration` is green
+(**203 lib + 3 integration tests, 0 failed** in this run). Verified: the four-field shared library
+(`tz/withdraw/` — claimRoot/sub-root codec, 164-byte extraData decode, `CheckpointV2`/boundary/proof
+types, `WbError` taxonomy, tree-adapter outer wrapper + proof-path verify + empty-vector assertions),
+the WB v2 read client (4 endpoints + popcount/declared-root/chainId validation), the L1 challenger
+chainId guard + four-field claim comparison, the WB-backed `compute_output_root_at_block`, the
+boundary fetch/cross-check/stdin-ordering + 164-byte `extraData` self-consistency helpers, and the
+full independent Defender (challenge seam, config, RootManager source, LRU cache, local verifier,
+watcher, handler state machine, `tz-defender` binary). Empty-tree vectors are computed independently
+and asserted against the Spec's published values (no frozen fixture required).
