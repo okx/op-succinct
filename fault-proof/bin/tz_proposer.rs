@@ -71,9 +71,26 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     let proposer_config = ProposerConfig::from_env()?;
     proposer_config.log();
 
-    let tz_client = Arc::new(TzChainClient::new(tz_config.rpc_urls));
+    let tz_client = Arc::new(TzChainClient::new(tz_config.rpc_urls.clone()));
+    // for tz: the four-field claim path needs a WB client (checkpoint components + boundary
+    // witness). Base URL = the first tz RPC endpoint; chain id = TZ_CHAIN_ID (must be non-zero).
+    let wb = match std::env::var("TZ_CHAIN_ID").ok().and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(chain_id) if chain_id != 0 => tz_config
+            .rpc_urls
+            .first()
+            .and_then(|u| u.parse().ok())
+            .and_then(|url| fault_proof::tz::withdraw::wb_client::WbClient::new(url, chain_id).ok())
+            .map(Arc::new),
+        _ => {
+            tracing::warn!(
+                "TZ_CHAIN_ID unset/zero: four-field claim path disabled (proposer WB client not \
+                 built); set TZ_CHAIN_ID to enable four-field checkpoint proving"
+            );
+            None
+        }
+    };
     let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> =
-        Arc::new(TzL2Provider { tz_client });
+        Arc::new(TzL2Provider { tz_client, wb });
 
     let proposer_signer = SignerLock::from_env().await?;
     let l1_provider = ProviderBuilder::new().connect_http(proposer_config.l1_rpc.clone());

@@ -105,6 +105,17 @@ pub trait L2ProviderTrait {
     async fn fetch_blocks_range(&self, _start: u64, _end: u64) -> Result<Vec<u8>> {
         bail!("fetch_blocks_range not supported on this L2 provider")
     }
+
+    // for tz: fetch the Withdrawal/ForceTx tree-boundary witness at `height` (count +
+    // activeBranches for both trees). xlayer has no equivalent. Gated on the tz feature because
+    // the return type is tz-specific.
+    #[cfg(feature = "tz")]
+    async fn fetch_tree_boundary_witness(
+        &self,
+        _height: u64,
+    ) -> Result<crate::tz::withdraw::types::TreeBoundaryWitness> {
+        bail!("fetch_tree_boundary_witness not supported on this L2 provider")
+    }
 }
 
 #[async_trait]

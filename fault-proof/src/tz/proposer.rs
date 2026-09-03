@@ -53,6 +53,69 @@ fn compute_chunks(start: u64, end: u64, blocks_per_fetch: u64) -> Vec<(u64, u64)
     chunks
 }
 
+/// The tz tree-boundary-witness fields appended to the range guest's `SP1Stdin`, in the exact
+/// order the guest reads them after `chunk_count` (spec §7.2, §8): `withdrawal_count`,
+/// withdrawal branch bytes, `force_count`, force branch bytes.
+///
+/// NOTE (host↔guest coordination): writing these into `prove_range`'s stdin and reading them in
+/// the SP1 range guest (`programs/tz/range`) is a single vkey-affecting change that must land
+/// together (spec §8). The guest crate depends on the private tradezone Claim Tree Core, which is
+/// not fetchable in this build environment, so the live splice + guest read are completed in the
+/// x2/tradezone/SP1-provisioned environment (see the ELF/vkey hand-off note). This pure helper is
+/// the unit-tested building block that fixes the wire ordering independently of SP1.
+#[cfg(feature = "tz")]
+#[allow(dead_code)]
+pub(crate) struct BoundaryStdinFields {
+    pub withdrawal_count: u32,
+    pub withdrawal_branches: Vec<u8>,
+    pub force_count: u32,
+    pub force_branches: Vec<u8>,
+}
+
+#[cfg(feature = "tz")]
+fn encode_branches(branches: &[alloy_primitives::B256]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(branches.len() * 32);
+    for b in branches {
+        out.extend_from_slice(b.as_slice());
+    }
+    out
+}
+
+#[cfg(feature = "tz")]
+#[allow(dead_code)]
+pub(crate) fn boundary_stdin_fields(
+    w: &crate::tz::withdraw::types::TreeBoundaryWitness,
+) -> BoundaryStdinFields {
+    BoundaryStdinFields {
+        withdrawal_count: w.withdrawal_count,
+        withdrawal_branches: encode_branches(&w.withdrawal_active_branches),
+        force_count: w.force_count,
+        force_branches: encode_branches(&w.force_active_branches),
+    }
+}
+
+/// Proposer pre-Game self-consistency check (spec §7.2): the four-preimage `extraData` the
+/// proposer is about to write MUST hash to the `expected_root_claim` it intends to commit,
+/// otherwise the on-chain `_checkRootClaimCommitment` would revert. Pure + unit-testable.
+#[cfg(feature = "tz")]
+#[allow(dead_code)]
+pub(crate) fn assert_extra_data_self_consistent(
+    extra: &[u8],
+    expected_root_claim: alloy_primitives::B256,
+) -> anyhow::Result<()> {
+    let pre = crate::tz::withdraw::claim::decode_four_preimage_extra_data(extra)?;
+    let computed = crate::tz::withdraw::claim::claim_root(
+        pre.block_hash,
+        pre.app_hash,
+        pre.withdrawal_root,
+        pre.force_root,
+    );
+    if computed != expected_root_claim {
+        anyhow::bail!("tz: extraData four-preimage does not hash to the intended rootClaim");
+    }
+    Ok(())
+}
+
 impl<P, H> OPSuccinctProposer<P, H>
 where
     P: Provider + Clone + Send + Sync + 'static,
@@ -762,5 +825,61 @@ mod tests {
         let proof = sp1_sdk::SP1Proof::Plonk(Default::default());
         let err = super::ensure_compressed(&proof).unwrap_err();
         assert_eq!(err.to_string(), "aggregation_stdin: range proofs must be Compressed variant");
+    }
+}
+
+#[cfg(all(test, feature = "tz"))]
+mod tz_boundary_tests {
+    use super::{assert_extra_data_self_consistent, boundary_stdin_fields};
+    use crate::tz::withdraw::claim::claim_root;
+    use crate::tz::withdraw::types::TreeBoundaryWitness;
+    use alloy_primitives::B256;
+
+    #[test]
+    fn boundary_stdin_fields_orders_counts_and_branch_bytes() {
+        let w = TreeBoundaryWitness {
+            schema_version: 2,
+            chain_id: 196,
+            block_height: 50,
+            withdrawal_count: 3,
+            withdrawal_active_branches: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
+            force_count: 0,
+            force_active_branches: vec![],
+        };
+        let f = boundary_stdin_fields(&w);
+        assert_eq!(f.withdrawal_count, 3);
+        // Two 32-byte branches, concatenated in order.
+        assert_eq!(f.withdrawal_branches.len(), 64);
+        assert_eq!(&f.withdrawal_branches[..32], B256::repeat_byte(0x11).as_slice());
+        assert_eq!(&f.withdrawal_branches[32..], B256::repeat_byte(0x22).as_slice());
+        assert_eq!(f.force_count, 0);
+        assert!(f.force_branches.is_empty());
+    }
+
+    /// Build a 164-byte four-preimage extraData for the given fields (mirrors the CWIA layout).
+    fn extra(bh: B256, ah: B256, wr: B256, fr: B256) -> [u8; 164] {
+        let mut e = [0u8; 164];
+        e[24..32].copy_from_slice(&100u64.to_be_bytes()); // l2BlockNumber
+        e[32..36].copy_from_slice(&u32::MAX.to_be_bytes()); // parentIndex
+        e[36..68].copy_from_slice(bh.as_slice());
+        e[68..100].copy_from_slice(ah.as_slice());
+        e[100..132].copy_from_slice(wr.as_slice());
+        e[132..164].copy_from_slice(fr.as_slice());
+        e
+    }
+
+    #[test]
+    fn extra_data_self_consistency_accepts_matching_root_and_rejects_mismatch() {
+        let (bh, ah, wr, fr) = (
+            B256::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+            B256::repeat_byte(0x33),
+            B256::repeat_byte(0x44),
+        );
+        let e = extra(bh, ah, wr, fr);
+        let expected = claim_root(bh, ah, wr, fr);
+        assert!(assert_extra_data_self_consistent(&e, expected).is_ok());
+        // A different intended rootClaim ⇒ rejected (would revert on-chain).
+        assert!(assert_extra_data_self_consistent(&e, B256::repeat_byte(0xEE)).is_err());
     }
 }
