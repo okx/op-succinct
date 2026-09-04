@@ -46,10 +46,17 @@ pub struct CheckpointV2Envelope {
 /// R2 #2: `TreeBoundaryResponse` carries **no `chainId`** — chainId consistency is enforced only
 /// on the checkpoint top level (see [`CheckpointV2Envelope`]). This struct therefore has no
 /// `chain_id` field.
+///
+/// R4 (MR102-R3-3): the upstream `TreeBoundaryResponse` **does** carry `block_hash` (the canonical
+/// block hash at the same height H), positioned between `block_height` and `withdrawal_count`; the
+/// R2 mirror dropped it, which made the boundary↔snapshot same-height blockHash consistency check
+/// impossible. It is restored here in the same position so the mirror is field-for-field complete
+/// and the Host/guest cross-checks have a field to bind to (spec §R4.2-1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeBoundaryWitness {
     pub schema_version: u16,
     pub block_height: u64,
+    pub block_hash: B256,
     pub withdrawal_count: u32,
     pub withdrawal_active_branches: Vec<B256>,
     pub force_count: u32,
@@ -112,6 +119,7 @@ mod tests {
         let w = TreeBoundaryWitness {
             schema_version: 2,
             block_height: 36_000,
+            block_hash: B256::repeat_byte(0xbb),
             withdrawal_count: 5,
             withdrawal_active_branches: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
             force_count: 0,

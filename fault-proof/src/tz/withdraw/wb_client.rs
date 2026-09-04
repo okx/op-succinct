@@ -186,6 +186,7 @@ impl WbClient {
         Ok(TreeBoundaryWitness {
             schema_version: d.schema_version,
             block_height: d.block_height,
+            block_hash: d.block_hash,
             withdrawal_count: d.withdrawal_count,
             withdrawal_active_branches: d.withdrawal_active_branches,
             force_count: d.force_count,
@@ -284,10 +285,13 @@ struct CheckpointDto {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BoundaryDto {
-    // TreeBoundaryResponse (§R2.1-C): flat, NO chainId, NO declared root.
+    // TreeBoundaryResponse (§R2.1-C / R4): flat, NO chainId, NO declared root; DOES carry
+    // `blockHash` between `blockHeight` and `withdrawalCount` (R4 MR102-R3-3 — previously dropped).
     #[serde(default)]
     schema_version: u16,
     block_height: u64,
+    // `blockHash` (camelCase); `B256`'s serde parses the `0x` hex string, same as `canonical_block_hash`.
+    block_hash: B256,
     #[serde(default)]
     withdrawal_count: u32,
     #[serde(default)]
@@ -485,6 +489,30 @@ mod tests {
             client(&server2, 196).get_tree_boundary_witness(50).await,
             Err(WbError::WitnessStoreCorrupt)
         ));
+    }
+
+    #[tokio::test]
+    async fn boundary_dto_preserves_block_hash() {
+        // R4 C-pos (MR102-R3-3): the wire `blockHash` must survive into
+        // `TreeBoundaryWitness.block_hash` (previously silently dropped). Uses the flat DTO shape
+        // (`withdrawalCount`/`withdrawalActiveBranches`/…) the current `BoundaryDto` deserializes.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/tree_boundary_witness"))
+            .and(query_param("height", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                "schemaVersion": 2, "blockHeight": 100,
+                "blockHash": B256::repeat_byte(0x11),
+                "withdrawalCount": 2, "withdrawalActiveBranches": [B256::repeat_byte(0x22)],
+                "forceCount": 0, "forceActiveBranches": []
+            }))))
+            .mount(&server)
+            .await;
+        let w = client(&server, 196).get_tree_boundary_witness(100).await.unwrap();
+        assert_eq!(w.block_hash, B256::repeat_byte(0x11));
+        assert_eq!(w.block_height, 100);
+        assert_eq!(w.withdrawal_count, 2);
+        assert_eq!(w.withdrawal_active_branches.len(), 1); // popcount(2) == 1
     }
 
     #[tokio::test]

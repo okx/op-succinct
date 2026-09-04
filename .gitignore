@@ -103,3 +103,8 @@ pnpm-debug.log*
 *.keystore
 *mnemonic*
 .claude/
+
+# TRDZN-1339 R4 repo-structure decision: superpowers design docs are NOT tracked in the
+# repo tree. Cumulative context travels via CoW + the out-of-repo stage-5 checkpoint tar.
+# On the feature branch, also run: git rm -r --cached docs/superpowers
+docs/superpowers/

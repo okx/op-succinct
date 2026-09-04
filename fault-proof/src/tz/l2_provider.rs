@@ -207,6 +207,7 @@ mod tests {
         let ok = TreeBoundaryWitness {
             schema_version: 2,
             block_height: 50,
+            block_hash: B256::repeat_byte(0xbb),
             withdrawal_count: 2, // popcount(2) == 1
             withdrawal_active_branches: vec![B256::repeat_byte(0x11)],
             force_count: 0,

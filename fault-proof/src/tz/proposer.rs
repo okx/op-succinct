@@ -53,14 +53,17 @@ fn compute_chunks(start: u64, end: u64, blocks_per_fetch: u64) -> Vec<(u64, u64)
     chunks
 }
 
-/// The SOLE producer of the range-guest stdin boundary block (items ③–⑦ of the canonical order,
-/// Spec §R3.2). Field order + types are isomorphic to the guest read (`programs/tz/range/src/main.rs`):
-/// `tz_chain_id: u64`, then `(withdrawal_count: u32, withdrawal_branches: Vec<B256>)`, then
-/// `(force_count: u32, force_branches: Vec<B256>)`. Branches are `Vec<B256>` (SP1 serde `write`/`read`),
-/// NOT flat bytes — matching the guest's `io::read::<Vec<B256>>()`.
+/// The SOLE producer of the range-guest stdin boundary block (items ③–⑧ of the canonical order,
+/// Spec §R4.3 — supersedes the R3 §R3.2 8-item table). Field order + types are isomorphic to the
+/// guest read (`programs/tz/range/src/main.rs`): `tz_chain_id: u64`, then **`block_hash: B256`
+/// (R4)**, then `(withdrawal_count: u32, withdrawal_branches: Vec<B256>)`, then
+/// `(force_count: u32, force_branches: Vec<B256>)`. `block_hash` sits right after `tz_chain_id`
+/// and before `withdrawal_count`, mirroring the upstream `TreeBoundaryResponse`. Branches are
+/// `Vec<B256>` (SP1 serde `write`/`read`), NOT flat bytes — matching `io::read::<Vec<B256>>()`.
 #[cfg(feature = "tz")]
 pub(crate) struct BoundaryStdinFields {
     pub chain_id: u64,
+    pub block_hash: alloy_primitives::B256,
     pub withdrawal_count: u32,
     pub withdrawal_branches: Vec<alloy_primitives::B256>,
     pub force_count: u32,
@@ -68,7 +71,7 @@ pub(crate) struct BoundaryStdinFields {
 }
 
 /// Build the boundary stdin block from the TZ chain id (single Host source — CheckpointV2 envelope
-/// or `TzConfig`) and the R2 `TreeBoundaryWitness` (which carries NO chain_id, per R2 #2/#3).
+/// or `TzConfig`) and the `TreeBoundaryWitness` (R2 #2/#3: no chain_id; R4: carries `block_hash`).
 #[cfg(feature = "tz")]
 pub(crate) fn boundary_stdin_fields(
     tz_chain_id: u64,
@@ -76,11 +79,32 @@ pub(crate) fn boundary_stdin_fields(
 ) -> BoundaryStdinFields {
     BoundaryStdinFields {
         chain_id: tz_chain_id,
+        block_hash: w.block_hash,
         withdrawal_count: w.withdrawal_count,
         withdrawal_branches: w.withdrawal_active_branches.clone(),
         force_count: w.force_count,
         force_branches: w.force_active_branches.clone(),
     }
+}
+
+/// Proposer pre-proving boundary↔snapshot consistency check (spec §R4.2-2): the WB tree-boundary at
+/// `start_block` MUST carry the same canonical block hash the guest will read from the snapshot as
+/// `state.context.block_hash`. A mismatch means the WB returned a boundary for the wrong block
+/// (e.g. a reorged block at the right height) — hard-fail BEFORE proving, never a warning. Pure +
+/// unit-testable (mirrors [`assert_extra_data_self_consistent`]'s shape).
+#[cfg(feature = "tz")]
+pub(crate) fn assert_boundary_consistent(
+    boundary: &crate::tz::withdraw::types::TreeBoundaryWitness,
+    expected_block_hash: alloy_primitives::B256,
+) -> anyhow::Result<()> {
+    if boundary.block_hash != expected_block_hash {
+        anyhow::bail!(
+            "tz: boundary block_hash {:?} != canonical block hash {:?} at start_block",
+            boundary.block_hash,
+            expected_block_hash
+        );
+    }
+    Ok(())
 }
 
 /// Proposer pre-Game self-consistency check (spec §7.2): the four-preimage `extraData` the
@@ -520,23 +544,35 @@ where
         range_stdin.write_vec(snapshot); // ① snapshot
         range_stdin.write(&chunk_count); // ② chunk_count
 
-        // ③–⑦ boundary block: the TZ chain id + the two-tree sub-range-start boundary the guest
-        // re-expands into pre-roots (spec §R3.2 canonical stdin order). Produced ONLY by
-        // `boundary_stdin_fields`; the snapshot is the post-state of `start_block`, so the boundary
-        // is taken at `start_block` (matching the guest's `frontier_from_boundary`). This is a
-        // vkey-affecting change — Host write and guest read land together (Task 4).
+        // ③–⑧ boundary block: the TZ chain id + the sub-range-start boundary `block_hash` (R4) +
+        // the two-tree boundary the guest re-expands into pre-roots (spec §R4.3 canonical stdin
+        // order). Produced ONLY by `boundary_stdin_fields`; the snapshot is the post-state of
+        // `start_block`, so the boundary is taken at `start_block` (matching the guest's
+        // `frontier_from_boundary`). This is a vkey-affecting change — Host write and guest read
+        // land together (Task 5).
         let tz_chain_id = self.l2_provider.tz_chain_id().ok_or_else(|| {
             anyhow::anyhow!(
                 "tz: range proof requires a configured TZ chain id (witness-builder client)"
             )
         })?;
         let boundary_witness = self.l2_provider.fetch_tree_boundary_witness(start_block).await?;
+        // R4 §R4.2-2 hard-fail cross-check: the boundary's block_hash MUST equal the canonical
+        // block hash at `start_block` — the same value the guest reads from the snapshot as
+        // `state.context.block_hash`. Single independent source: the confirmed-block-info block
+        // hash at `start_block` (via the checkpoint preimage). Mismatch ⇒ abort, no proof.
+        let expected_block_hash = self
+            .l2_provider
+            .fetch_checkpoint_preimage_at_block(U256::from(start_block))
+            .await?
+            .block_hash;
+        assert_boundary_consistent(&boundary_witness, expected_block_hash)?;
         let bf = boundary_stdin_fields(tz_chain_id, &boundary_witness);
         range_stdin.write(&bf.chain_id); // ③ tz_chain_id
-        range_stdin.write(&bf.withdrawal_count); // ④
-        range_stdin.write(&bf.withdrawal_branches); // ⑤
-        range_stdin.write(&bf.force_count); // ⑥
-        range_stdin.write(&bf.force_branches); // ⑦
+        range_stdin.write(&bf.block_hash); // ④ block_hash (R4)
+        range_stdin.write(&bf.withdrawal_count); // ⑤
+        range_stdin.write(&bf.withdrawal_branches); // ⑥
+        range_stdin.write(&bf.force_count); // ⑦
+        range_stdin.write(&bf.force_branches); // ⑧
 
         let mut blocks_bytes = 0usize;
         for (chunk_start, chunk_end) in &chunks {
@@ -853,24 +889,29 @@ mod tests {
 
 #[cfg(all(test, feature = "tz"))]
 mod tz_boundary_tests {
-    use super::{assert_extra_data_self_consistent, boundary_stdin_fields};
+    use super::{assert_boundary_consistent, assert_extra_data_self_consistent, boundary_stdin_fields};
     use crate::tz::withdraw::claim::claim_root;
     use crate::tz::withdraw::types::TreeBoundaryWitness;
     use alloy_primitives::B256;
+
+    /// A minimal valid boundary carrying `block_hash` (R4). popcount(3) == 2 withdrawal branches.
+    fn boundary_with(block_hash: B256) -> TreeBoundaryWitness {
+        TreeBoundaryWitness {
+            schema_version: 2,
+            block_height: 50,
+            block_hash,
+            withdrawal_count: 3,
+            withdrawal_active_branches: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
+            force_count: 0,
+            force_active_branches: vec![],
+        }
+    }
 
     #[test]
     fn boundary_stdin_fields_orders_chain_id_first_then_two_trees() {
         // R2 removed `chain_id` from the witness; the chain id now enters via the producer argument
         // (single Host source) and is the FIRST stdin field (guest reads it as stdin item ③).
-        let w = TreeBoundaryWitness {
-            schema_version: 2,
-            block_height: 50,
-            withdrawal_count: 3,
-            withdrawal_active_branches: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
-            force_count: 0,
-            force_active_branches: vec![],
-        };
-        let f = boundary_stdin_fields(196, &w);
+        let f = boundary_stdin_fields(196, &boundary_with(B256::repeat_byte(0xbb)));
         assert_eq!(f.chain_id, 196);
         assert_eq!(f.withdrawal_count, 3);
         // popcount(3) == 2 branches, carried as `Vec<B256>` (the guest reads `Vec<B256>` via SP1
@@ -881,6 +922,23 @@ mod tz_boundary_tests {
         );
         assert_eq!(f.force_count, 0);
         assert!(f.force_branches.is_empty());
+    }
+
+    #[test]
+    fn boundary_stdin_fields_carries_block_hash_after_chain_id() {
+        // R4 §R4.3: `block_hash` is stdin item ④ (right after `tz_chain_id`), taken from the witness.
+        let f = boundary_stdin_fields(196, &boundary_with(B256::repeat_byte(0x11)));
+        assert_eq!(f.chain_id, 196);
+        assert_eq!(f.block_hash, B256::repeat_byte(0x11));
+    }
+
+    #[test]
+    fn assert_boundary_consistent_rejects_wrong_block() {
+        // R4 §R4.2-2: equal ⇒ Ok; mismatch ⇒ hard Err (Host aborts before proving).
+        let w = boundary_with(B256::repeat_byte(0x11));
+        assert!(assert_boundary_consistent(&w, B256::repeat_byte(0x11)).is_ok());
+        let err = assert_boundary_consistent(&w, B256::repeat_byte(0x22)).unwrap_err();
+        assert!(err.to_string().contains("boundary block_hash"));
     }
 
     /// Build a 164-byte four-preimage extraData for the given fields (mirrors the CWIA layout).

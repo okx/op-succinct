@@ -39,9 +39,11 @@ pub fn main() {
     let snapshot_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
     let chunk_count: u32 = sp1_zkvm::io::read();
 
-    // [N2] Sub-range-start boundaries for the two trees + the TZ chain id, written by the proposer
-    // right after `chunk_count`. Order must match `boundary_stdin_fields`.
+    // [N2] Sub-range-start boundary block written by the proposer right after `chunk_count`, in the
+    // §R4.3 canonical order: tz_chain_id (③), block_hash (④, R4), then the two trees (⑤–⑧). Order
+    // must match `fault_proof::tz::proposer::boundary_stdin_fields`.
     let tz_chain_id: u64 = sp1_zkvm::io::read();
+    let boundary_block_hash: B256 = sp1_zkvm::io::read(); // ④ (R4)
     let w_count: u32 = sp1_zkvm::io::read();
     let w_active: Vec<B256> = sp1_zkvm::io::read();
     let f_count: u32 = sp1_zkvm::io::read();
@@ -54,6 +56,13 @@ pub fn main() {
     };
 
     let start_block_hash = state.context.block_hash;
+    // R4 §R4.2-3: the boundary MUST fall on the snapshot's start block. This re-enforces the Host's
+    // pre-proving `assert_boundary_consistent` inside the zkVM — a boundary for a different block
+    // (e.g. a reorged block at the right height) cannot produce a passing proof. Mismatch ⇒ panic.
+    assert_eq!(
+        boundary_block_hash, start_block_hash,
+        "boundary block hash != snapshot start block hash"
+    );
     let start_app_hash = B256::from(blake3_hash_state(&state));
 
     // Pre roots: rebuild each tree's frontier from its compact boundary, then wrap with count+tag.
