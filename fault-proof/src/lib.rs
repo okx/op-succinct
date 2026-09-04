@@ -116,6 +116,25 @@ pub trait L2ProviderTrait {
     ) -> Result<crate::tz::withdraw::types::TreeBoundaryWitness> {
         bail!("fetch_tree_boundary_witness not supported on this L2 provider")
     }
+
+    // for tz: the locally-configured TZ chain id (the single Host source for the guest's stdin item
+    // ③ `tz_chain_id`; spec §R3.2 chainId placement — NOT in any root/struct). xlayer returns None.
+    #[cfg(feature = "tz")]
+    fn tz_chain_id(&self) -> Option<u64> {
+        None
+    }
+
+    // for tz: the four-field CheckpointV2 preimage at `l2_block_number` (blockHash/appHash from the
+    // confirmed block info, withdrawalRoot/forceRoot from the WB checkpoint, cross-checked). Feeds
+    // `handle_game_creation`'s 164-byte extraData (spec §R3.3). `parent_index` is left as the
+    // `u32::MAX` "unset" sentinel — the Game caller supplies the real parent index. xlayer bails.
+    #[cfg(feature = "tz")]
+    async fn fetch_checkpoint_preimage_at_block(
+        &self,
+        _l2_block_number: U256,
+    ) -> Result<crate::tz::withdraw::types::GameCheckpointPreimage> {
+        bail!("fetch_checkpoint_preimage_at_block not supported on this L2 provider")
+    }
 }
 
 #[async_trait]

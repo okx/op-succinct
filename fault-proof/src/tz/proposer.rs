@@ -53,44 +53,33 @@ fn compute_chunks(start: u64, end: u64, blocks_per_fetch: u64) -> Vec<(u64, u64)
     chunks
 }
 
-/// The tz tree-boundary-witness fields appended to the range guest's `SP1Stdin`, in the exact
-/// order the guest reads them after `chunk_count` (spec §7.2, §8): `withdrawal_count`,
-/// withdrawal branch bytes, `force_count`, force branch bytes.
-///
-/// NOTE (host↔guest coordination): writing these into `prove_range`'s stdin and reading them in
-/// the SP1 range guest (`programs/tz/range`) is a single vkey-affecting change that must land
-/// together (spec §8). The guest crate depends on the private tradezone Claim Tree Core, which is
-/// not fetchable in this build environment, so the live splice + guest read are completed in the
-/// x2/tradezone/SP1-provisioned environment (see the ELF/vkey hand-off note). This pure helper is
-/// the unit-tested building block that fixes the wire ordering independently of SP1.
+/// The SOLE producer of the range-guest stdin boundary block (items ③–⑦ of the canonical order,
+/// Spec §R3.2). Field order + types are isomorphic to the guest read (`programs/tz/range/src/main.rs`):
+/// `tz_chain_id: u64`, then `(withdrawal_count: u32, withdrawal_branches: Vec<B256>)`, then
+/// `(force_count: u32, force_branches: Vec<B256>)`. Branches are `Vec<B256>` (SP1 serde `write`/`read`),
+/// NOT flat bytes — matching the guest's `io::read::<Vec<B256>>()`.
 #[cfg(feature = "tz")]
-#[allow(dead_code)]
 pub(crate) struct BoundaryStdinFields {
+    pub chain_id: u64,
     pub withdrawal_count: u32,
-    pub withdrawal_branches: Vec<u8>,
+    pub withdrawal_branches: Vec<alloy_primitives::B256>,
     pub force_count: u32,
-    pub force_branches: Vec<u8>,
+    pub force_branches: Vec<alloy_primitives::B256>,
 }
 
+/// Build the boundary stdin block from the TZ chain id (single Host source — CheckpointV2 envelope
+/// or `TzConfig`) and the R2 `TreeBoundaryWitness` (which carries NO chain_id, per R2 #2/#3).
 #[cfg(feature = "tz")]
-fn encode_branches(branches: &[alloy_primitives::B256]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(branches.len() * 32);
-    for b in branches {
-        out.extend_from_slice(b.as_slice());
-    }
-    out
-}
-
-#[cfg(feature = "tz")]
-#[allow(dead_code)]
 pub(crate) fn boundary_stdin_fields(
+    tz_chain_id: u64,
     w: &crate::tz::withdraw::types::TreeBoundaryWitness,
 ) -> BoundaryStdinFields {
     BoundaryStdinFields {
+        chain_id: tz_chain_id,
         withdrawal_count: w.withdrawal_count,
-        withdrawal_branches: encode_branches(&w.withdrawal_active_branches),
+        withdrawal_branches: w.withdrawal_active_branches.clone(),
         force_count: w.force_count,
-        force_branches: encode_branches(&w.force_active_branches),
+        force_branches: w.force_active_branches.clone(),
     }
 }
 
@@ -98,7 +87,6 @@ pub(crate) fn boundary_stdin_fields(
 /// proposer is about to write MUST hash to the `expected_root_claim` it intends to commit,
 /// otherwise the on-chain `_checkRootClaimCommitment` would revert. Pure + unit-testable.
 #[cfg(feature = "tz")]
-#[allow(dead_code)]
 pub(crate) fn assert_extra_data_self_consistent(
     extra: &[u8],
     expected_root_claim: alloy_primitives::B256,
@@ -128,11 +116,28 @@ where
         next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
-        let output_root = self
+        // Four-field CheckpointV2 preimage at the proposal height (single fetch + cross-check inside
+        // the provider). The submitted `rootClaim` is the four-field `claimRoot`, and the SAME four
+        // fields encode the 164-byte extraData — one source, no forked recompute (spec §R3.3).
+        let mut preimage = self
             .l2_provider
-            .compute_output_root_at_block(next_l2_block_number_for_proposal)
+            .fetch_checkpoint_preimage_at_block(next_l2_block_number_for_proposal)
             .await?;
-        let extra_data = (next_l2_block_number_for_proposal, parent_game_index).abi_encode_packed();
+        preimage.parent_index = parent_game_index;
+        let output_root = crate::tz::l2_provider::compute_tz_root_claim(
+            preimage.block_hash,
+            preimage.app_hash,
+            preimage.withdrawal_root,
+            preimage.force_root,
+        );
+        // 164-byte four-field extraData via the SOLE encoder (never hand-rolled here).
+        let extra_data =
+            crate::tz::withdraw::claim::encode_four_preimage_extra_data(&preimage).to_vec();
+        // Host mirror of the on-chain `_checkRootClaimCommitment`: the extraData four-preimage MUST
+        // hash to the `rootClaim` we are about to submit, else abort BEFORE sending any transaction
+        // (on-chain this else-branch is `revert InvalidRootClaimPreimage()`). Spec §R3.3.
+        assert_extra_data_self_consistent(&extra_data, output_root)?;
+
         let maybe_existing_game = self
             .factory
             .games(self.config.game_type, output_root, extra_data.clone().into())
@@ -512,8 +517,26 @@ where
         let chunk_count: u32 = chunks.len().try_into().context("chunk_count overflows u32")?;
 
         let mut range_stdin = SP1Stdin::new();
-        range_stdin.write_vec(snapshot);
-        range_stdin.write(&chunk_count);
+        range_stdin.write_vec(snapshot); // ① snapshot
+        range_stdin.write(&chunk_count); // ② chunk_count
+
+        // ③–⑦ boundary block: the TZ chain id + the two-tree sub-range-start boundary the guest
+        // re-expands into pre-roots (spec §R3.2 canonical stdin order). Produced ONLY by
+        // `boundary_stdin_fields`; the snapshot is the post-state of `start_block`, so the boundary
+        // is taken at `start_block` (matching the guest's `frontier_from_boundary`). This is a
+        // vkey-affecting change — Host write and guest read land together (Task 4).
+        let tz_chain_id = self.l2_provider.tz_chain_id().ok_or_else(|| {
+            anyhow::anyhow!(
+                "tz: range proof requires a configured TZ chain id (witness-builder client)"
+            )
+        })?;
+        let boundary_witness = self.l2_provider.fetch_tree_boundary_witness(start_block).await?;
+        let bf = boundary_stdin_fields(tz_chain_id, &boundary_witness);
+        range_stdin.write(&bf.chain_id); // ③ tz_chain_id
+        range_stdin.write(&bf.withdrawal_count); // ④
+        range_stdin.write(&bf.withdrawal_branches); // ⑤
+        range_stdin.write(&bf.force_count); // ⑥
+        range_stdin.write(&bf.force_branches); // ⑦
 
         let mut blocks_bytes = 0usize;
         for (chunk_start, chunk_end) in &chunks {
@@ -836,22 +859,26 @@ mod tz_boundary_tests {
     use alloy_primitives::B256;
 
     #[test]
-    fn boundary_stdin_fields_orders_counts_and_branch_bytes() {
+    fn boundary_stdin_fields_orders_chain_id_first_then_two_trees() {
+        // R2 removed `chain_id` from the witness; the chain id now enters via the producer argument
+        // (single Host source) and is the FIRST stdin field (guest reads it as stdin item ③).
         let w = TreeBoundaryWitness {
             schema_version: 2,
-            chain_id: 196,
             block_height: 50,
             withdrawal_count: 3,
             withdrawal_active_branches: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
             force_count: 0,
             force_active_branches: vec![],
         };
-        let f = boundary_stdin_fields(&w);
+        let f = boundary_stdin_fields(196, &w);
+        assert_eq!(f.chain_id, 196);
         assert_eq!(f.withdrawal_count, 3);
-        // Two 32-byte branches, concatenated in order.
-        assert_eq!(f.withdrawal_branches.len(), 64);
-        assert_eq!(&f.withdrawal_branches[..32], B256::repeat_byte(0x11).as_slice());
-        assert_eq!(&f.withdrawal_branches[32..], B256::repeat_byte(0x22).as_slice());
+        // popcount(3) == 2 branches, carried as `Vec<B256>` (the guest reads `Vec<B256>` via SP1
+        // serde `read()`, NOT flat bytes) and preserved in order.
+        assert_eq!(
+            f.withdrawal_branches,
+            vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)]
+        );
         assert_eq!(f.force_count, 0);
         assert!(f.force_branches.is_empty());
     }

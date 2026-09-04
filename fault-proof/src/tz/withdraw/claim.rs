@@ -28,6 +28,26 @@ pub fn claim_root(block_hash: B256, app_hash: B256, withdrawal_root: B256, force
     keccak256(preimage)
 }
 
+/// Encode a [`GameCheckpointPreimage`] into the 164-byte four-preimage `extraData()` blob.
+///
+/// Byte-exact inverse of [`decode_four_preimage_extra_data`] and the SOLE production encoder of the
+/// CWIA layout (spec §R3.3), so `handle_game_creation` never hand-rolls the byte offsets:
+/// `l2BlockNumber(uint256 BE, right-aligned)@[0,32) ‖ parentIndex(u32 BE)@[32,36) ‖
+/// blockHash@[36,68) ‖ appHash@[68,100) ‖ withdrawalRoot@[100,132) ‖ forceRoot@[132,164)`. The
+/// height is a `u64` so it always fits the low 8 bytes (top 24 stay zero, matching decode's guard).
+pub fn encode_four_preimage_extra_data(
+    pre: &GameCheckpointPreimage,
+) -> [u8; FOUR_PREIMAGE_EXTRA_DATA_LEN] {
+    let mut e = [0u8; FOUR_PREIMAGE_EXTRA_DATA_LEN];
+    e[24..32].copy_from_slice(&pre.checkpoint_block_height.to_be_bytes());
+    e[32..36].copy_from_slice(&pre.parent_index.to_be_bytes());
+    e[36..68].copy_from_slice(pre.block_hash.as_slice());
+    e[68..100].copy_from_slice(pre.app_hash.as_slice());
+    e[100..132].copy_from_slice(pre.withdrawal_root.as_slice());
+    e[132..164].copy_from_slice(pre.force_root.as_slice());
+    e
+}
+
 /// Decode the 164-byte four-preimage `extraData()` blob into its fields.
 ///
 /// The first 32 bytes are a big-endian `uint256` L2 block number; a value that does not fit in
@@ -132,6 +152,27 @@ mod tests {
         assert_eq!(d.force_root, fr);
         // The decoded four-preimage must reproduce the same claimRoot the contract commits to.
         assert_eq!(claim_root(d.block_hash, d.app_hash, d.withdrawal_root, d.force_root), claim_root(bh, ah, wr, fr));
+    }
+
+    #[test]
+    fn encode_four_preimage_extra_data_roundtrips_and_matches_test_layout() {
+        let pre = GameCheckpointPreimage {
+            checkpoint_block_height: 36_000,
+            parent_index: 7,
+            block_hash: B256::repeat_byte(0xa1),
+            app_hash: B256::repeat_byte(0xb2),
+            withdrawal_root: B256::repeat_byte(0xc3),
+            force_root: B256::repeat_byte(0xd4),
+        };
+        let e = encode_four_preimage_extra_data(&pre);
+        assert_eq!(e.len(), FOUR_PREIMAGE_EXTRA_DATA_LEN);
+        // byte-identical to the independent test helper layout above.
+        assert_eq!(
+            e,
+            encode_extra(36_000, 7, pre.block_hash, pre.app_hash, pre.withdrawal_root, pre.force_root)
+        );
+        // and it round-trips through the production decoder.
+        assert_eq!(decode_four_preimage_extra_data(&e).unwrap(), pre);
     }
 
     #[test]

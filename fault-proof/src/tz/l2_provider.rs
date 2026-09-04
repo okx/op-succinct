@@ -9,7 +9,7 @@ use op_alloy_rpc_types::Transaction;
 
 use super::chain_client::TzChainClient;
 use super::withdraw::claim::claim_root;
-use super::withdraw::types::TreeBoundaryWitness;
+use super::withdraw::types::{GameCheckpointPreimage, TreeBoundaryWitness};
 use super::withdraw::wb_client::WbClient;
 use crate::L2ProviderTrait;
 
@@ -72,6 +72,21 @@ impl L2ProviderTrait for TzL2Provider {
     }
 
     async fn compute_output_root_at_block(&self, l2_block_number: U256) -> Result<FixedBytes<32>> {
+        // Single source: the four validated preimage fields, hashed via the shared claim codec.
+        let p = self.fetch_checkpoint_preimage_at_block(l2_block_number).await?;
+        Ok(compute_tz_root_claim(p.block_hash, p.app_hash, p.withdrawal_root, p.force_root))
+    }
+
+    fn tz_chain_id(&self) -> Option<u64> {
+        // The WB client's configured chain id is the single Host source (TzConfig TZ chainId), and
+        // is itself the §5.3 chainId guard authority. `None` when built without a WB (unit tests).
+        self.wb.as_ref().map(|wb| wb.chain_id())
+    }
+
+    async fn fetch_checkpoint_preimage_at_block(
+        &self,
+        l2_block_number: U256,
+    ) -> Result<GameCheckpointPreimage> {
         let height = l2_block_number.to::<u64>();
         let info = self.tz_client.get_confirmed_block_info_at_height(height)?;
         // Four-field claim: blockHash/appHash come from the confirmed block info; withdrawalRoot/
@@ -95,12 +110,16 @@ impl L2ProviderTrait for TzL2Provider {
                  (blockHash/appHash mismatch)"
             );
         }
-        Ok(compute_tz_root_claim(
-            info.block_hash,
-            info.state_hash,
-            cp.withdrawal_root,
-            cp.force_root,
-        ))
+        Ok(GameCheckpointPreimage {
+            checkpoint_block_height: height,
+            // Unset sentinel — `handle_game_creation` overwrites with the real parent game index
+            // before encoding extraData (spec §R3.3).
+            parent_index: u32::MAX,
+            block_hash: info.block_hash,
+            app_hash: info.state_hash,
+            withdrawal_root: cp.withdrawal_root,
+            force_root: cp.force_root,
+        })
     }
 
     async fn fetch_tree_boundary_witness(&self, height: u64) -> Result<TreeBoundaryWitness> {
@@ -183,9 +202,10 @@ mod tests {
 
     #[test]
     fn boundary_consistency_checks_chain_id_and_popcount() {
+        // R2 #2: the witness carries NO chain_id; the chain guard is the `checkpoint_chain_id`
+        // argument (checkpoint top level), the witness's own invariant is the popcount wire rule.
         let ok = TreeBoundaryWitness {
             schema_version: 2,
-            chain_id: 196,
             block_height: 50,
             withdrawal_count: 2, // popcount(2) == 1
             withdrawal_active_branches: vec![B256::repeat_byte(0x11)],
@@ -193,8 +213,8 @@ mod tests {
             force_active_branches: vec![],
         };
         assert!(assert_boundary_consistent(&ok, 196).is_ok());
-        // chain_id mismatch
-        assert!(assert_boundary_consistent(&ok, 197).is_err());
+        // checkpoint chain_id == 0 is rejected (guard lives on the checkpoint top level).
+        assert!(assert_boundary_consistent(&ok, 0).is_err());
         // popcount mismatch
         let mut bad = ok.clone();
         bad.withdrawal_active_branches.push(B256::repeat_byte(0x22));
