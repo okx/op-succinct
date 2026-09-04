@@ -19,18 +19,24 @@ use serde::Deserialize;
 
 use super::claim::claim_root;
 use super::error::WbError;
-use super::tree_adapter::{business_root, root_from_frontier, FORCE_TAG, TREE_DEPTH, WITHDRAWAL_TAG};
-use super::types::{CheckpointV2, HistoricalInclusionProof, TreeBoundaryWitness, WithdrawRecord};
+use super::tree_adapter::{root_from_frontier, TREE_DEPTH};
+use super::types::{
+    CheckpointV2, CheckpointV2Envelope, HistoricalInclusionProof, TreeBoundaryWitness,
+    WithdrawRecord,
+};
 
 const WB_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPPORTED_SCHEMA_VERSION: u16 = 2;
 
-// TODO(route): confirm the following route names against WB v2
-// (tradezone feature/witness-builder-withdraw-v1) before production wiring.
+// Real WB v2 routes verified against tradezone `feature/witness-builder-withdraw-v1` @ e56881eb
+// (`crates/chain/src/rpc/handlers/{zkvm_snapshot,witness}.rs`). Record is a PATH param
+// (`{recordHash}`); the others take query params.
 const ROUTE_CHECKPOINT: &str = "chain/dex_state_snapshot";
-const ROUTE_BOUNDARY: &str = "chain/tree_boundary_witness";
-const ROUTE_RECORD: &str = "chain/canonical_record";
-const ROUTE_PROOF: &str = "chain/historical_inclusion_proof";
+// NOTE: witness.rs registers `query_tree_boundary`; its exact URL path was not capturable from the
+// clone's OpenAPI attrs — confirm against the running WB. Grouped under `chain/witness/`.
+const ROUTE_BOUNDARY: &str = "chain/witness/tree-boundary";
+const ROUTE_RECORD_PREFIX: &str = "chain/witness/withdrawals/"; // + {recordHash}
+const ROUTE_PROOF: &str = "chain/witness/withdrawal-proof";
 
 /// Host-side Witness Builder v2 client.
 pub struct WbClient {
@@ -107,38 +113,59 @@ impl WbClient {
         env.data.ok_or(WbError::CheckpointNotFound)
     }
 
-    /// Fetch the four-field checkpoint at `height`, verifying `chainId`, `schemaVersion`, and that
-    /// the four components recompute to the advertised `claimRoot`.
-    pub async fn get_checkpoint_v2(&self, height: u64) -> Result<CheckpointV2, WbError> {
+    /// Fetch the four-field checkpoint at `height` and its top-level `chainId` (R2 #1/#3).
+    ///
+    /// Sends BOTH `format=root` AND `schemaVersion=2` (R2 #1: omitting `schemaVersion` makes the WB
+    /// default to v1). Parses the FLAT `SnapshotQueryResponse` (no nested `components`; the four
+    /// roots + `chainId` are top-level per §R2.1-B), verifies `schemaVersion==2`, the top-level
+    /// `chainId`, and that the four fields recompute to the advertised `claimRoot`. Returns a
+    /// [`CheckpointV2Envelope`] so chainId is carried beside — never inside — the checkpoint body.
+    pub async fn get_checkpoint_v2(&self, height: u64) -> Result<CheckpointV2Envelope, WbError> {
         let d: CheckpointDto = self
-            .get(ROUTE_CHECKPOINT, &[("height", height.to_string()), ("format", "root".into())])
+            .get(
+                ROUTE_CHECKPOINT,
+                &[
+                    ("height", height.to_string()),
+                    ("format", "root".into()),
+                    ("schemaVersion", "2".into()),
+                ],
+            )
             .await?;
-        match d.status.as_str() {
-            "ready" => {}
-            "running" | "not_ready" | "above_local_tip" => return Err(WbError::NotReady),
+        // status is snake_case (§R2.1-B): ready usable; running / above_local_tip ⇒ retryable.
+        match d.status.as_deref() {
+            Some("ready") => {}
+            Some("running") | Some("above_local_tip") => return Err(WbError::NotReady),
             _ => return Err(WbError::CheckpointNotFound),
         }
-        if d.schema_version != SUPPORTED_SCHEMA_VERSION {
+        // R2 #1: a response without schemaVersion==2 is a v1 body — reject as unsupported.
+        if d.schema_version != Some(SUPPORTED_SCHEMA_VERSION) {
             return Err(WbError::UnsupportedVersion);
         }
-        if d.chain_id == 0 || d.chain_id != self.chain_id {
+        // R2 #3: chainId is a bare top-level field (only populated for v2); guard it host-side.
+        let chain_id = d.chain_id.ok_or(WbError::UnsupportedVersion)?;
+        if chain_id == 0 || chain_id != self.chain_id {
             return Err(WbError::InvalidRequest);
         }
-        let c = d.components.ok_or(WbError::WitnessStoreCorrupt)?;
+        let block_hash = d.canonical_block_hash.ok_or(WbError::WitnessStoreCorrupt)?;
+        let app_hash = d.app_hash.ok_or(WbError::WitnessStoreCorrupt)?;
+        let withdrawal_root = d.withdrawal_root.ok_or(WbError::WitnessStoreCorrupt)?;
+        let force_root = d.force_root.ok_or(WbError::WitnessStoreCorrupt)?;
         let claim = d.claim_root.ok_or(WbError::WitnessStoreCorrupt)?;
-        // The four components MUST recompute to the advertised claimRoot.
-        if claim_root(c.block_hash, c.app_hash, c.withdrawal_root, c.force_root) != claim {
+        // The four flat fields MUST recompute to the advertised claimRoot.
+        if claim_root(block_hash, app_hash, withdrawal_root, force_root) != claim {
             return Err(WbError::RootMismatch);
         }
-        Ok(CheckpointV2 {
-            schema_version: d.schema_version,
-            chain_id: d.chain_id,
-            block_height: d.height,
-            block_hash: c.block_hash,
-            app_hash: c.app_hash,
-            withdrawal_root: c.withdrawal_root,
-            force_root: c.force_root,
-            claim_root: claim,
+        Ok(CheckpointV2Envelope {
+            checkpoint: CheckpointV2 {
+                schema_version: SUPPORTED_SCHEMA_VERSION,
+                block_height: d.height,
+                block_hash,
+                app_hash,
+                withdrawal_root,
+                force_root,
+                claim_root: claim,
+            },
+            chain_id,
         })
     }
 
@@ -150,50 +177,40 @@ impl WbClient {
         if d.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(WbError::UnsupportedVersion);
         }
-        if d.chain_id == 0 || d.chain_id != self.chain_id {
-            return Err(WbError::InvalidRequest);
-        }
-        // Rebuild each tree's inner root from the frontier (also enforces len == popcount(count)).
-        let w_inner = root_from_frontier(&d.withdrawal.active_branches, d.withdrawal.count)?;
-        let f_inner = root_from_frontier(&d.force.active_branches, d.force.count)?;
-        // Cross-check declared roots when the WB provides them.
-        if let Some(decl) = d.withdrawal.declared_root {
-            if business_root(w_inner, d.withdrawal.count, WITHDRAWAL_TAG) != decl {
-                return Err(WbError::WitnessStoreCorrupt);
-            }
-        }
-        if let Some(decl) = d.force.declared_root {
-            if business_root(f_inner, d.force.count, FORCE_TAG) != decl {
-                return Err(WbError::WitnessStoreCorrupt);
-            }
-        }
+        // R2 #2: TreeBoundaryResponse carries NO chainId; correctness is `len == popcount(count)`
+        // + a successful inner-root rebuild via tz-witness (chainId is guarded on the checkpoint
+        // top level only). `root_from_frontier` enforces the popcount invariant and rebuilds the
+        // inner root through `tz_witness::merkle::inner_root`.
+        let _w_inner = root_from_frontier(&d.withdrawal_active_branches, d.withdrawal_count)?;
+        let _f_inner = root_from_frontier(&d.force_active_branches, d.force_count)?;
         Ok(TreeBoundaryWitness {
             schema_version: d.schema_version,
-            chain_id: d.chain_id,
             block_height: d.block_height,
-            withdrawal_count: d.withdrawal.count,
-            withdrawal_active_branches: d.withdrawal.active_branches,
-            force_count: d.force.count,
-            force_active_branches: d.force.active_branches,
+            withdrawal_count: d.withdrawal_count,
+            withdrawal_active_branches: d.withdrawal_active_branches,
+            force_count: d.force_count,
+            force_active_branches: d.force_active_branches,
         })
     }
 
-    /// Fetch the canonical Withdraw record for a record hash.
+    /// Fetch the canonical Withdraw record for a record hash. The recordHash is a PATH param
+    /// (`/chain/witness/withdrawals/{recordHash}`, §R2.1-D); the record fields are nested under
+    /// `record.rawTradezoneWithdrawal`.
     pub async fn get_canonical_record(&self, record_hash: B256) -> Result<WithdrawRecord, WbError> {
-        let d: RecordDto = self
-            .get(ROUTE_RECORD, &[("recordHash", format!("{record_hash:#x}"))])
-            .await?;
-        Ok(d.into_record())
+        let route = format!("{ROUTE_RECORD_PREFIX}{record_hash:#x}");
+        let d: LookupDto = self.get(&route, &[]).await?;
+        Ok(d.record.into_record())
     }
 
     /// Fetch the canonical block height at which the record for `record_hash` was included. The
-    /// height is taken from the WB (never the caller). A record that carries no canonical height
-    /// yet is treated as not-yet-included (`WithdrawalNotFound`).
+    /// height is taken from the WB (never the caller); a zero/absent height means not-yet-included.
     pub async fn get_canonical_record_height(&self, record_hash: B256) -> Result<u64, WbError> {
-        let d: RecordDto = self
-            .get(ROUTE_RECORD, &[("recordHash", format!("{record_hash:#x}"))])
-            .await?;
-        d.canonical_block_height.ok_or(WbError::WithdrawalNotFound)
+        let route = format!("{ROUTE_RECORD_PREFIX}{record_hash:#x}");
+        let d: LookupDto = self.get(&route, &[]).await?;
+        if d.canonical_block_height == 0 {
+            return Err(WbError::WithdrawalNotFound);
+        }
+        Ok(d.canonical_block_height)
     }
 
     /// Fetch a historical inclusion proof bound to an exact `(checkpoint_height, withdrawal_root)`.
@@ -244,53 +261,66 @@ struct ApiEnvelope<T> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckpointDto {
+    // Flat SnapshotQueryResponse (§R2.1-B): no nested `components`; four roots + chainId top-level.
     #[serde(default)]
-    schema_version: u16,
+    schema_version: Option<u16>,
     #[serde(default)]
-    chain_id: u64,
+    chain_id: Option<u64>,
     height: u64,
-    status: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    canonical_block_hash: Option<B256>,
+    #[serde(default)]
     claim_root: Option<B256>,
-    components: Option<ComponentsDto>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ComponentsDto {
-    block_hash: B256,
-    app_hash: B256,
-    withdrawal_root: B256,
-    force_root: B256,
+    #[serde(default)]
+    app_hash: Option<B256>,
+    #[serde(default)]
+    withdrawal_root: Option<B256>,
+    #[serde(default)]
+    force_root: Option<B256>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BoundaryDto {
+    // TreeBoundaryResponse (§R2.1-C): flat, NO chainId, NO declared root.
     #[serde(default)]
     schema_version: u16,
-    #[serde(default)]
-    chain_id: u64,
     block_height: u64,
-    withdrawal: TreeSideDto,
-    force: TreeSideDto,
+    #[serde(default)]
+    withdrawal_count: u32,
+    #[serde(default)]
+    withdrawal_active_branches: Vec<B256>,
+    #[serde(default)]
+    force_count: u32,
+    #[serde(default)]
+    force_active_branches: Vec<B256>,
 }
 
+/// WithdrawalLookupResponse (§R2.1-D): record fields nested under `rawTradezoneWithdrawal`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TreeSideDto {
-    count: u32,
+struct LookupDto {
     #[serde(default)]
-    active_branches: Vec<B256>,
-    #[serde(default)]
-    declared_root: Option<B256>,
+    canonical_block_height: u64,
+    record: WithdrawRecordDto,
 }
 
+/// WithdrawRecordResponse (§R2.1-D). Hashes/addresses/amounts arrive as `0x`/decimal strings and
+/// deserialize into alloy `B256`/`Address`/`U256` via their serde impls.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RecordDto {
+struct WithdrawRecordDto {
     version: u16,
     chain_id: u64,
     transaction_hash: B256,
+    raw_tradezone_withdrawal: RawWithdrawalDto,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWithdrawalDto {
     token_type: u8,
     token_address: Address,
     #[serde(default)]
@@ -299,30 +329,32 @@ struct RecordDto {
     amounts: Vec<U256>,
     from: Address,
     to: Address,
-    #[serde(default)]
-    canonical_block_height: Option<u64>,
 }
 
-impl RecordDto {
+impl WithdrawRecordDto {
+    /// Flatten the nested WB record into op-succinct's host-side [`WithdrawRecord`] (op-succinct
+    /// carries record data but never re-encodes the leaf — the WB supplies recordHash/leafHash).
     fn into_record(self) -> WithdrawRecord {
+        let raw = self.raw_tradezone_withdrawal;
         WithdrawRecord {
             version: self.version,
             chain_id: self.chain_id,
             transaction_hash: self.transaction_hash,
-            token_type: self.token_type,
-            token_address: self.token_address,
-            token_ids: self.token_ids,
-            amounts: self.amounts,
-            from: self.from,
-            to: self.to,
+            token_type: raw.token_type,
+            token_address: raw.token_address,
+            token_ids: raw.token_ids,
+            amounts: raw.amounts,
+            from: raw.from,
+            to: raw.to,
         }
     }
 }
 
+/// WithdrawalProofResponse (§R2.1-D).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProofDto {
-    record: RecordDto,
+    record: WithdrawRecordDto,
     record_hash: B256,
     leaf_hash: B256,
     canonical_block_height: u64,

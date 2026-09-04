@@ -218,7 +218,7 @@ mod tests {
     use super::*;
     use crate::tz::defender::challenge_contract::{ChallengeStatus, MockChallengeContract};
     use crate::tz::defender::rootmanager_client::MockRootManager;
-    use crate::tz::withdraw::tree_adapter::{business_root, calculate_inner_root, zero_hashes, WITHDRAWAL_TAG};
+    use crate::tz::withdraw::tree_adapter::single_leaf_withdrawal_fixture;
     use crate::tz::withdraw::types::WithdrawRecord;
     use alloy_primitives::{Address, B256};
     use std::sync::Mutex as StdMutex;
@@ -240,13 +240,10 @@ mod tests {
         }
     }
 
-    /// Build a valid count==1 proof for `leaf` and return `(proof, withdrawal_root)`.
+    /// Build a valid count==1 proof for `leaf` and return `(proof, withdrawal_root)`, via the
+    /// tz-witness-backed test fixture.
     fn valid_proof(leaf: B256) -> (HistoricalInclusionProof, B256) {
-        let z = zero_hashes();
-        let mut siblings = [B256::ZERO; 32];
-        siblings.copy_from_slice(&z[..32]);
-        let inner = calculate_inner_root(leaf, 0, &siblings);
-        let root = business_root(inner, 1, WITHDRAWAL_TAG);
+        let (siblings, root) = single_leaf_withdrawal_fixture(leaf);
         let proof = HistoricalInclusionProof {
             record: record(),
             record_hash: leaf,

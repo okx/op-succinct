@@ -1,145 +1,98 @@
-//! Outer `count + tag` tree wrapper, fixed empty-tree vectors, and inclusion-proof
-//! verification for the Withdrawal/ForceTx trees (spec §4, §7.1).
+//! Thin adapter over `tz_witness::merkle` (R2 #4, spec §5 "single computation source").
 //!
-//! # Single source of truth for the *inner* tree
+//! op-succinct owns **no** tree/root/proof algorithm. Every root, inner-root and proof computation
+//! here delegates to `tz_witness::merkle` (fixed rev `e56881eb…`). The only op-succinct-owned glue
+//! is:
+//!   1. mapping our convenience `tag: u8` (0x02 Withdrawal / 0x01 ForceTx) to `TreeNamespace`;
+//!   2. re-expanding a compact boundary `(count, active_branches)` into a full `TreeFrontier`
+//!      (`tz-witness` exposes `TreeFrontier::active_branches()` but no inverse), then calling
+//!      `tz_witness::merkle::inner_root`;
+//!   3. enforcing the structural proof hard rules (`count > 0`, `leaf_index < count`,
+//!      `siblings.len() == 32`) at the boundary and mapping `MerkleError` → [`WbError`].
 //!
-//! The subtle *incremental* tree construction (frontier/branch append as leaves are added
-//! during a canonical replay) is owned by the TradeZone Claim Tree Core
-//! (`tradezone:crates/chain/src/witness/`, agglayer `unified-bridge 0.18.0` LocalExitTree
-//! lineage). The SP1 range guest reuses that crate directly; op-succinct does **not**
-//! re-implement the incremental builder (spec §10 non-goal, §14 criterion 5).
-//!
-//! This adapter implements only what op-succinct legitimately owns and what the Defender's
-//! *local proof verification* needs (spec §7.4): the outermost `count + tag` wrapper, the
-//! fixed empty-tree vectors, and standard Merkle **proof-path** recomputation. Each of these
-//! is fully specified in spec §4 and is byte-equivalent to the Protocol §3.3.2 Rust reference
-//! — it is a verification-side recomputation, not a copy of the incremental builder.
-//!
-//! ## Claim Tree Core integration seam
-//!
-//! When the `tradezone` Claim Tree Core crate is fetchable in the build environment, a
-//! future `tz-claim-tree` feature can re-point [`calculate_inner_root`] / [`verify_proof`] to
-//! delegate to the core so there is a single byte-source; the native implementation here then
-//! becomes the cross-check oracle (spec §5: "行为必须逐字节等价"). The current environment cannot
-//! fetch that private crate (see the ELF/vkey/access hand-off note), so the spec-faithful
-//! native implementation is used and unit-tested against the spec's published empty vectors.
+//! The previous version of this file copied the incremental tree + proof-path recomputation
+//! locally because the build environment could not fetch the private tradezone crate; R2 removes
+//! that copy entirely — the algorithm now has a single byte-source in `tz-witness`.
 
-use alloy_primitives::{keccak256, B256};
+use alloy_primitives::B256;
+use tz_witness::merkle::{
+    self, ClaimProof, MerkleError, TreeFrontier, TreeNamespace, FORCE_ROOT_TAG,
+    TREE_DEPTH as TZW_TREE_DEPTH, WITHDRAWAL_ROOT_TAG,
+};
 
 use super::error::WbError;
 
-/// Incremental Merkle tree depth (spec §4).
-pub const TREE_DEPTH: usize = 32;
-/// Outer wrapper tag for the Withdrawal tree (spec §4).
-pub const WITHDRAWAL_TAG: u8 = 0x02;
-/// Outer wrapper tag for the ForceTx tree (spec §4).
-pub const FORCE_TAG: u8 = 0x01;
+/// Incremental Merkle tree depth (from `tz_witness::merkle`).
+pub const TREE_DEPTH: usize = TZW_TREE_DEPTH;
+/// Outer wrapper tag for the Withdrawal tree (`tz_witness::merkle::WITHDRAWAL_ROOT_TAG`).
+pub const WITHDRAWAL_TAG: u8 = WITHDRAWAL_ROOT_TAG;
+/// Outer wrapper tag for the ForceTx tree (`tz_witness::merkle::FORCE_ROOT_TAG`).
+pub const FORCE_TAG: u8 = FORCE_ROOT_TAG;
 
-/// The empty-subtree hash at every level: `z[0] = bytes32(0)`, `z[h+1] = keccak256(z[h] ‖ z[h])`.
-/// `z[TREE_DEPTH]` is the empty inner root. Computed independently (spec §9 item 11), never copied.
-fn empty_subtree_hashes() -> [B256; TREE_DEPTH + 1] {
-    let mut z = [B256::ZERO; TREE_DEPTH + 1];
-    for h in 0..TREE_DEPTH {
-        let mut buf = [0u8; 64];
-        buf[..32].copy_from_slice(z[h].as_slice());
-        buf[32..].copy_from_slice(z[h].as_slice());
-        z[h + 1] = keccak256(buf);
+/// Map op-succinct's convenience `tag` byte to a `tz_witness` namespace.
+fn namespace_for_tag(tag: u8) -> Result<TreeNamespace, WbError> {
+    match tag {
+        WITHDRAWAL_ROOT_TAG => Ok(TreeNamespace::Withdrawal),
+        FORCE_ROOT_TAG => Ok(TreeNamespace::ForceTx),
+        _ => Err(WbError::WitnessStoreCorrupt),
     }
-    z
 }
 
-/// The empty inner root (`z[TREE_DEPTH]`).
-pub fn empty_inner_root() -> B256 {
-    empty_subtree_hashes()[TREE_DEPTH]
-}
-
-/// The full empty-subtree hash vector `z[0..=TREE_DEPTH]` (spec §4). Exposed so callers building
-/// inclusion proofs / boundary frontiers reuse the same independently-computed zero hashes.
+/// The empty-subtree hash vector `z[0..=32]` (delegated to `tz_witness::merkle::zero_hashes`).
 pub fn zero_hashes() -> [B256; TREE_DEPTH + 1] {
-    empty_subtree_hashes()
+    merkle::zero_hashes()
 }
 
-/// The empty Withdrawal root: `business_root(empty_inner_root, 0, WITHDRAWAL_TAG)`.
-pub fn empty_withdrawal_root() -> B256 {
-    business_root(empty_inner_root(), 0, WITHDRAWAL_TAG)
+/// The empty inner root `z[32]` (delegated).
+pub fn empty_inner_root() -> B256 {
+    merkle::zero_hashes()[TREE_DEPTH]
 }
 
-/// The empty ForceTx root: `business_root(empty_inner_root, 0, FORCE_TAG)`. ForceTx currently has
-/// no leaves ⇒ this is always the ForceTx root (spec §4 — MUST NOT be `NotReady`).
+/// The empty ForceTx root (`tz_witness::merkle::empty_force_root`).
 pub fn empty_force_root() -> B256 {
-    business_root(empty_inner_root(), 0, FORCE_TAG)
+    merkle::empty_force_root()
 }
 
-/// Outer wrapper: `keccak256(inner_root ‖ uint256(count) ‖ tag)`, preimage exactly 65 bytes,
-/// `count` big-endian right-aligned in a `uint256` (spec §4).
-pub fn business_root(inner_root: B256, count: u32, tag: u8) -> B256 {
-    let mut preimage = [0u8; 65];
-    preimage[..32].copy_from_slice(inner_root.as_slice());
-    // uint256(count), big-endian right-aligned: low 4 bytes at [61, 65) of the count word.
-    preimage[60..64].copy_from_slice(&count.to_be_bytes());
-    preimage[64] = tag;
-    keccak256(preimage)
+/// The empty Withdrawal root. `tz-witness` exposes only `empty_force_root`, so build the withdrawal
+/// variant from the same primitives: `business_root(Withdrawal, 0, inner_root(empty frontier))`.
+pub fn empty_withdrawal_root() -> B256 {
+    merkle::business_root(TreeNamespace::Withdrawal, 0, merkle::inner_root(&TreeFrontier::default()))
 }
 
-/// Rebuild the inner root of a tree with `count` leaves from its boundary frontier
-/// (`active_branches` = the branch nodes at the levels set in `count`'s binary, low→high;
-/// spec §4). This is the decoder cross-check op-succinct owns: it validates
-/// `active_branches.len() == popcount(count)` and reconstructs the declared pre-root without
-/// re-implementing the incremental *builder*. Empty trees (`count == 0`) rebuild to
-/// [`empty_inner_root`].
+/// Outer `count + tag` wrapper, delegated to `tz_witness::merkle::business_root`. `tag` selects the
+/// namespace; callers pass only the two module constants (`WITHDRAWAL_TAG` / `FORCE_TAG`).
+pub fn business_root(inner_root_value: B256, count: u32, tag: u8) -> B256 {
+    let namespace =
+        if tag == FORCE_ROOT_TAG { TreeNamespace::ForceTx } else { TreeNamespace::Withdrawal };
+    merkle::business_root(namespace, count, inner_root_value)
+}
+
+/// Rebuild the inner root of a tree with `count` leaves from its compact boundary frontier
+/// (`active_branches` = branch nodes at the set-bit levels of `count`, low→high). Validates
+/// `active_branches.len() == popcount(count)`, re-expands into a full `[B256; 32]` branch array,
+/// then delegates the actual root computation to `tz_witness::merkle::inner_root`.
 pub fn root_from_frontier(active_branches: &[B256], count: u32) -> Result<B256, WbError> {
     if active_branches.len() != count.count_ones() as usize {
         return Err(WbError::WitnessStoreCorrupt);
     }
-    let z = empty_subtree_hashes();
-    let mut node = B256::ZERO;
+    let mut branch = [B256::ZERO; TREE_DEPTH];
     let mut next_branch = 0usize;
-    for (h, z_h) in z.iter().enumerate().take(TREE_DEPTH) {
-        let mut buf = [0u8; 64];
+    for (h, slot) in branch.iter_mut().enumerate() {
         if (count >> h) & 1 == 1 {
-            // A stored frontier node sits on the left at this level.
-            let branch = active_branches[next_branch];
+            *slot = active_branches[next_branch];
             next_branch += 1;
-            buf[..32].copy_from_slice(branch.as_slice());
-            buf[32..].copy_from_slice(node.as_slice());
-        } else {
-            // Empty subtree on the right.
-            buf[..32].copy_from_slice(node.as_slice());
-            buf[32..].copy_from_slice(z_h.as_slice());
         }
-        node = keccak256(buf);
     }
-    Ok(node)
+    Ok(merkle::inner_root(&TreeFrontier { count, branch }))
 }
 
-/// Recompute the inner root from a leaf and its 32-sibling Merkle path.
+/// Verify a Withdrawal/ForceTx inclusion proof against a bound business root, delegating the tree
+/// math to `tz_witness::merkle::verify_proof`.
 ///
-/// Parent = `keccak256(left ‖ right)` (unsorted); the position at each level is the corresponding
-/// bit of `leaf_index` (bit 0 = level 0). This is the verification-side recomputation of spec §4.
-pub fn calculate_inner_root(leaf: B256, leaf_index: u32, siblings: &[B256; TREE_DEPTH]) -> B256 {
-    let mut node = leaf;
-    for (h, sibling) in siblings.iter().enumerate() {
-        let mut buf = [0u8; 64];
-        if (leaf_index >> h) & 1 == 0 {
-            // node is the left child.
-            buf[..32].copy_from_slice(node.as_slice());
-            buf[32..].copy_from_slice(sibling.as_slice());
-        } else {
-            // node is the right child.
-            buf[..32].copy_from_slice(sibling.as_slice());
-            buf[32..].copy_from_slice(node.as_slice());
-        }
-        node = keccak256(buf);
-    }
-    node
-}
-
-/// Verify a Withdrawal/ForceTx inclusion proof against a bound business root.
-///
-/// Enforces the structural preconditions (spec §4): `count > 0`, `leaf_index < count`,
-/// `siblings.len() == 32`; then rebuilds the inner root, wraps it with `count + tag`, and
-/// compares to `expected_root`. Structural violations return [`WbError::WitnessStoreCorrupt`];
-/// a value mismatch returns [`WbError::RootMismatch`].
+/// The structural hard rules (spec §4: `count > 0`, `leaf_index < count`, `siblings.len() == 32`)
+/// are enforced at the op-succinct boundary and surface as [`WbError::WitnessStoreCorrupt`]; a
+/// value mismatch (rebuilt root ≠ `expected_root`) surfaces as [`WbError::RootMismatch`]. The inner
+/// root rebuild + outer wrap + comparison are entirely `tz_witness`'s.
 pub fn verify_proof(
     leaf: B256,
     leaf_index: u32,
@@ -148,89 +101,74 @@ pub fn verify_proof(
     expected_root: B256,
     tag: u8,
 ) -> Result<(), WbError> {
-    if count == 0 {
-        return Err(WbError::WitnessStoreCorrupt);
-    }
-    if leaf_index >= count {
-        return Err(WbError::WitnessStoreCorrupt);
-    }
-    if siblings.len() != TREE_DEPTH {
+    if count == 0 || leaf_index >= count || siblings.len() != TREE_DEPTH {
         return Err(WbError::WitnessStoreCorrupt);
     }
     let mut sibs = [B256::ZERO; TREE_DEPTH];
     sibs.copy_from_slice(siblings);
-    let inner = calculate_inner_root(leaf, leaf_index, &sibs);
-    let root = business_root(inner, count, tag);
-    if root == expected_root {
-        Ok(())
-    } else {
-        Err(WbError::RootMismatch)
-    }
+    let namespace = namespace_for_tag(tag)?;
+    let proof = ClaimProof { namespace, leaf, leaf_index, count, siblings: sibs, expected_root };
+    merkle::verify_proof(&proof).map_err(|e| match e {
+        // Structural cases are pre-checked above; a surviving InvalidProof is a value mismatch.
+        MerkleError::InvalidProof => WbError::RootMismatch,
+        MerkleError::TreeFull => WbError::WitnessStoreCorrupt,
+        _ => WbError::WitnessStoreCorrupt,
+    })
+}
+
+/// Build a valid single-leaf (`count == 1`) proof's `(siblings, expected_root)` for the Withdrawal
+/// namespace — TEST-FIXTURE SUPPORT ONLY (production never constructs proofs, it only verifies them
+/// via [`verify_proof`]). Uses `tz_witness::merkle` primitives so the fixture is byte-consistent
+/// with the verifier: a `count == 1` tree places the leaf at index 0 with all-empty siblings.
+#[cfg(test)]
+pub fn single_leaf_withdrawal_fixture(leaf: B256) -> ([B256; TREE_DEPTH], B256) {
+    let z = merkle::zero_hashes();
+    let mut siblings = [B256::ZERO; TREE_DEPTH];
+    siblings.copy_from_slice(&z[..TREE_DEPTH]);
+    let appended = merkle::append(&TreeFrontier::default(), leaf).expect("append single leaf");
+    let root = merkle::business_root(TreeNamespace::Withdrawal, 1, appended.inner_root);
+    (siblings, root)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Spec §4 publishes (truncated) the fixed empty vectors. We compute them independently via
-    // the z-recurrence + outer wrapper and assert they match the published prefixes/suffixes and
-    // are mutually distinct (spec §9 item 11 — computed, not copied from one another).
+    // The frozen empty-tree vectors are asserted against tz-witness' computation (spec §2: each
+    // language asserts independently, never copies a literal across).
     #[test]
     fn empty_vectors_match_spec_published_values() {
-        let inner = format!("{:#x}", empty_inner_root());
         let force = format!("{:#x}", empty_force_root());
         let withdrawal = format!("{:#x}", empty_withdrawal_root());
-
-        // emptyInnerRoot = 0x27ae5ba0…d757
-        assert!(inner.starts_with("0x27ae5ba0"), "inner={inner}");
-        assert!(inner.ends_with("d757"), "inner={inner}");
-        // EMPTY_FORCE_ROOT = 0x2ce29f3b…2a56
-        assert!(force.starts_with("0x2ce29f3b"), "force={force}");
-        assert!(force.ends_with("2a56"), "force={force}");
-        // EMPTY_WITHDRAWAL_ROOT = 0x6b7dbdc9…76d7
-        assert!(withdrawal.starts_with("0x6b7dbdc9"), "withdrawal={withdrawal}");
-        assert!(withdrawal.ends_with("76d7"), "withdrawal={withdrawal}");
-
-        // Distinct — each computed for its own tag, not copied.
+        let inner = format!("{:#x}", empty_inner_root());
+        assert!(inner.starts_with("0x27ae5ba0") && inner.ends_with("d757"), "inner={inner}");
+        assert!(force.starts_with("0x2ce29f3b") && force.ends_with("2a56"), "force={force}");
+        assert!(
+            withdrawal.starts_with("0x6b7dbdc9") && withdrawal.ends_with("76d7"),
+            "withdrawal={withdrawal}"
+        );
         assert_ne!(empty_withdrawal_root(), empty_force_root());
-        assert_ne!(empty_inner_root(), empty_withdrawal_root());
     }
 
     #[test]
-    fn business_root_is_65_byte_tagged_keccak() {
+    fn business_root_tag_and_count_matter() {
         let inner = B256::repeat_byte(0xab);
-        let mut pre = [0u8; 65];
-        pre[..32].copy_from_slice(inner.as_slice());
-        pre[60..64].copy_from_slice(&5u32.to_be_bytes());
-        pre[64] = WITHDRAWAL_TAG;
-        assert_eq!(business_root(inner, 5, WITHDRAWAL_TAG), keccak256(pre));
-        // tag must matter: withdrawal vs force differ for the same inner+count.
-        assert_ne!(
-            business_root(inner, 5, WITHDRAWAL_TAG),
-            business_root(inner, 5, FORCE_TAG)
-        );
-        // count must matter.
-        assert_ne!(
-            business_root(inner, 5, WITHDRAWAL_TAG),
-            business_root(inner, 6, WITHDRAWAL_TAG)
-        );
+        assert_ne!(business_root(inner, 5, WITHDRAWAL_TAG), business_root(inner, 5, FORCE_TAG));
+        assert_ne!(business_root(inner, 5, WITHDRAWAL_TAG), business_root(inner, 6, WITHDRAWAL_TAG));
     }
 
     #[test]
     fn verify_proof_rejects_bad_bounds() {
-        let sibs = [B256::ZERO; 32];
-        // count == 0
+        let sibs = [B256::ZERO; TREE_DEPTH];
         assert!(matches!(
             verify_proof(B256::ZERO, 0, 0, &sibs, B256::ZERO, WITHDRAWAL_TAG),
             Err(WbError::WitnessStoreCorrupt)
         ));
-        // leaf_index == count
         assert!(matches!(
             verify_proof(B256::ZERO, 5, 5, &sibs, B256::ZERO, WITHDRAWAL_TAG),
             Err(WbError::WitnessStoreCorrupt)
         ));
-        // wrong siblings length
-        let short = vec![B256::ZERO; 31];
+        let short = vec![B256::ZERO; TREE_DEPTH - 1];
         assert!(matches!(
             verify_proof(B256::ZERO, 0, 1, &short, B256::ZERO, WITHDRAWAL_TAG),
             Err(WbError::WitnessStoreCorrupt)
@@ -239,112 +177,23 @@ mod tests {
 
     #[test]
     fn verify_proof_roundtrips_single_leaf_tree() {
-        // A count==1 tree: the leaf sits at index 0, siblings are all empty-subtree hashes.
         let leaf = B256::repeat_byte(0x42);
-        let z = super::empty_subtree_hashes();
-        let mut sibs = [B256::ZERO; 32];
-        sibs[..].copy_from_slice(&z[..32]);
-        let inner = calculate_inner_root(leaf, 0, &sibs);
-        let root = business_root(inner, 1, WITHDRAWAL_TAG);
-        // Correct proof verifies.
+        let (sibs, root) = single_leaf_withdrawal_fixture(leaf);
         assert!(verify_proof(leaf, 0, 1, &sibs, root, WITHDRAWAL_TAG).is_ok());
-        // Wrong tag ⇒ root mismatch.
         assert!(matches!(
             verify_proof(leaf, 0, 1, &sibs, root, FORCE_TAG),
             Err(WbError::RootMismatch)
         ));
-        // Tampered leaf ⇒ root mismatch.
         assert!(matches!(
             verify_proof(B256::repeat_byte(0x43), 0, 1, &sibs, root, WITHDRAWAL_TAG),
             Err(WbError::RootMismatch)
         ));
     }
 
-    /// Independent reference incremental builder used ONLY as a test oracle (spec §9 item 11 —
-    /// computed independently). Appends leaves and tracks the frontier `branch[h]` + root, so we
-    /// can assert `root_from_frontier` recovers the same pre-root for counts 0/1/2/3/5.
-    struct RefTree {
-        branch: [B256; TREE_DEPTH],
-        z: [B256; TREE_DEPTH + 1],
-        count: u32,
-    }
-    impl RefTree {
-        fn new() -> Self {
-            RefTree { branch: [B256::ZERO; TREE_DEPTH], z: super::empty_subtree_hashes(), count: 0 }
-        }
-        fn append(&mut self, leaf: B256) {
-            let mut node = leaf;
-            let mut size = self.count;
-            for h in 0..TREE_DEPTH {
-                if size & 1 == 1 {
-                    let mut buf = [0u8; 64];
-                    buf[..32].copy_from_slice(self.branch[h].as_slice());
-                    buf[32..].copy_from_slice(node.as_slice());
-                    node = keccak256(buf);
-                } else {
-                    self.branch[h] = node;
-                    break;
-                }
-                size >>= 1;
-            }
-            self.count += 1;
-        }
-        fn root(&self) -> B256 {
-            let mut node = B256::ZERO;
-            let mut size = self.count;
-            for h in 0..TREE_DEPTH {
-                let mut buf = [0u8; 64];
-                if size & 1 == 1 {
-                    buf[..32].copy_from_slice(self.branch[h].as_slice());
-                    buf[32..].copy_from_slice(node.as_slice());
-                } else {
-                    buf[..32].copy_from_slice(node.as_slice());
-                    buf[32..].copy_from_slice(self.z[h].as_slice());
-                }
-                node = keccak256(buf);
-                size >>= 1;
-            }
-            node
-        }
-        /// The active branches at the set-bit levels of `count`, low→high (the boundary wire).
-        fn active_branches(&self) -> Vec<B256> {
-            let mut out = Vec::new();
-            for h in 0..TREE_DEPTH {
-                if (self.count >> h) & 1 == 1 {
-                    out.push(self.branch[h]);
-                }
-            }
-            out
-        }
-    }
-
     #[test]
-    fn root_from_frontier_matches_reference_for_counts_0_1_2_3_5() {
-        // count == 0 rebuilds to the empty inner root.
+    fn root_from_frontier_rejects_bad_popcount() {
+        let bad = vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)];
+        assert!(matches!(root_from_frontier(&bad, 2), Err(WbError::WitnessStoreCorrupt)));
         assert_eq!(root_from_frontier(&[], 0).unwrap(), empty_inner_root());
-
-        for &n in &[1u32, 2, 3, 5] {
-            let mut t = RefTree::new();
-            for i in 0..n {
-                t.append(B256::repeat_byte(0x10 + i as u8));
-            }
-            let ab = t.active_branches();
-            assert_eq!(ab.len(), n.count_ones() as usize, "popcount for count={n}");
-            let rebuilt = root_from_frontier(&ab, n).unwrap();
-            assert_eq!(rebuilt, t.root(), "frontier rebuild must match reference root for count={n}");
-            // Wrong length ⇒ rejected.
-            let mut bad = ab.clone();
-            bad.push(B256::ZERO);
-            assert!(matches!(root_from_frontier(&bad, n), Err(WbError::WitnessStoreCorrupt)));
-        }
-    }
-
-    #[test]
-    fn inner_root_position_depends_on_leaf_index_bits() {
-        let leaf = B256::repeat_byte(0x11);
-        let mut sibs = [B256::ZERO; 32];
-        sibs[0] = B256::repeat_byte(0x22);
-        // index 0 (left) vs index 1 (right) at level 0 must differ.
-        assert_ne!(calculate_inner_root(leaf, 0, &sibs), calculate_inner_root(leaf, 1, &sibs));
     }
 }

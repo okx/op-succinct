@@ -2,15 +2,63 @@
 
 - **Jira**: [TRDZN-1339](https://okcoin.atlassian.net/browse/TRDZN-1339) — `[op-succinct] 实现 Withdraw/ForceTx Root 贯穿与独立 Defender`
 - **仓库 / 分支**: `github/op-succinct` @ `xl/tz-challenger-v2`（既是开发基线也是 MR 目标分支）
-- **设计日期**: 2026-09-03
+- **设计日期**: 2026-09-03 ｜ **修订**: 2026-09-04（Revision 2 — feedback REWORK，对齐最新 WB 实现）
 - **Lark Review Document**: <https://okg-block.sg.larksuite.com/docx/EpBwdZvH8oiXq6x0V0JlgQaXgxb>（记录见 `docs/superpowers/lark-review-doc.md`）
 - **状态**: 待创作者审批（Approve design / Request design changes）
+- **本轮 REWORK 来源**: 创作者 review MR !102 后 CHANGES_REQUESTED（5 条反馈）。同分支 `xl/trdzn-1339/0903-0830` → `xl/tz-challenger-v2`，同 MR !102，reviewed SHA `6a7203f07`，base `671e055`。**方向（四字段 claim 贯穿 + 独立 Defender）与合约保持不变**；本轮仅将设计收敛到接口契约层面并逐条修正与最新 WB 的偏差。详见新增的「Revision 2」章节。
 
 > **一句话结论**：在 op-succinct 中保留现有 Proposer / L1 Challenger / Range Guest / aggregation / Game 主流程不变，只让 `withdrawalRoot` 和 `forceRoot` 两个新 root 与既有 `blockHash`/`appHash` 一起，形成完整四字段 `claimRoot`，从 Witness Builder 的 CheckpointV2 与 boundary witness 贯穿到 SP1 证明、L1 Game 和 L1 Challenger；并新增一个**独立的 Defender 服务**，用 RootManager 权威 root + Witness Builder 历史 inclusion proof 响应 X Layer 上的 Withdraw challenge。所有 leaf 提取、Merkle 追加、root 与 proof 计算**唯一**来自 TradeZone 的 `tz-witness` crate（extractor 在 `tz-block-processor`）——op-succinct 内**绝不**再实现第二套树/root/proof 算法。
 
 ---
 
-## 0. 权威来源与优先级
+## Revision 2 — 对齐最新 WB 实现（feedback REWORK，2026-09-04）
+
+> 本节是本轮返工的核心交付。创作者 review MR !102 后指出 5 处与**最新 Witness Builder 实现 / spec** 对不上的地方。下面先给出**以实际 WB 上游代码为准**的权威字段表（tradezone `feature/witness-builder-withdraw-v1`，`tz-witness` 拆分 commit **`e56881eb29879166752294c87b207a23bb2dcc26`**，已通过 GitLab 逐文件核验），再给出「5 条反馈 → 根因 → 设计修正 → 落地文件」对照表，最后逐条正面回答创作者的问题。**方向、四字段 `claimRoot`、独立 Defender（D1）、合约不变——均保持批准态，不在本轮改动。**
+
+### R2.0 根因（一句话）
+
+MR !102 的实现是**按较旧的协议文档措辞**写的，而不是最新的 WB 代码——因为构建环境当时**拉不到私有 tradezone 仓库**（见 `fault-proof/src/tz/withdraw/wb_client.rs` 头部注释与 `tree_adapter.rs` 第 18–25 行）。于是客户端只能对着「文档描述的形状」用 `wiremock` 打桩验证，并把树算法本地复制到 `tree_adapter.rs`。最新 WB 已把树拆成独立的 `tz-witness` crate 并调整了 chainId 位置与 schemaVersion 语义，导致 5 处偏差。**5 条反馈同源**：以 `tz-witness` 固定 rev 依赖为唯一树实现后，chainId 位置、schemaVersion 语义、guest 集成会随之自然对齐。
+
+### R2.1 权威字段表（以实际 WB 代码为准，commit `e56881eb2`）
+
+**A. `tz-witness` crate（`crates/witness`，纯计算，唯一树/root/proof 源）**
+- `Cargo.toml` 依赖 = **`tz-primitives` + `thiserror` 两项**（无重运行时依赖 → SP1 guest 可裁剪编译）。
+- `lib.rs` 模块：`checkpoint`（CheckpointV2 + claim_root 计算）、`merkle`（增量树 / inner root / proof / 空树向量 / `empty_force_root`）、`withdrawal`（`WithdrawRecord` / `RawTradezoneWithdrawal` 记录类型）。
+- `checkpoint::CheckpointV2` = `{ schema_version:u16, block_height:u64, block_hash, app_hash, withdrawal_root, force_root, claim_root }` — **共 7 字段，不含 chain_id**。`checkpoint_v2_claim_root(blockHash, appHash, withdrawalRoot, forceRoot) = keccak256(128B preimage)`，字节序严格 `blockHash‖appHash‖withdrawalRoot‖forceRoot`。
+
+**B. Checkpoint RPC（`crates/chain/src/rpc/handlers/zkvm_snapshot.rs`，路由 `chain/dex_state_snapshot`）**
+- 请求 `SnapshotQuery{ height, format(默认 `snapshot`), schemaVersion:Option<u16> }`。服务端 `schema_version.unwrap_or(1)` → **省略即默认 v1**；`format=root` 且 `schemaVersion∈{1,2}` 否则 `protocol_not_accepted`；**仅 `schemaVersion==2` 走 `root_response_v2`**。
+- 响应 `SnapshotQueryResponse`（**扁平** camelCase，非嵌套）：`stateAvailable`、`status`、`canonicalBlockHash`、`claimRoot?`、`appHash?`、`withdrawalRoot?`、`localTip?`、`schemaVersion?`(v2 时 =2)、**`chainId?:u64` 在响应顶层**（仅 v2 填，值 = `witness.chain_id()`）。**没有嵌套 `components` 对象**（单测断言 `json.get("components").is_none()`）。
+- `status` 取值（snake_case）：`ready` / `running` / `above_local_tip` / `no_base_snapshot` / `capacity_unavailable` / `failed`。仅 `ready` 可用；`running`/`above_local_tip` 视为 `NotReady`（可重试）。
+- `forceRoot` 在无 ForceTx 源时取 `tz_witness::merkle::empty_force_root()`（非零空树根）。
+
+**C. Tree boundary RPC（`crates/chain/src/rpc/handlers/witness.rs`，`query_tree_boundary`，参数 `?height`）**
+- 响应 `TreeBoundaryResponse` = `{ schemaVersion, blockHeight, blockHash, withdrawalCount:u32, withdrawalActiveBranches:[bytes32], forceCount:u32, forceActiveBranches:[bytes32] }` — **不含 chainId**。
+
+**D. Record / Proof RPC（`witness.rs`）**
+- Record：`GET /chain/witness/withdrawals/{recordHash}` → `WithdrawalLookupResponse{ protocolVersion, recordHash, canonicalBlockHeight:u64, leafIndex:u32, record }`，其中 `record: WithdrawRecordResponse{ version, chainId, transactionHash, rawTradezoneWithdrawal{ tokenType, tokenAddress, tokenIds[], amounts[], from, to } }`（**记录字段嵌套在 `rawTradezoneWithdrawal` 下**）。
+- Proof：`GET /chain/witness/withdrawal-proof?recordHash&checkpointHeight&withdrawalRoot` → `WithdrawalProofResponse{ protocolVersion, recordHash, leafHash, canonicalBlockHeight, checkpointHeight, withdrawalRoot, count:u32, leafIndex:u32, record, siblings:[bytes32;32] }`。
+- `WithdrawRecord` / `RawTradezoneWithdrawal` 类型来自 `tz_witness::withdrawal`（op-succinct 直接复用，不另写 leaf 编码）。
+
+### R2.2 本轮修订对照表（5 条反馈 → 根因 → 设计修正 → 落地文件）
+
+| # | 创作者反馈 | 根因 | 设计修正（契约层面，供 2.0/3.0 落地） | 落地文件 |
+|---|---|---|---|---|
+| 1 | checkpoint 查询缺 `schemaVersion=2`，只带 `format=root` → 拿到 v1 → `UnsupportedVersion` | 按旧文档写；WB `schemaVersion` 省略默认 **1** | checkpoint 请求**必须同时携带 `format=root` 且 `schemaVersion=2`**。省略/`=1` → WB 返回 v1（`schemaVersion=None`），客户端据 `schema_version != 2` 判 `UnsupportedVersion`（该失败路径写进契约，作为「未按约定发参」的显式失败）。 | `fault-proof/src/tz/withdraw/wb_client.rs`（`get_checkpoint_v2` 请求参数） |
+| 2 | boundary 期望 `chainId`，WB `TreeBoundaryResponse` 无 chainId → 反序列化 0 → `InvalidRequest` | 同上；boundary 响应本就无 chainId | boundary 响应字段集合**以 WB `TreeBoundaryResponse` 为准**（B/C 表）：`schemaVersion/blockHeight/blockHash/withdrawalCount/withdrawalActiveBranches/forceCount/forceActiveBranches`。**移除 `BoundaryDto.chain_id` 及 `chain_id != 0` 校验**；boundary 的正确校验是 `activeBranches.len()==popcount(count)` + 重建 declared root。chainId 一致性改由 checkpoint 顶层校验（见 #3）。 | `wb_client.rs`（`BoundaryDto` / `get_tree_boundary_witness`） |
+| 3 | `CheckpointV2` / `TreeBoundaryWitness` 结构塞了 `chain_id` | 同上 | `CheckpointV2` 与 `TreeBoundaryWitness` 结构**不含 chain_id**，与 `tz_witness::checkpoint::CheckpointV2`（7 字段无 chainId）一致。**chainId 仅出现在 checkpoint RPC 响应顶层 `SnapshotQueryResponse.chain_id`**（Option、仅 v2 填），由 host/Challenger 侧读取用于「数据属于正确 TZ 链」的一致性守卫；不进 `claimRoot`、不进 boundary、不进任何贯穿结构。checkpoint 响应为**扁平**结构（无嵌套 `components`）。 | `fault-proof/src/tz/withdraw/types.rs`（`CheckpointV2` / `TreeBoundaryWitness`）；`wb_client.rs`（`CheckpointDto` 去嵌套 components、顶层解析 chainId） |
+| 4 | `tree_adapter.rs` 本地复制树算法，未依赖 `tz-witness`；`Cargo.toml` 无 `tz-witness` | 构建环境拉不到私有 crate（tree_adapter L18–25），且旧代码以为树在 `crates/chain/src/witness/`（错过 `tz-witness` 拆分） | 「单一树实现」的落地方式明确为：以**固定 rev 的 git 依赖**引入 `tz-witness`（tradezone GitLab，`rev=e56881eb29879166752294c87b207a23bb2dcc26`）；**删除 op-succinct 内所有本地树/root/proof 实现**（`tree_adapter.rs` 的 `business_root`/`calculate_inner_root`/`verify_proof`/`zero_hashes`/`root_from_frontier`/`empty_*`），改为调用 `tz_witness::merkle` + `tz_witness::checkpoint`；`fault-proof/Cargo.toml` 显式声明 `tz-witness` 依赖。Defender 本地验证复用 `tz_witness::merkle::verify_proof`。 | `fault-proof/src/tz/withdraw/tree_adapter.rs`（删本地算法）；`fault-proof/Cargo.toml`（新增 `tz-witness`） |
+| 5 | SP1 Range Guest 未集成 `tz-witness`，仍是两字段 `keccak_join(blockHash, stateHash)` | 同 #4（依赖未打通） | `programs/tz/range/src/main.rs` **必须集成 `tz-witness`**：每个 sub-range 起点接收两组 `(count, activeBranches)`（Withdrawal/Force）→ `tz_witness` 重建 pre inner root → pre `withdrawal/force root`；重放区块用 `tz_block_processor::extract_withdrawals` 提取记录，交 `tz_witness` 算 post root；`l2PreRoot/l2PostRoot` 升级为 128B 四字段 `claimRoot`。guest 编译门：`tz-witness` 仅依赖 `tz-primitives`+`thiserror`（无 rayon/重运行时），在 SP1 zkvm target 下可编译；实现阶段必须实测 `cargo check`。 | `programs/tz/range/src/main.rs`；`fault-proof/Cargo.toml`（guest 依赖 `tz-witness`） |
+
+> 附带被同一根因牵出的次要偏差（一并在 2.0/3.0 修正，不单列反馈）：WB 实际路由为 record=`chain/witness/withdrawals/{recordHash}`、proof=`chain/witness/withdrawal-proof`（MR 中为猜测名 `chain/canonical_record`/`chain/historical_inclusion_proof`，需改）；record 响应为嵌套 `rawTradezoneWithdrawal`（MR 为扁平 `RecordDto`）；checkpoint `status` 取值为 R2.1-B 的 snake_case 集合（MR 用 `not_ready` 等不一致值）。
+
+### R2.3 逐条正面回答创作者提问
+
+1. **第 1/2/3 条是不是按旧文档实现的？** —— **是。** 这三处都是对着较旧的协议文档措辞实现的，而非最新 WB 代码。最新语义（已核验 commit `e56881eb2`）：checkpoint 必须显式 `schemaVersion=2`（省略默认 v1）；chainId **只在** `SnapshotQueryResponse` 顶层（Option、仅 v2）；`TreeBoundaryResponse` 与 `tz_witness::checkpoint::CheckpointV2` **都不含 chainId**；checkpoint 响应扁平、无嵌套 `components`。已按此改契约（R2.2 #1/#2/#3）。
+2. **第 4/5 条是环境问题还是有意暂留？** —— **是环境问题，不是有意的永久设计。** 当时构建环境拉不到私有 tradezone crate（`wb_client.rs` 头注 + `tree_adapter.rs` L18–25 明确写了），只能本地复制树算法 + 对文档形状打桩，guest 也因此未接。**不是**故意保留第二套树实现——那恰好违反本设计 AC-1 与「单一树实现」。
+3. **预计什么时候切到 `tz-witness`？** —— 切换是本轮返工**再实现阶段（2.0/3.0）的首要任务**，顺序按「先打通 `tz-witness` 固定 rev git 依赖（含 SP1 guest `cargo check` 编译门）→ 统一类型与字段（去 chainId、扁平化）→ 收敛 `wb_client` 请求参数与路由」执行。**固定 rev 现已解析并记录**（`e56881eb29879166752294c87b207a23bb2dcc26`），且该 rev 下的 `tz-witness`/`witness.rs`/`zkvm_snapshot.rs` 均已通过 GitLab 核验可读——即「代码存在且形状确定」已不再是风险。**唯一剩余前置**是构建环境能否 `cargo` 拉取 `gitlab.okg.com/xlayer-dex/tradezone@该 rev`（SSH/HTTPS 凭据 + 网络）。若届时仍拉不到，**不会静默退回本地复制实现**：将作为显式阻塞记录（复现步骤 + 所需凭据/rev），并升级给创作者/运维决策——见 §12 风险与本轮审批问题。
+
+
 
 本设计的字段、编码、哈希、接口语义**不自行更改**，全部以下列 Lark 文档为准（冲突时以 Protocol 正文 + 冻结 `claim-tree-v1.json` fixture 为最终裁决）：
 
@@ -124,13 +172,14 @@
 
 在 `fault-proof/src/tz/` 下新增 `protocol/`（类型与编解码）并扩展 WB client：
 
-- **类型**：`CheckpointV2`（7 字段，不含 chainId）、`SnapshotQueryResponse{ checkpoint: CheckpointV2, chain_id: u64 }`、`TreeBoundaryWitness{ schemaVersion, blockHeight, blockHash, withdrawalCount:u32, withdrawalActiveBranches:Vec<B256>, forceCount:u32, forceActiveBranches:Vec<B256> }`、`CanonicalRecord{ protocolVersion, recordHash, canonicalBlockHeight, leafIndex, record }`、`HistoricalInclusionProof{ record, recordHash, leafHash, canonicalBlockHeight, checkpointHeight, withdrawalRoot, leafIndex:u32, count:u32, siblings:[B256;32] }`、Game extraData 四字段原像类型。`WithdrawRecord` 结构**镜像** `tz-witness` 暴露的类型，不另写 leaf 编码。
+- **类型**：`CheckpointV2`（7 字段，不含 chainId，镜像 `tz_witness::checkpoint::CheckpointV2`）、host 侧信封 `CheckpointV2Envelope{ checkpoint: CheckpointV2, chain_id: u64 }`（**从 WB 的扁平 `SnapshotQueryResponse` 顶层字段解析组装**——WB wire 无嵌套 `components`、chainId 在顶层，见 §R2.1-B；不要把 chainId 塞进 `CheckpointV2` 本体）、`TreeBoundaryWitness{ schemaVersion, blockHeight, blockHash, withdrawalCount:u32, withdrawalActiveBranches:Vec<B256>, forceCount:u32, forceActiveBranches:Vec<B256> }`（**不含 chainId**）、`CanonicalRecord{ protocolVersion, recordHash, canonicalBlockHeight, leafIndex, record }`、`HistoricalInclusionProof{ record, recordHash, leafHash, canonicalBlockHeight, checkpointHeight, withdrawalRoot, leafIndex:u32, count:u32, siblings:[B256;32] }`、Game extraData 四字段原像类型。`WithdrawRecord` 结构**镜像** `tz-witness` 暴露的类型，不另写 leaf 编码。
 - **claimRoot 编解码**：唯一实现 `compute_claim_root(blockHash, appHash, withdrawalRoot, forceRoot) = keccak256(128B)`（替换现有两字段 `compute_tz_root_claim`；两字段路径按 wire v1 兼容保留）。
 - **WB client 扩展**（在 `chain_client.rs` 或新 `witness_client.rs`）：
-  1. Publishable CheckpointV2：`GET /chain/dex_state_snapshot?height={H}&format=root&schemaVersion=2` → 扁平 `SnapshotQueryResponse`（v2 四字段 + 顶层 `chainId`）；**不传 schemaVersion 默认 v1**（保持既有两字段）。
-  2. 任意已处理 canonical 高度的 boundary witness（接口名由实现定，语义按 Protocol §4.2）。
-  3. Canonical record：`GET /chain/witness/withdrawals/{recordHash}`。
-  4. Historical inclusion proof：`GET /chain/witness/withdrawal-proof?recordHash&checkpointHeight&withdrawalRoot`。
+  1. Publishable CheckpointV2：`GET /chain/dex_state_snapshot?height={H}&format=root&schemaVersion=2` → **扁平** `SnapshotQueryResponse`（顶层 `chainId?`、`claimRoot?`、`canonicalBlockHash`、`appHash?`、`withdrawalRoot?`、`schemaVersion?`；**无嵌套 `components`**）；**不传 schemaVersion 默认 v1**（据此判 `UnsupportedVersion`）。见 Revision 2 §R2.1-B 权威字段表。
+  2. Boundary witness：`GET /chain/tree_boundary_witness?height={H}`（或 WB `query_tree_boundary` 对应路由）→ `TreeBoundaryResponse`（**无 chainId**，字段见 §R2.1-C）；解码校验 `activeBranches.len()==popcount(count)` 并重建 declared root，**不做 chainId 校验**。
+  3. Canonical record：`GET /chain/witness/withdrawals/{recordHash}` → `WithdrawalLookupResponse`（record 嵌套于 `rawTradezoneWithdrawal`，§R2.1-D）。
+  4. Historical inclusion proof：`GET /chain/witness/withdrawal-proof?recordHash&checkpointHeight&withdrawalRoot` → `WithdrawalProofResponse`（§R2.1-D）。
+  > MR !102 的 `wb_client.rs` 路由为猜测名（`chain/canonical_record`/`chain/historical_inclusion_proof`）且 `get_checkpoint_v2` 漏发 `schemaVersion=2`、`BoundaryDto` 误带 `chain_id`——本轮按上述真实路由/参数/字段收敛（Revision 2 §R2.2）。
 - **稳定错误枚举**：`InvalidRequest / UnsupportedVersion / CheckpointNotFound / WithdrawalNotFound / RecordNotInCheckpoint / NotReady / RootMismatch / WitnessStoreCorrupt`。`NotReady` 与临时 RPC 错误 → 可重试（退避）；其余按语义分流。U256 JSON 用十进制字符串，hash/address 用定长 `0x` hex。
 
 ### 5.2 区域二 — Proposer / Range Host / SP1 Range Guest
@@ -205,7 +254,7 @@
 ## 8. 依赖方案（决策 D2 + op-succinct Spec §8.4/§8.5）
 
 - **来源修正**：把 `tz-block-processor` / `tz-dex` / `tz-primitives` 的来源从 `ssh://git@github.com/okx/x2.git`（github 镜像，rev `b3e2cf98` 为旧 master，缺 Claim Tree Core / `extract_withdrawals`）**改为** TradeZone GitLab 仓库 `gitlab.okg.com/xlayer-dex/tradezone`，分支 `feature/witness-builder-withdraw-v1`；并**新增 `tz-witness`** 同源。
-- **固定 rev**：用固定 `rev=<commit>`（**非** `branch=`），避免编译随分支推进漂移；确切 commit 在实现阶段解析该分支 HEAD 后写回本 Spec 与 `Cargo.toml`（op-succinct Spec §8.4 给出参考示例 `a3f3079b7`）。WB feature 合入 tradezone master 后再切回镜像依赖。
+- **固定 rev（本轮已解析）**：用固定 `rev=`（**非** `branch=`），避免编译随分支推进漂移。**已解析并记录 `rev = e56881eb29879166752294c87b207a23bb2dcc26`**（`feature/witness-builder-withdraw-v1` 上 `tz-witness` 拆分 commit，本轮已逐文件核验 `crates/witness`、`witness.rs`、`zkvm_snapshot.rs` 均在此 rev 可读）。实现阶段将此 rev 写回 `Cargo.toml`；WB feature 合入 tradezone master 后再切回镜像依赖。**前置风险**：构建环境需能 `cargo` 拉取 `gitlab.okg.com/xlayer-dex/tradezone@该 rev`（正是 MR !102 当时的阻塞点）；若仍不可拉取，按 §12 记录阻塞并升级，不退回本地复制实现。
 - **依赖方向**：`tz-block-processor → tz-witness → tz-primitives`（单向；`tz-witness` 内禁止 `use tz_block_processor`）。Guest 依赖 `tz-block-processor`（`process_block` + `extract_withdrawals`）+ `tz-witness`（append/root）。
 - **编译门槛（硬性）**：实现阶段必须在 **SP1 guest target** 实测 `cargo check` 通过：`rayon` 在 zkvm/tee feature 下被裁掉、`verify_pool` 传 `None` 能过、`tz-primitives`（chrono / serde_json / base64 / rust_decimal）在 guest 下能编译。不能只停留纸面。
 
@@ -252,6 +301,7 @@
 
 ## 12. 约束与风险
 
+- **`tz-witness` 构建环境可拉取性（本轮头号前置）**：MR !102 的 5 处偏差根因就是构建环境拉不到私有 tradezone crate。rev 已解析（`e56881eb2…`）且经 GitLab 核验存在；但再实现阶段（2.0/3.0）必须先验证构建环境能 `cargo` 拉取 `gitlab.okg.com/xlayer-dex/tradezone@该 rev`。**若不可拉取：不退回本地复制实现**，而是记录阻塞（复现步骤、所需 SSH/HTTPS 凭据、rev）并升级创作者/运维——本轮审批问题中已就此点明确风险。
 - **单向依赖 & guest 编译**：见 §8 编译门槛，最大落地风险；实现阶段先 `cargo check` 再展开。
 - **ELF/vkey 变更**：guest 变化导致 range ELF/`rangeVkeyCommitment` 更新，属交付协调项。
 - **固定 rev 记录**：确切 tz-* commit 必须写回 Spec 与 Cargo.toml，避免 branch 漂移。
@@ -262,9 +312,14 @@
 
 ## 13. 交付物（本设计范围内的改动面）
 
-- `Cargo.toml`：tz-* 依赖改源 + 新增 `tz-witness`（固定 rev）。
-- `fault-proof/src/tz/`：新增 `protocol/`（类型/编解码）、扩展 `chain_client.rs`（4 endpoint + 错误枚举）、`l2_provider.rs`（四字段 claimRoot）、`proposer.rs`（boundary plumbing + 164B extraData + 本地校验）、`game_validator.rs`（schemaVersion=2 + chainId 守卫 + 逐字段比较）、`config.rs`（chainId + Defender 配置）、新增 `defender/` 模块。
+> 说明：MR !102 已把共享协议类型/WB client 落在 **`fault-proof/src/tz/withdraw/`**（`wb_client.rs`/`types.rs`/`tree_adapter.rs`/`claim.rs`/`error.rs`/`mod.rs`），而非本 Spec 早期设想的 `protocol/`+`chain_client.rs`。**沿用该实际模块布局**，本轮改动面按 Revision 2 §R2.2 落到具体文件：
+
+- `fault-proof/Cargo.toml`：tz-* 依赖改源 tradezone GitLab + **新增 `tz-witness`（固定 `rev=e56881eb2…`）**；guest 亦依赖 `tz-witness`。
+- `fault-proof/src/tz/withdraw/wb_client.rs`：checkpoint 请求补 `schemaVersion=2`；`CheckpointDto` 去嵌套 `components`、改扁平 + 顶层 `chainId` 解析；`BoundaryDto` 去 `chain_id` 及其校验；路由改真实名（record/proof/boundary）；record 映射改嵌套 `rawTradezoneWithdrawal`；`status` 取值对齐 snake_case 集合。
+- `fault-proof/src/tz/withdraw/types.rs`：`CheckpointV2` / `TreeBoundaryWitness` **去 `chain_id`**，与 `tz_witness::checkpoint::CheckpointV2` 对齐。
+- `fault-proof/src/tz/withdraw/tree_adapter.rs`：**删除本地** `business_root`/`calculate_inner_root`/`verify_proof`/`zero_hashes`/`root_from_frontier`/`empty_*`，改调 `tz_witness::merkle` + `tz_witness::checkpoint`。
+- `fault-proof/src/tz/`：`l2_provider.rs`（四字段 claimRoot）、`proposer.rs`（boundary plumbing + 164B extraData + 本地校验）、`game_validator.rs`（schemaVersion=2 + **顶层** chainId 守卫 + 逐字段比较）、`config.rs`（chainId + Defender 配置）、新增 `defender/` 模块。
 - `fault-proof/bin/tz_defender.rs`：新 bin。
-- `programs/tz/range/src/main.rs`：四字段 claimRoot + boundary + tz-witness append/root。
+- `programs/tz/range/src/main.rs`：集成 `tz-witness`——boundary 重建 pre root + 重放算 post root，`l2PreRoot/l2PostRoot` 升级为 128B 四字段 `claimRoot`（替换现两字段 `keccak_join`）。
 - 测试：单元/集成/回归 + 跨语言对照（§10）。
 - `docs/superpowers/`：本 Spec、后续 plan、`lark-review-doc.md`（随 CoW 与 stage-5 tar 前进）。

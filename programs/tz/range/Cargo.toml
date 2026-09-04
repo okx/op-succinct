@@ -13,6 +13,7 @@ op-succinct-client-utils.workspace = true
 tz-block-processor.workspace = true
 tz-dex.workspace = true
 tz-primitives.workspace = true
+tz-witness.workspace = true
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 rmp-serde = "1.1"

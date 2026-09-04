@@ -38,7 +38,7 @@ pub fn verify_inclusion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tz::withdraw::tree_adapter::{business_root, zero_hashes};
+    use crate::tz::withdraw::tree_adapter::single_leaf_withdrawal_fixture;
     use crate::tz::withdraw::types::WithdrawRecord;
     use alloy_primitives::{Address, B256};
 
@@ -56,14 +56,11 @@ mod tests {
         }
     }
 
-    /// A valid single-leaf (count == 1) proof and its correct bound root.
+    /// A valid single-leaf (count == 1) proof and its correct bound root, built via the
+    /// tz-witness-backed test fixture (no local tree algorithm).
     fn valid_proof() -> (HistoricalInclusionProof, B256) {
         let leaf = B256::repeat_byte(0x42);
-        let z = zero_hashes();
-        let mut siblings = [B256::ZERO; 32];
-        siblings.copy_from_slice(&z[..32]);
-        let inner = crate::tz::withdraw::tree_adapter::calculate_inner_root(leaf, 0, &siblings);
-        let root = business_root(inner, 1, WITHDRAWAL_TAG);
+        let (siblings, root) = single_leaf_withdrawal_fixture(leaf);
         let proof = HistoricalInclusionProof {
             record: record(),
             record_hash: leaf,

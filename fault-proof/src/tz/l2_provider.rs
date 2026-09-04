@@ -32,21 +32,18 @@ pub fn compute_tz_root_claim(
     claim_root(block_hash, app_hash, withdrawal_root, force_root)
 }
 
-/// Cross-check a boundary witness against the same-height DexState snapshot block hash and the
-/// checkpoint chain id (spec §7.2 Range Host): a mismatch means the sub-range must fail + alert.
+/// Cross-check a boundary witness against the same-height checkpoint (spec §7.2 Range Host): a
+/// mismatch means the sub-range must fail + alert.
+///
+/// R2 #2: `TreeBoundaryWitness` carries NO chainId, so the chainId consistency guard lives solely
+/// on the checkpoint top level (the caller passes the checkpoint's `chain_id` and asserts it is a
+/// valid non-zero TZ chain). The boundary's own invariant is the popcount wire rule.
 pub fn assert_boundary_consistent(
     boundary: &TreeBoundaryWitness,
     checkpoint_chain_id: u64,
 ) -> Result<()> {
     if checkpoint_chain_id == 0 {
         bail!("tz boundary cross-check: checkpoint chain_id must be non-zero");
-    }
-    if boundary.chain_id != checkpoint_chain_id {
-        bail!(
-            "tz boundary cross-check: boundary chain_id {} != checkpoint chain_id {}",
-            boundary.chain_id,
-            checkpoint_chain_id
-        );
     }
     // count == 0 ⇒ active_branches empty; otherwise len == popcount(count) (spec §4 wire).
     if boundary.withdrawal_active_branches.len() != boundary.withdrawal_count.count_ones() as usize
@@ -85,10 +82,13 @@ impl L2ProviderTrait for TzL2Provider {
                  built without one"
             );
         };
-        let cp = wb
+        let env = wb
             .get_checkpoint_v2(height)
             .await
             .map_err(|e| anyhow::anyhow!("tz: witness-builder checkpoint at {height}: {e}"))?;
+        // R2 #3: chainId is guarded inside `get_checkpoint_v2` against the client's configured chain
+        // and carried on the envelope, never inside the checkpoint body.
+        let cp = &env.checkpoint;
         if cp.block_hash != info.block_hash || cp.app_hash != info.state_hash {
             bail!(
                 "tz: checkpoint components at {height} disagree with confirmed block info \

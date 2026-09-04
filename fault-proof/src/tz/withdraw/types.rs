@@ -8,20 +8,31 @@
 
 use alloy_primitives::{Address, B256, U256};
 
-/// Four-field checkpoint returned by the Witness Builder v2 `root-format` endpoint.
+/// Four-field checkpoint returned by the Witness Builder v2 `root` endpoint.
 ///
-/// `chain_id` and `block_height` are NOT part of `claim_root` (spec §4); `chain_id` is used
-/// host-side only to confirm the data belongs to the correct TZ chain and MUST be non-zero.
+/// Mirrors `tz_witness::checkpoint::CheckpointV2` field-for-field (7 fields, **no `chain_id`**;
+/// R2 #3). `chain_id` and `block_height` are NOT part of `claim_root` (spec §4). The chainId that
+/// the WB advertises for cross-chain guarding lives ONLY at the flat top level of the checkpoint
+/// RPC response and is carried host-side in [`CheckpointV2Envelope`], never inside this struct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckpointV2 {
     pub schema_version: u16,
-    pub chain_id: u64,
     pub block_height: u64,
     pub block_hash: B256,
     pub app_hash: B256,
     pub withdrawal_root: B256,
     pub force_root: B256,
     pub claim_root: B256,
+}
+
+/// Host-side envelope pairing a [`CheckpointV2`] with the top-level `chainId` from the flat
+/// `SnapshotQueryResponse` (R2 #3: chainId is a bare top-level `u64`, populated only for v2, used
+/// for host/challenger "correct TZ chain" cross-checks — NOT part of the checkpoint body or
+/// `claim_root`). Assembled by [`super::wb_client`] from the flat response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointV2Envelope {
+    pub checkpoint: CheckpointV2,
+    pub chain_id: u64,
 }
 
 /// The incremental-tree boundary at a canonical height: for each of the two trees, the leaf
@@ -31,10 +42,13 @@ pub struct CheckpointV2 {
 /// `active_branches.len() == count.count_ones()` (popcount), ordered low→high level, bare
 /// `bytes32` with no level field and no zero padding. The decoder validates this and rebuilds
 /// the declared root (see [`super::wb_client`]).
+///
+/// R2 #2: `TreeBoundaryResponse` carries **no `chainId`** — chainId consistency is enforced only
+/// on the checkpoint top level (see [`CheckpointV2Envelope`]). This struct therefore has no
+/// `chain_id` field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeBoundaryWitness {
     pub schema_version: u16,
-    pub chain_id: u64,
     pub block_height: u64,
     pub withdrawal_count: u32,
     pub withdrawal_active_branches: Vec<B256>,
@@ -97,7 +111,6 @@ mod tests {
     fn boundary_witness_roundtrips_via_clone_eq() {
         let w = TreeBoundaryWitness {
             schema_version: 2,
-            chain_id: 196,
             block_height: 36_000,
             withdrawal_count: 5,
             withdrawal_active_branches: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
@@ -113,7 +126,6 @@ mod tests {
     fn checkpoint_and_preimage_are_value_types() {
         let cp = CheckpointV2 {
             schema_version: 2,
-            chain_id: 196,
             block_height: 100,
             block_hash: B256::repeat_byte(0x11),
             app_hash: B256::repeat_byte(0x22),
@@ -122,6 +134,10 @@ mod tests {
             claim_root: B256::repeat_byte(0x55),
         };
         assert_eq!(cp.clone(), cp);
+        // chainId lives only in the host envelope, never in the checkpoint body (R2 #3).
+        let env = CheckpointV2Envelope { checkpoint: cp.clone(), chain_id: 196 };
+        assert_eq!(env.chain_id, 196);
+        assert_eq!(env.checkpoint, cp);
 
         let pre = GameCheckpointPreimage {
             checkpoint_block_height: 100,

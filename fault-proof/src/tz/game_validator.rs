@@ -200,7 +200,9 @@ impl TzRootClient {
             .context("failed to construct TZ root query URL")?;
         url.query_pairs_mut()
             .append_pair("height", &height.to_string())
-            .append_pair("format", "root");
+            .append_pair("format", "root")
+            // R2 #1: omitting schemaVersion makes the WB default to v1; the challenger requires v2.
+            .append_pair("schemaVersion", "2");
 
         let response =
             self.client.get(url.clone()).send().await.with_context(|| {
@@ -261,32 +263,42 @@ impl TzRootClient {
 }
 
 fn validate_ready_response(data: RootResponse, configured_chain_id: u64) -> Result<B256> {
-    // Guard against consuming a checkpoint that belongs to a different chain (spec §7.3). When the
-    // witness-builder advertises a chainId (v2 wire), it MUST be non-zero and match local config.
-    if let Some(chain_id) = data.chain_id {
-        if chain_id == 0 {
-            bail!("ready response chainId must be non-zero");
+    // R2 #1: the challenger always requests schemaVersion=2; a non-v2 (or absent) response means the
+    // request was not honored — reject rather than silently accept a v1 body.
+    if data.schema_version != Some(2) {
+        bail!(
+            "witness-builder ready response is not schemaVersion=2 (got {:?})",
+            data.schema_version
+        );
+    }
+    // R2 #3: chainId guard — a bare non-zero top-level field that must match the configured TZ chain
+    // (spec §7.3). Reject wrong-chain data (do not advance / do not challenge on it).
+    match data.chain_id {
+        Some(chain_id) if chain_id != 0 => {
+            if chain_id != configured_chain_id {
+                bail!(
+                    "ready response chainId {chain_id} does not match configured TZ chain id {configured_chain_id}"
+                );
+            }
         }
-        if chain_id != configured_chain_id {
-            bail!(
-                "ready response chainId {chain_id} does not match configured TZ chain id {configured_chain_id}"
-            );
-        }
+        _ => bail!("v2 ready response missing or zero top-level chainId"),
     }
 
-    let canonical_block_hash = data
+    let block_hash = data
         .canonical_block_hash
         .ok_or_else(|| anyhow!("ready response missing canonicalBlockHash"))?;
     let claim_root = data.claim_root.ok_or_else(|| anyhow!("ready response missing claimRoot"))?;
-
-    if let Some(components) = data.components {
-        if components.block_hash != canonical_block_hash {
-            bail!("ready response component blockHash does not match canonicalBlockHash");
-        }
-        let computed = compute_v3_claim_root(&components);
-        if computed != claim_root {
-            bail!("ready response components do not match claimRoot");
-        }
+    // R2 #1/#3: the four fields are FLAT top-level (no nested `components`).
+    let app_hash = data.app_hash.ok_or_else(|| anyhow!("v2 ready response missing appHash"))?;
+    let withdrawal_root =
+        data.withdrawal_root.ok_or_else(|| anyhow!("v2 ready response missing withdrawalRoot"))?;
+    let force_root =
+        data.force_root.ok_or_else(|| anyhow!("v2 ready response missing forceRoot"))?;
+    let components = RootComponents { block_hash, app_hash, withdrawal_root, force_root };
+    // Recompute the four-field claimRoot and compare (spec §5.3: equivalent to field-by-field since
+    // the contract binds rootClaim == keccak256(blockHash‖appHash‖withdrawalRoot‖forceRoot)).
+    if compute_v3_claim_root(&components) != claim_root {
+        bail!("ready response four fields do not recompute to claimRoot");
     }
     Ok(claim_root)
 }
@@ -321,17 +333,25 @@ struct ApiEnvelope<T> {
 struct RootResponse {
     height: u64,
     status: String,
+    // R2 #1/#3: flat v2 body — four roots + chainId are TOP-LEVEL; there is no nested `components`.
+    #[serde(default)]
+    schema_version: Option<u16>,
     #[serde(default)]
     chain_id: Option<u64>,
     canonical_block_hash: Option<B256>,
     claim_root: Option<B256>,
-    components: Option<RootComponents>,
+    #[serde(default)]
+    app_hash: Option<B256>,
+    #[serde(default)]
+    withdrawal_root: Option<B256>,
+    #[serde(default)]
+    force_root: Option<B256>,
     local_tip: Option<u64>,
     detail: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// The four claim components, assembled from the flat top-level response fields (no longer
+/// deserialized from a nested `components` object).
 struct RootComponents {
     block_hash: B256,
     app_hash: B256,

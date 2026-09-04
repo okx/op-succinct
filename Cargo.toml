@@ -152,10 +152,12 @@ op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
 op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
-# tradezone (range guest deps)
-tz-block-processor = { git = "ssh://git@github.com/okx/x2.git", rev = "b3e2cf98affd3f8e64a3ed13966449bd92d84910", features = ["tee"] }
-tz-dex = { git = "ssh://git@github.com/okx/x2.git", rev = "b3e2cf98affd3f8e64a3ed13966449bd92d84910", features = ["zkvm"] }
-tz-primitives = { git = "ssh://git@github.com/okx/x2.git", rev = "b3e2cf98affd3f8e64a3ed13966449bd92d84910" }
+# tradezone (range guest deps) — TradeZone GitLab feature branch, fixed rev (WB Withdraw/Force work).
+# HTTPS transport (SSH not available in all build/CI environments; the fixed rev pins the tree source).
+tz-block-processor = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26", features = ["tee"] }
+tz-dex = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26", features = ["zkvm"] }
+tz-primitives = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26" }
+tz-witness = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
@@ -192,11 +194,17 @@ alloy = { version = "1.6.3", features = [
 ] }
 
 # Keccak with the SHA3 patch is more efficient than the default Keccak.
-alloy-primitives = { version = "1.5.6", default-features = false, features = [
+# NOTE (TRDZN-1339 R2): bumped from 1.5.6 to satisfy tradezone tz-primitives (rev e56881eb) which
+# requires alloy-primitives ^1.6.1. This bump alone does NOT build: it pulls a newer
+# alloy-sol-type-parser (winnow 0.7.x) while op-succinct's retained alloy-dyn-abi 1.5.7 uses
+# winnow 1.0.x — an unresolvable two-major winnow split. Completing the switch requires a
+# COORDINATED alloy-core + winnow upgrade across the git-pinned kona/sp1/reth stack (out of this
+# stage's scope; see implementation-report.md "Blockers").
+alloy-primitives = { version = "1.6.1", default-features = false, features = [
     "sha3-keccak",
 ] }
-alloy-sol-types = { version = "1.5.6", default-features = false }
-alloy-sol-macro = { version = "1.5.6", default-features = false }
+alloy-sol-types = { version = "1.6.1", default-features = false }
+alloy-sol-macro = { version = "1.6.1", default-features = false }
 alloy-chains = { version = "0.2.30", default-features = false }
 
 # OP Alloy - from the optimism monorepo to match kona v1.2.13
