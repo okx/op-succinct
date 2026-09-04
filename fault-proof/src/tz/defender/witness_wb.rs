@@ -9,9 +9,7 @@ use alloy_primitives::B256;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::tz::withdraw::error::WbError;
-use crate::tz::withdraw::types::HistoricalInclusionProof;
-use crate::tz::withdraw::wb_client::WbClient;
+use crate::tz::withdraw::{error::WbError, types::HistoricalInclusionProof, wb_client::WbClient};
 
 use super::handler::WitnessSource;
 
@@ -38,8 +36,6 @@ impl WitnessSource for WbWitnessSource {
         checkpoint_height: u64,
         withdrawal_root: B256,
     ) -> Result<HistoricalInclusionProof, WbError> {
-        self.wb
-            .get_historical_inclusion_proof(leaf_hash, checkpoint_height, withdrawal_root)
-            .await
+        self.wb.get_historical_inclusion_proof(leaf_hash, checkpoint_height, withdrawal_root).await
     }
 }

@@ -8,9 +8,11 @@
 
 use alloy_primitives::B256;
 
-use crate::tz::withdraw::error::WbError;
-use crate::tz::withdraw::tree_adapter::{verify_proof, WITHDRAWAL_TAG};
-use crate::tz::withdraw::types::HistoricalInclusionProof;
+use crate::tz::withdraw::{
+    error::WbError,
+    tree_adapter::{verify_proof, WITHDRAWAL_TAG},
+    types::HistoricalInclusionProof,
+};
 
 /// Verify a historical inclusion proof against the exact `withdrawalRoot` the Defender bound
 /// (the finalized RootManager covering root). Returns `Ok(())` only when the proof is internally
@@ -38,8 +40,9 @@ pub fn verify_inclusion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tz::withdraw::tree_adapter::single_leaf_withdrawal_fixture;
-    use crate::tz::withdraw::types::WithdrawRecord;
+    use crate::tz::withdraw::{
+        tree_adapter::single_leaf_withdrawal_fixture, types::WithdrawRecord,
+    };
     use alloy_primitives::{Address, B256};
 
     fn record() -> WithdrawRecord {

@@ -14,21 +14,25 @@
 //! warning. When the real ABI lands, only the `ChallengeContract` implementation changes — the
 //! watcher, handler state machine, and local verification are unchanged.
 
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use alloy_provider::{Provider, ProviderBuilder};
 use anyhow::{Context, Result};
 use clap::Parser;
-use fault_proof::tz::defender::{
-    challenge_contract::MockChallengeContract,
-    config::DefenderConfig,
-    handler::{Handler, HandlerOutcome},
-    rootmanager_client::RootManagerClient,
-    watcher::Watcher,
-    witness_wb::WbWitnessSource,
+use fault_proof::tz::{
+    defender::{
+        challenge_contract::MockChallengeContract,
+        config::DefenderConfig,
+        handler::{Handler, HandlerOutcome},
+        rootmanager_client::RootManagerClient,
+        watcher::Watcher,
+        witness_wb::WbWitnessSource,
+    },
+    withdraw::wb_client::WbClient,
 };
-use fault_proof::tz::withdraw::wb_client::WbClient;
 use op_succinct_host_utils::setup_logger;
 use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
@@ -132,7 +136,9 @@ async fn run() -> Result<()> {
                             Ok(other) => tracing::info!(
                                 leaf = %ev.leaf_hash, ?other, "defender handled challenge"
                             ),
-                            Err(e) => tracing::error!(leaf = %ev.leaf_hash, error = %e, "handler error"),
+                            Err(e) => {
+                                tracing::error!(leaf = %ev.leaf_hash, error = %e, "handler error")
+                            }
                         }
                     }
                 }

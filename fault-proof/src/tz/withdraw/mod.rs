@@ -8,8 +8,8 @@
 //! - [`claim`]: the 128-byte `claimRoot` codec + 164-byte Game `extraData` decode.
 //! - [`error`]: the stable [`error::WbError`] enum + `is_retryable` classification.
 //! - [`tree_adapter`]: the outer `count + tag` wrapper, empty-tree vectors, and inclusion-proof
-//!   verification. The inner incremental-tree algorithm is owned by the TradeZone Claim Tree
-//!   Core (tradezone `crates/chain/src/witness/`); see the module docs for the integration seam.
+//!   verification. The inner incremental-tree algorithm is owned by the TradeZone Claim Tree Core
+//!   (tradezone `crates/chain/src/witness/`); see the module docs for the integration seam.
 //! - [`wb_client`]: the Witness Builder v2 client (checkpointV2, boundary witness, canonical
 //!   record, historical inclusion proof).
 //!

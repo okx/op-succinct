@@ -11,19 +11,23 @@
 use std::sync::Arc;
 
 use alloy_primitives::{Address, B256};
-use fault_proof::tz::defender::challenge_contract::{
-    ChallengeOpened, ChallengeStatus, MockChallengeContract,
+use fault_proof::tz::{
+    defender::{
+        challenge_contract::{ChallengeOpened, ChallengeStatus, MockChallengeContract},
+        handler::{Handler, HandlerOutcome},
+        rootmanager_client::MockRootManager,
+        watcher::Watcher,
+        witness_wb::WbWitnessSource,
+    },
+    withdraw::{
+        tree_adapter::{business_root, calculate_inner_root, zero_hashes, WITHDRAWAL_TAG},
+        wb_client::WbClient,
+    },
 };
-use fault_proof::tz::defender::handler::{Handler, HandlerOutcome};
-use fault_proof::tz::defender::rootmanager_client::MockRootManager;
-use fault_proof::tz::defender::watcher::Watcher;
-use fault_proof::tz::defender::witness_wb::WbWitnessSource;
-use fault_proof::tz::withdraw::tree_adapter::{
-    business_root, calculate_inner_root, zero_hashes, WITHDRAWAL_TAG,
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
 };
-use fault_proof::tz::withdraw::wb_client::WbClient;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const CHAIN_ID: u64 = 196;
 const CHECKPOINT_HEIGHT: u64 = 20;
@@ -69,7 +73,10 @@ fn proof_json(leaf: B256, root: B256, siblings: &[B256; 32]) -> serde_json::Valu
 async fn mount_wb(server: &MockServer, leaf: B256, root: B256, siblings: &[B256; 32]) {
     Mock::given(method("GET"))
         .and(path("/chain/canonical_record"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(record_json(leaf, Some(RECORD_HEIGHT)))))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(ok_body(record_json(leaf, Some(RECORD_HEIGHT)))),
+        )
         .mount(server)
         .await;
     Mock::given(method("GET"))
@@ -136,13 +143,18 @@ async fn tampered_wb_proof_sends_no_tx() {
     // but claims our bound root ⇒ local verify must fail.
     Mock::given(method("GET"))
         .and(path("/chain/canonical_record"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(record_json(leaf, Some(RECORD_HEIGHT)))))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(ok_body(record_json(leaf, Some(RECORD_HEIGHT)))),
+        )
         .mount(&server)
         .await;
     let wrong_leaf = B256::repeat_byte(0xEE);
     Mock::given(method("GET"))
         .and(path("/chain/historical_inclusion_proof"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(proof_json(wrong_leaf, root, &siblings)))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(proof_json(wrong_leaf, root, &siblings)),
+        )
         .mount(&server)
         .await;
 
@@ -171,7 +183,11 @@ async fn restart_rescan_does_not_double_dispatch() {
     // Simulate a restart re-scanning the same window.
     let mut watcher2 = Watcher::new(cc.clone(), 0);
     let first = watcher2.poll(200).await.unwrap();
-    assert_eq!(first.len(), 1, "a fresh watcher re-dispatches; dedup is per-process (event rescan)");
+    assert_eq!(
+        first.len(),
+        1,
+        "a fresh watcher re-dispatches; dedup is per-process (event rescan)"
+    );
     // Same watcher instance does not re-dispatch.
     assert_eq!(watcher2.poll(200).await.unwrap().len(), 0);
 }

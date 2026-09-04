@@ -6,8 +6,9 @@
 //! two-field `keccak_join(blockHash, appHash)`. The tree/root math is `tz-witness` (single source):
 //!  - pre roots: re-expand each sub-range-start boundary `(count, active_branches)` into a full
 //!    `TreeFrontier`, `tz_witness::merkle::inner_root` → `business_root(namespace, count, inner)`;
-//!  - post roots: replay `(S,E]`, and for each block `tz_block_processor::withdrawal::extract_withdrawals`
-//!    feeds `tz_witness::merkle::append`; the guest NEVER trusts host-supplied leaves/post roots.
+//!  - post roots: replay `(S,E]`, and for each block
+//!    `tz_block_processor::withdrawal::extract_withdrawals` feeds `tz_witness::merkle::append`; the
+//!    guest NEVER trusts host-supplied leaves/post roots.
 //!
 //! ⚠️ SP1-verification NOTEs (this environment has no `cargo-prove`, so the guest could not be
 //! compiled/built here — see implementation-report.md "Blockers"). The creator must confirm on the
@@ -29,11 +30,14 @@ sp1_zkvm::entrypoint!(main);
 use alloy_primitives::B256;
 use alloy_sol_types::SolValue;
 use op_succinct_client_utils::boot::BootInfoStruct;
-use tz_block_processor::{compute_app_hash, process_block, verify_next_block, Block};
-use tz_block_processor::withdrawal::extract_withdrawals;
+use tz_block_processor::{
+    compute_app_hash, process_block, verify_next_block, withdrawal::extract_withdrawals, Block,
+};
 use tz_dex::DexState;
-use tz_witness::checkpoint::checkpoint_v2_claim_root;
-use tz_witness::merkle::{append, business_root, inner_root, TreeFrontier, TreeNamespace, TREE_DEPTH};
+use tz_witness::{
+    checkpoint::checkpoint_v2_claim_root,
+    merkle::{append, business_root, inner_root, TreeFrontier, TreeNamespace, TREE_DEPTH},
+};
 
 pub fn main() {
     let snapshot_bytes: Vec<u8> = sp1_zkvm::io::read_vec();
@@ -155,8 +159,5 @@ fn frontier_from_boundary(count: u32, active_branches: &[B256]) -> TreeFrontier 
 /// Use `compute_app_hash` (default rmp_serde + blake3) so the guest's app hash byte-matches the
 /// sequencer's PublishedAppHash.
 fn blake3_hash_state(state: &DexState) -> [u8; 32] {
-    compute_app_hash(state)
-        .expect("compute_app_hash: rmp_serde must serialize DexState")
-        .app_hash
-        .0
+    compute_app_hash(state).expect("compute_app_hash: rmp_serde must serialize DexState").app_hash.0
 }

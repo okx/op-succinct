@@ -58,13 +58,13 @@ impl WbError {
         match self {
             WbError::NotReady => true,
             WbError::Transport { retryable, .. } => *retryable,
-            WbError::InvalidRequest
-            | WbError::UnsupportedVersion
-            | WbError::CheckpointNotFound
-            | WbError::WithdrawalNotFound
-            | WbError::RecordNotInCheckpoint
-            | WbError::RootMismatch
-            | WbError::WitnessStoreCorrupt => false,
+            WbError::InvalidRequest |
+            WbError::UnsupportedVersion |
+            WbError::CheckpointNotFound |
+            WbError::WithdrawalNotFound |
+            WbError::RecordNotInCheckpoint |
+            WbError::RootMismatch |
+            WbError::WitnessStoreCorrupt => false,
         }
     }
 }

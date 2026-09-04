@@ -263,16 +263,16 @@ impl TzRootClient {
 }
 
 fn validate_ready_response(data: RootResponse, configured_chain_id: u64) -> Result<B256> {
-    // R2 #1: the challenger always requests schemaVersion=2; a non-v2 (or absent) response means the
-    // request was not honored — reject rather than silently accept a v1 body.
+    // R2 #1: the challenger always requests schemaVersion=2; a non-v2 (or absent) response means
+    // the request was not honored — reject rather than silently accept a v1 body.
     if data.schema_version != Some(2) {
         bail!(
             "witness-builder ready response is not schemaVersion=2 (got {:?})",
             data.schema_version
         );
     }
-    // R2 #3: chainId guard — a bare non-zero top-level field that must match the configured TZ chain
-    // (spec §7.3). Reject wrong-chain data (do not advance / do not challenge on it).
+    // R2 #3: chainId guard — a bare non-zero top-level field that must match the configured TZ
+    // chain (spec §7.3). Reject wrong-chain data (do not advance / do not challenge on it).
     match data.chain_id {
         Some(chain_id) if chain_id != 0 => {
             if chain_id != configured_chain_id {
@@ -333,7 +333,8 @@ struct ApiEnvelope<T> {
 struct RootResponse {
     height: u64,
     status: String,
-    // R2 #1/#3: flat v2 body — four roots + chainId are TOP-LEVEL; there is no nested `components`.
+    // R2 #1/#3: flat v2 body — four roots + chainId are TOP-LEVEL; there is no nested
+    // `components`.
     #[serde(default)]
     schema_version: Option<u16>,
     #[serde(default)]
@@ -861,7 +862,8 @@ mod tests {
     #[tokio::test]
     async fn mismatched_chain_id_is_rejected_not_challenged() {
         // A checkpoint that belongs to a different chain must NOT be trusted: reject as
-        // Unavailable (retry/alert) rather than silently passing or wrongly challenging (spec §7.3).
+        // Unavailable (retry/alert) rather than silently passing or wrongly challenging (spec
+        // §7.3).
         let server = MockServer::start().await;
         mount_response(
             &server,

@@ -6,8 +6,7 @@
 //! distinct event and restart recovery via rescan does not double-handle. The proof cache is NOT
 //! persisted; recovery is purely event-driven (spec §7.4 recovery).
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::Result;
 

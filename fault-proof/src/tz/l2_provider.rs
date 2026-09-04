@@ -7,10 +7,14 @@ use anyhow::{bail, Result};
 use async_trait::async_trait;
 use op_alloy_rpc_types::Transaction;
 
-use super::chain_client::TzChainClient;
-use super::withdraw::claim::claim_root;
-use super::withdraw::types::{GameCheckpointPreimage, TreeBoundaryWitness};
-use super::withdraw::wb_client::WbClient;
+use super::{
+    chain_client::TzChainClient,
+    withdraw::{
+        claim::claim_root,
+        types::{GameCheckpointPreimage, TreeBoundaryWitness},
+        wb_client::WbClient,
+    },
+};
 use crate::L2ProviderTrait;
 
 pub struct TzL2Provider {
@@ -46,8 +50,8 @@ pub fn assert_boundary_consistent(
         bail!("tz boundary cross-check: checkpoint chain_id must be non-zero");
     }
     // count == 0 ⇒ active_branches empty; otherwise len == popcount(count) (spec §4 wire).
-    if boundary.withdrawal_active_branches.len() != boundary.withdrawal_count.count_ones() as usize
-        || boundary.force_active_branches.len() != boundary.force_count.count_ones() as usize
+    if boundary.withdrawal_active_branches.len() != boundary.withdrawal_count.count_ones() as usize ||
+        boundary.force_active_branches.len() != boundary.force_count.count_ones() as usize
     {
         bail!("tz boundary cross-check: active_branches length != popcount(count)");
     }
@@ -101,8 +105,8 @@ impl L2ProviderTrait for TzL2Provider {
             .get_checkpoint_v2(height)
             .await
             .map_err(|e| anyhow::anyhow!("tz: witness-builder checkpoint at {height}: {e}"))?;
-        // R2 #3: chainId is guarded inside `get_checkpoint_v2` against the client's configured chain
-        // and carried on the envelope, never inside the checkpoint body.
+        // R2 #3: chainId is guarded inside `get_checkpoint_v2` against the client's configured
+        // chain and carried on the envelope, never inside the checkpoint body.
         let cp = &env.checkpoint;
         if cp.block_hash != info.block_hash || cp.app_hash != info.state_hash {
             bail!(
@@ -167,23 +171,31 @@ impl L2ProviderTrait for TzL2Provider {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::chain_client::{TzBlockInfo, TzCacheMissError};
+    use super::{
+        super::chain_client::{TzBlockInfo, TzCacheMissError},
+        *,
+    };
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
     };
 
-    const HASH_A: &str =
-        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const HASH_B: &str =
-        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_A: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    fn hash_a() -> B256 { HASH_A.parse().unwrap() }
-    fn hash_b() -> B256 { HASH_B.parse().unwrap() }
+    fn hash_a() -> B256 {
+        HASH_A.parse().unwrap()
+    }
+    fn hash_b() -> B256 {
+        HASH_B.parse().unwrap()
+    }
 
-    fn wr() -> B256 { B256::repeat_byte(0x33) }
-    fn fr() -> B256 { B256::repeat_byte(0x44) }
+    fn wr() -> B256 {
+        B256::repeat_byte(0x33)
+    }
+    fn fr() -> B256 {
+        B256::repeat_byte(0x44)
+    }
 
     #[test]
     fn compute_tz_root_claim_matches_four_field_codec() {
@@ -269,10 +281,7 @@ mod tests {
     #[tokio::test]
     async fn compute_output_root_cache_miss_returns_tz_cache_miss_error() {
         let provider = make_provider_with_cached(100, hash_a(), hash_b());
-        let err = provider
-            .compute_output_root_at_block(U256::from(999u64))
-            .await
-            .unwrap_err();
+        let err = provider.compute_output_root_at_block(U256::from(999u64)).await.unwrap_err();
         assert!(err.downcast_ref::<TzCacheMissError>().is_some());
         assert_eq!(err.downcast_ref::<TzCacheMissError>().unwrap().0, 999);
     }
@@ -291,10 +300,7 @@ mod tests {
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
         let provider = TzL2Provider { tz_client: client, wb: None };
-        let result = provider
-            .get_next_proposal_block(U256::from(1000u64), 100)
-            .await
-            .unwrap();
+        let result = provider.get_next_proposal_block(U256::from(1000u64), 100).await.unwrap();
         assert!(result.is_none());
     }
 
@@ -312,10 +318,7 @@ mod tests {
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
         let provider = TzL2Provider { tz_client: client, wb: None };
-        let result = provider
-            .get_next_proposal_block(U256::from(1000u64), 100)
-            .await
-            .unwrap();
+        let result = provider.get_next_proposal_block(U256::from(1000u64), 100).await.unwrap();
         assert_eq!(result, Some(U256::from(1200u64)));
     }
 
@@ -323,10 +326,7 @@ mod tests {
     async fn get_next_proposal_block_returns_none_on_api_error() {
         let client = Arc::new(TzChainClient::new(vec!["http://127.0.0.1:1".to_string()]));
         let provider = TzL2Provider { tz_client: client, wb: None };
-        let result = provider
-            .get_next_proposal_block(U256::from(0u64), 100)
-            .await
-            .unwrap();
+        let result = provider.get_next_proposal_block(U256::from(0u64), 100).await.unwrap();
         assert!(result.is_none());
     }
 

@@ -17,12 +17,14 @@ use alloy_primitives::{Address, B256, U256};
 use reqwest::Url;
 use serde::Deserialize;
 
-use super::claim::claim_root;
-use super::error::WbError;
-use super::tree_adapter::{root_from_frontier, TREE_DEPTH};
-use super::types::{
-    CheckpointV2, CheckpointV2Envelope, HistoricalInclusionProof, TreeBoundaryWitness,
-    WithdrawRecord,
+use super::{
+    claim::claim_root,
+    error::WbError,
+    tree_adapter::{root_from_frontier, TREE_DEPTH},
+    types::{
+        CheckpointV2, CheckpointV2Envelope, HistoricalInclusionProof, TreeBoundaryWitness,
+        WithdrawRecord,
+    },
 };
 
 const WB_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,7 +54,11 @@ impl WbClient {
         Self::new_with_timeout(base, chain_id, WB_TIMEOUT)
     }
 
-    pub fn new_with_timeout(mut base: Url, chain_id: u64, timeout: Duration) -> Result<Self, WbError> {
+    pub fn new_with_timeout(
+        mut base: Url,
+        chain_id: u64,
+        timeout: Duration,
+    ) -> Result<Self, WbError> {
         if !matches!(base.scheme(), "http" | "https") {
             return Err(WbError::permanent_transport("witness-builder URL must be http(s)"));
         }
@@ -63,10 +69,9 @@ impl WbClient {
             let p = format!("{}/", base.path());
             base.set_path(&p);
         }
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| WbError::permanent_transport(format!("failed to build HTTP client: {e}")))?;
+        let http = reqwest::Client::builder().timeout(timeout).build().map_err(|e| {
+            WbError::permanent_transport(format!("failed to build HTTP client: {e}"))
+        })?;
         Ok(Self { base, http, chain_id })
     }
 
@@ -171,9 +176,11 @@ impl WbClient {
 
     /// Fetch the tree boundary witness at `height`. Validates `len == popcount(count)` and, when
     /// declared roots are present, rebuilds them from the frontier and rejects on mismatch.
-    pub async fn get_tree_boundary_witness(&self, height: u64) -> Result<TreeBoundaryWitness, WbError> {
-        let d: BoundaryDto =
-            self.get(ROUTE_BOUNDARY, &[("height", height.to_string())]).await?;
+    pub async fn get_tree_boundary_witness(
+        &self,
+        height: u64,
+    ) -> Result<TreeBoundaryWitness, WbError> {
+        let d: BoundaryDto = self.get(ROUTE_BOUNDARY, &[("height", height.to_string())]).await?;
         if d.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(WbError::UnsupportedVersion);
         }
@@ -262,7 +269,8 @@ struct ApiEnvelope<T> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckpointDto {
-    // Flat SnapshotQueryResponse (§R2.1-B): no nested `components`; four roots + chainId top-level.
+    // Flat SnapshotQueryResponse (§R2.1-B): no nested `components`; four roots + chainId
+    // top-level.
     #[serde(default)]
     schema_version: Option<u16>,
     #[serde(default)]
@@ -286,11 +294,13 @@ struct CheckpointDto {
 #[serde(rename_all = "camelCase")]
 struct BoundaryDto {
     // TreeBoundaryResponse (§R2.1-C / R4): flat, NO chainId, NO declared root; DOES carry
-    // `blockHash` between `blockHeight` and `withdrawalCount` (R4 MR102-R3-3 — previously dropped).
+    // `blockHash` between `blockHeight` and `withdrawalCount` (R4 MR102-R3-3 — previously
+    // dropped).
     #[serde(default)]
     schema_version: u16,
     block_height: u64,
-    // `blockHash` (camelCase); `B256`'s serde parses the `0x` hex string, same as `canonical_block_hash`.
+    // `blockHash` (camelCase); `B256`'s serde parses the `0x` hex string, same as
+    // `canonical_block_hash`.
     block_hash: B256,
     #[serde(default)]
     withdrawal_count: u32,
@@ -438,7 +448,10 @@ mod tests {
             }))))
             .mount(&server)
             .await;
-        assert!(matches!(client(&server, 196).get_checkpoint_v2(100).await, Err(WbError::RootMismatch)));
+        assert!(matches!(
+            client(&server, 196).get_checkpoint_v2(100).await,
+            Err(WbError::RootMismatch)
+        ));
     }
 
     #[tokio::test]
@@ -453,7 +466,10 @@ mod tests {
             }))))
             .mount(&server)
             .await;
-        assert!(matches!(client(&server, 196).get_checkpoint_v2(100).await, Err(WbError::InvalidRequest)));
+        assert!(matches!(
+            client(&server, 196).get_checkpoint_v2(100).await,
+            Err(WbError::InvalidRequest)
+        ));
     }
 
     #[tokio::test]
@@ -585,7 +601,11 @@ mod tests {
             .await;
         assert!(matches!(
             client(&server2, 196)
-                .get_historical_inclusion_proof(B256::repeat_byte(0x01), 20, B256::repeat_byte(0x33))
+                .get_historical_inclusion_proof(
+                    B256::repeat_byte(0x01),
+                    20,
+                    B256::repeat_byte(0x33)
+                )
                 .await,
             Err(WbError::WitnessStoreCorrupt)
         ));

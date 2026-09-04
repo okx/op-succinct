@@ -56,7 +56,11 @@ pub fn empty_force_root() -> B256 {
 /// The empty Withdrawal root. `tz-witness` exposes only `empty_force_root`, so build the withdrawal
 /// variant from the same primitives: `business_root(Withdrawal, 0, inner_root(empty frontier))`.
 pub fn empty_withdrawal_root() -> B256 {
-    merkle::business_root(TreeNamespace::Withdrawal, 0, merkle::inner_root(&TreeFrontier::default()))
+    merkle::business_root(
+        TreeNamespace::Withdrawal,
+        0,
+        merkle::inner_root(&TreeFrontier::default()),
+    )
 }
 
 /// Outer `count + tag` wrapper, delegated to `tz_witness::merkle::business_root`. `tag` selects the
@@ -154,7 +158,10 @@ mod tests {
     fn business_root_tag_and_count_matter() {
         let inner = B256::repeat_byte(0xab);
         assert_ne!(business_root(inner, 5, WITHDRAWAL_TAG), business_root(inner, 5, FORCE_TAG));
-        assert_ne!(business_root(inner, 5, WITHDRAWAL_TAG), business_root(inner, 6, WITHDRAWAL_TAG));
+        assert_ne!(
+            business_root(inner, 5, WITHDRAWAL_TAG),
+            business_root(inner, 6, WITHDRAWAL_TAG)
+        );
     }
 
     #[test]

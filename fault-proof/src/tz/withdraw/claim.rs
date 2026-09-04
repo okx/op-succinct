@@ -1,4 +1,5 @@
-//! Four-field `claimRoot` codec and `OPSuccinctFaultDisputeGame` `extraData` decode (spec §4, §7.2).
+//! Four-field `claimRoot` codec and `OPSuccinctFaultDisputeGame` `extraData` decode (spec §4,
+//! §7.2).
 //!
 //! `claimRoot = keccak256(blockHash ‖ appHash ‖ withdrawalRoot ‖ forceRoot)`, preimage exactly
 //! 128 bytes (`abi.encodePacked` semantics). This is byte-identical to the on-chain
@@ -19,7 +20,12 @@ pub const FOUR_PREIMAGE_EXTRA_DATA_LEN: usize = 164;
 ///
 /// Byte-identical to the contract's `_checkRootClaimCommitment` and to
 /// `game_validator::compute_v3_claim_root`.
-pub fn claim_root(block_hash: B256, app_hash: B256, withdrawal_root: B256, force_root: B256) -> B256 {
+pub fn claim_root(
+    block_hash: B256,
+    app_hash: B256,
+    withdrawal_root: B256,
+    force_root: B256,
+) -> B256 {
     let mut preimage = [0u8; 128];
     preimage[..32].copy_from_slice(block_hash.as_slice());
     preimage[32..64].copy_from_slice(app_hash.as_slice());
@@ -151,7 +157,10 @@ mod tests {
         assert_eq!(d.withdrawal_root, wr);
         assert_eq!(d.force_root, fr);
         // The decoded four-preimage must reproduce the same claimRoot the contract commits to.
-        assert_eq!(claim_root(d.block_hash, d.app_hash, d.withdrawal_root, d.force_root), claim_root(bh, ah, wr, fr));
+        assert_eq!(
+            claim_root(d.block_hash, d.app_hash, d.withdrawal_root, d.force_root),
+            claim_root(bh, ah, wr, fr)
+        );
     }
 
     #[test]
@@ -169,7 +178,14 @@ mod tests {
         // byte-identical to the independent test helper layout above.
         assert_eq!(
             e,
-            encode_extra(36_000, 7, pre.block_hash, pre.app_hash, pre.withdrawal_root, pre.force_root)
+            encode_extra(
+                36_000,
+                7,
+                pre.block_hash,
+                pre.app_hash,
+                pre.withdrawal_root,
+                pre.force_root
+            )
         );
         // and it round-trips through the production decoder.
         assert_eq!(decode_four_preimage_extra_data(&e).unwrap(), pre);

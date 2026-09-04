@@ -10,9 +10,7 @@ use fault_proof::{
     contract::{AnchorStateRegistry, DisputeGameFactory},
     prometheus::ProposerGauge,
     proposer::OPSuccinctProposer,
-    tz::chain_client::TzChainClient,
-    tz::config::TzConfig,
-    tz::l2_provider::TzL2Provider,
+    tz::{chain_client::TzChainClient, config::TzConfig, l2_provider::TzL2Provider},
     L2ProviderTrait,
 };
 use op_succinct_host_utils::{
@@ -26,7 +24,6 @@ use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
 static ALLOCATOR: Jemalloc = Jemalloc;
-
 
 #[derive(Parser)]
 #[command(name = "tz-proposer")]

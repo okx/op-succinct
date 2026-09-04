@@ -140,9 +140,10 @@ where
         next_l2_block_number_for_proposal: U256,
         parent_game_index: u32,
     ) -> Result<()> {
-        // Four-field CheckpointV2 preimage at the proposal height (single fetch + cross-check inside
-        // the provider). The submitted `rootClaim` is the four-field `claimRoot`, and the SAME four
-        // fields encode the 164-byte extraData — one source, no forked recompute (spec §R3.3).
+        // Four-field CheckpointV2 preimage at the proposal height (single fetch + cross-check
+        // inside the provider). The submitted `rootClaim` is the four-field `claimRoot`,
+        // and the SAME four fields encode the 164-byte extraData — one source, no forked
+        // recompute (spec §R3.3).
         let mut preimage = self
             .l2_provider
             .fetch_checkpoint_preimage_at_block(next_l2_block_number_for_proposal)
@@ -889,9 +890,10 @@ mod tests {
 
 #[cfg(all(test, feature = "tz"))]
 mod tz_boundary_tests {
-    use super::{assert_boundary_consistent, assert_extra_data_self_consistent, boundary_stdin_fields};
-    use crate::tz::withdraw::claim::claim_root;
-    use crate::tz::withdraw::types::TreeBoundaryWitness;
+    use super::{
+        assert_boundary_consistent, assert_extra_data_self_consistent, boundary_stdin_fields,
+    };
+    use crate::tz::withdraw::{claim::claim_root, types::TreeBoundaryWitness};
     use alloy_primitives::B256;
 
     /// A minimal valid boundary carrying `block_hash` (R4). popcount(3) == 2 withdrawal branches.
@@ -916,17 +918,15 @@ mod tz_boundary_tests {
         assert_eq!(f.withdrawal_count, 3);
         // popcount(3) == 2 branches, carried as `Vec<B256>` (the guest reads `Vec<B256>` via SP1
         // serde `read()`, NOT flat bytes) and preserved in order.
-        assert_eq!(
-            f.withdrawal_branches,
-            vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)]
-        );
+        assert_eq!(f.withdrawal_branches, vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)]);
         assert_eq!(f.force_count, 0);
         assert!(f.force_branches.is_empty());
     }
 
     #[test]
     fn boundary_stdin_fields_carries_block_hash_after_chain_id() {
-        // R4 §R4.3: `block_hash` is stdin item ④ (right after `tz_chain_id`), taken from the witness.
+        // R4 §R4.3: `block_hash` is stdin item ④ (right after `tz_chain_id`), taken from the
+        // witness.
         let f = boundary_stdin_fields(196, &boundary_with(B256::repeat_byte(0x11)));
         assert_eq!(f.chain_id, 196);
         assert_eq!(f.block_hash, B256::repeat_byte(0x11));

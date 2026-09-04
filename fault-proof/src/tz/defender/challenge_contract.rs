@@ -8,7 +8,7 @@
 
 use std::sync::Mutex;
 
-use alloy_primitives::{Address, B256, TxHash};
+use alloy_primitives::{Address, TxHash, B256};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -190,7 +190,13 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            ProveCall { leaf_hash: leaf, checkpoint_height: 20, leaf_index: 3, count: 5, siblings: sibs }
+            ProveCall {
+                leaf_hash: leaf,
+                checkpoint_height: 20,
+                leaf_index: 3,
+                count: 5,
+                siblings: sibs
+            }
         );
     }
 

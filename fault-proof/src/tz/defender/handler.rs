@@ -6,29 +6,31 @@
 //! hit still re-checks on-chain status + deadline; and no transaction is ever sent when the
 //! challenge is closed, the deadline has passed, or the proof fails local verification.
 
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use alloy_primitives::{B256, TxHash};
+use alloy_primitives::{TxHash, B256};
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::tz::withdraw::error::WbError;
-use crate::tz::withdraw::types::HistoricalInclusionProof;
+use crate::tz::withdraw::{error::WbError, types::HistoricalInclusionProof};
 
-use super::cache::ProofCache;
-use super::challenge_contract::{ChallengeContract, ChallengeOpened};
-use super::rootmanager_client::CoveringRootSource;
-use super::verifier::verify_inclusion;
+use super::{
+    cache::ProofCache,
+    challenge_contract::{ChallengeContract, ChallengeOpened},
+    rootmanager_client::CoveringRootSource,
+    verifier::verify_inclusion,
+};
 
 /// Source of Witness Builder facts the handler needs: the canonical record height for a leaf, and
 /// a historical inclusion proof bound to an exact `(checkpoint_height, withdrawal_root)`.
 #[async_trait]
 pub trait WitnessSource: Send + Sync {
     /// Canonical block height at which the record for `leaf_hash` was included (from WB, not the
-    /// caller). `WithdrawalNotFound` / `NotReady` mean "not yet" and may be retried before deadline.
+    /// caller). `WithdrawalNotFound` / `NotReady` mean "not yet" and may be retried before
+    /// deadline.
     async fn canonical_record_height(&self, leaf_hash: B256) -> Result<u64, WbError>;
-    /// Historical inclusion proof for `leaf_hash` at an exact `(checkpoint_height, withdrawal_root)`.
+    /// Historical inclusion proof for `leaf_hash` at an exact `(checkpoint_height,
+    /// withdrawal_root)`.
     async fn historical_proof(
         &self,
         leaf_hash: B256,
@@ -117,7 +119,12 @@ impl Handler {
         let record_height = match self.witness.canonical_record_height(ev.leaf_hash).await {
             Ok(h) => h,
             Err(e) => {
-                return Ok(self.classify_wait(e, now, status.deadline, RetryReason::WaitingForRecord));
+                return Ok(self.classify_wait(
+                    e,
+                    now,
+                    status.deadline,
+                    RetryReason::WaitingForRecord,
+                ));
             }
         };
 
@@ -216,10 +223,13 @@ impl Handler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tz::defender::challenge_contract::{ChallengeStatus, MockChallengeContract};
-    use crate::tz::defender::rootmanager_client::MockRootManager;
-    use crate::tz::withdraw::tree_adapter::single_leaf_withdrawal_fixture;
-    use crate::tz::withdraw::types::WithdrawRecord;
+    use crate::tz::{
+        defender::{
+            challenge_contract::{ChallengeStatus, MockChallengeContract},
+            rootmanager_client::MockRootManager,
+        },
+        withdraw::{tree_adapter::single_leaf_withdrawal_fixture, types::WithdrawRecord},
+    };
     use alloy_primitives::{Address, B256};
     use std::sync::Mutex as StdMutex;
 
@@ -296,10 +306,7 @@ mod tests {
         B256::repeat_byte(LEAF[0])
     }
 
-    fn setup(
-        deadline: u64,
-        rm_height: Option<u64>,
-    ) -> (Arc<MockChallengeContract>, Handler, B256) {
+    fn setup(deadline: u64, rm_height: Option<u64>) -> (Arc<MockChallengeContract>, Handler, B256) {
         let l = leaf();
         let (proof, root) = valid_proof(l);
         let cc = Arc::new(MockChallengeContract::new());
