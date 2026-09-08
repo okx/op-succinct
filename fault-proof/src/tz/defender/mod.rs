@@ -27,4 +27,4 @@ pub use challenge_contract::{
     ChallengeStatus,
 };
 pub use config::DefenderConfig;
-pub use handler::{Handler, HandlerOutcome};
+pub use handler::{ChallengeState, Handler};

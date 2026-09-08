@@ -96,6 +96,16 @@ pub trait ChallengeReader: Send + Sync {
     async fn get_challenge(&self, id: ChallengeId) -> Result<ChallengeStatus>;
 }
 
+/// The confirmation status of a broadcast transaction. A broadcast tx is only `Submitted`; the
+/// outcome requires a receipt (`Success`/`Reverted`) plus the challenge's on-chain status, and an
+/// ambiguous/not-yet-mined receipt (`Pending`) is reconciled on a later tick, never blind-resent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxStatus {
+    Success,
+    Reverted,
+    Pending,
+}
+
 /// Sender of a proof for a challenge, keyed by [`ChallengeId`].
 #[async_trait]
 pub trait ChallengeSender: Send + Sync {
@@ -108,6 +118,9 @@ pub trait ChallengeSender: Send + Sync {
         count: u32,
         siblings: [B256; 32],
     ) -> Result<TxHash>;
+
+    /// Confirm a previously-broadcast transaction via its receipt.
+    async fn confirm(&self, tx: TxHash) -> Result<TxStatus>;
 }
 
 /// Recorded `prove_challenge` calldata (for test assertions).
@@ -129,6 +142,8 @@ struct MockState {
     opened: Vec<ChallengeOpened>,
     status: std::collections::HashMap<ChallengeId, ChallengeStatus>,
     prove_calls: Vec<ProveCall>,
+    /// Scripted transaction receipt statuses, keyed by tx hash.
+    tx_status: std::collections::HashMap<TxHash, TxStatus>,
     /// When set, `prove_challenge` fails to simulate a lost race / revert.
     fail_prove: bool,
 }
@@ -146,6 +161,7 @@ impl MockChallengeContract {
                 opened: Vec::new(),
                 status: std::collections::HashMap::new(),
                 prove_calls: Vec::new(),
+                tx_status: std::collections::HashMap::new(),
                 fail_prove: false,
             }),
         }
@@ -187,6 +203,25 @@ impl MockChallengeContract {
     /// Make the next `prove_challenge` calls fail (simulate revert / lost race at submit time).
     pub fn set_fail_prove(&self, fail: bool) {
         self.inner.lock().unwrap().fail_prove = fail;
+    }
+
+    /// Script the receipt status returned by `confirm` for a transaction hash.
+    pub fn set_tx_status(&self, tx: TxHash, status: TxStatus) {
+        self.inner.lock().unwrap().tx_status.insert(tx, status);
+    }
+
+    /// Mark a challenge resolved (no longer open) — used to model our prove resolving it.
+    pub fn mark_resolved_in_our_favor(&self, id: ChallengeId) {
+        if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
+            st.open = false;
+        }
+    }
+
+    /// Keep a challenge open (used to model a still-contested challenge after a revert).
+    pub fn keep_open(&self, id: ChallengeId) {
+        if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
+            st.open = true;
+        }
     }
 
     /// All recorded `prove_challenge` calldata.
@@ -238,6 +273,11 @@ impl ChallengeSender for MockChallengeContract {
             siblings,
         });
         Ok(TxHash::repeat_byte(0x99))
+    }
+
+    async fn confirm(&self, tx: TxHash) -> Result<TxStatus> {
+        // Default to Pending (not yet mined / ambiguous) so callers reconcile rather than resend.
+        Ok(self.inner.lock().unwrap().tx_status.get(&tx).copied().unwrap_or(TxStatus::Pending))
     }
 }
 
