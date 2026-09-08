@@ -18,6 +18,7 @@ pub mod challenge_contract;
 pub mod config;
 pub mod handler;
 pub mod rootmanager_client;
+pub mod supervisor;
 pub mod verifier;
 pub mod watcher;
 pub mod witness_wb;
@@ -28,3 +29,4 @@ pub use challenge_contract::{
 };
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler};
+pub use supervisor::Supervisor;
