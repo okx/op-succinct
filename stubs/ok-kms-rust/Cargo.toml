@@ -1,0 +1,8 @@
+[package]
+name = "ok-kms-rust"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "In-tree stub of the OKG ok-kms-rust SDK. Compiles offline with no private-group access; every secret lookup fails carrying the OK_KMS_STUB marker. Swap for the real SDK via `just kms-crate` for production builds."
+
+[dependencies]
