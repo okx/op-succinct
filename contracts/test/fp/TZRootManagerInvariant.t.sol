@@ -15,8 +15,6 @@ contract TZRootManagerHandler is Test {
     address public ordinaryCaller = address(0xB0B);
     address public otherAlias;
 
-    mapping(uint256 => bytes32) public modelWithdrawalRoots;
-    mapping(uint256 => bytes32) public modelForceTxRoots;
     bytes32 public modelLatestWithdrawalRoot;
     bytes32 public modelLatestForceTxRoot;
     uint256 public modelLatestHeight;
@@ -32,8 +30,7 @@ contract TZRootManagerHandler is Test {
     }
 
     function record(bytes32 withdrawalRoot, bytes32 forceTxRoot, uint256 height, uint8 actorSeed) external {
-        (uint256 beforeHeight,,) = manager.getLatestRoots();
-        (bytes32 beforeHeightW, bytes32 beforeHeightF) = manager.getRoots(height);
+        (uint256 beforeHeight, bytes32 beforeLatestW, bytes32 beforeLatestF) = manager.getLatestRoots();
         uint8 actorKind = actorSeed % 4;
         bool authorized = actorKind == 0;
 
@@ -48,8 +45,6 @@ contract TZRootManagerHandler is Test {
 
             if (shouldSucceed) {
                 require(ok, "authorized valid record unexpectedly failed");
-                modelWithdrawalRoots[height] = withdrawalRoot;
-                modelForceTxRoots[height] = forceTxRoot;
                 modelLatestWithdrawalRoot = withdrawalRoot;
                 modelLatestForceTxRoot = forceTxRoot;
                 modelLatestHeight = height;
@@ -73,13 +68,9 @@ contract TZRootManagerHandler is Test {
         require(afterLatestW == modelLatestWithdrawalRoot, "latest withdrawal root model mismatch");
         require(afterLatestF == modelLatestForceTxRoot, "latest force root model mismatch");
 
-        (bytes32 afterHeightW, bytes32 afterHeightF) = manager.getRoots(height);
-        if (afterHeightW != modelWithdrawalRoots[height] || afterHeightF != modelForceTxRoots[height]) {
-            revert("checkpoint history model mismatch");
-        }
-        if (afterHeightW != beforeHeightW || afterHeightF != beforeHeightF) {
-            require(authorized, "unauthorized history mutation");
-            require(withdrawalRoot != bytes32(0) && forceTxRoot != bytes32(0), "zero-root history mutation");
+        if (afterHeight == beforeHeight) {
+            require(afterLatestW == beforeLatestW, "rejected call changed withdrawal root");
+            require(afterLatestF == beforeLatestF, "rejected call changed force root");
         }
 
         if (afterHeight > highestObservedHeight) {
@@ -104,7 +95,9 @@ contract TZRootManagerInvariantTest is StdInvariant, Test {
         assertEq(height, handler.modelLatestHeight());
         assertEq(withdrawalRoot, handler.modelLatestWithdrawalRoot());
         assertEq(forceTxRoot, handler.modelLatestForceTxRoot());
-        assertGe(height, handler.highestObservedHeight());
+        assertEq(manager.latestWithdrawalRoot(), withdrawalRoot);
+        assertEq(manager.latestForceTxRoot(), forceTxRoot);
+        assertEq(height, handler.highestObservedHeight());
     }
 
     function invariant_latestRootsAreBothZeroOrBothNonZero() public view {

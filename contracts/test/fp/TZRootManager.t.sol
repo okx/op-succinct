@@ -25,19 +25,6 @@ contract TZRootManagerTest is Test {
         manager.record(withdrawalRoot, forceTxRoot, checkpointBlockHeight);
     }
 
-    function _assertRoots(uint256 checkpointBlockHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
-        internal
-        view
-    {
-        (bytes32 withdrawalRoot, bytes32 forceTxRoot) = manager.getRoots(checkpointBlockHeight);
-        assertEq(withdrawalRoot, expectedWithdrawalRoot);
-        assertEq(forceTxRoot, expectedForceTxRoot);
-
-        (bytes32 publicWithdrawalRoot, bytes32 publicForceTxRoot) = manager._rootsByCheckpoint(checkpointBlockHeight);
-        assertEq(publicWithdrawalRoot, expectedWithdrawalRoot);
-        assertEq(publicForceTxRoot, expectedForceTxRoot);
-    }
-
     function _assertLatest(uint256 expectedHeight, bytes32 expectedWithdrawalRoot, bytes32 expectedForceTxRoot)
         internal
         view
@@ -46,6 +33,8 @@ contract TZRootManagerTest is Test {
         assertEq(checkpointBlockHeight, expectedHeight);
         assertEq(withdrawalRoot, expectedWithdrawalRoot);
         assertEq(forceTxRoot, expectedForceTxRoot);
+        assertEq(manager.latestWithdrawalRoot(), expectedWithdrawalRoot);
+        assertEq(manager.latestForceTxRoot(), expectedForceTxRoot);
     }
 
     function test_constructor_revertsOnZeroForwarder() public {
@@ -56,8 +45,6 @@ contract TZRootManagerTest is Test {
     function test_initialState_queriesReturnZero() public view {
         assertEq(manager.L1_POST_ANCHOR(), L1_POST_ANCHOR);
         assertEq(manager.l2BlockNumber(), 0);
-        _assertRoots(0, bytes32(0), bytes32(0));
-        _assertRoots(42, bytes32(0), bytes32(0));
         _assertLatest(0, bytes32(0), bytes32(0));
     }
 
@@ -69,11 +56,10 @@ contract TZRootManagerTest is Test {
         emit RootsRecorded(w, f, 10);
         _record(w, f, 10);
 
-        _assertRoots(10, w, f);
         _assertLatest(10, w, f);
     }
 
-    function test_record_sparseCheckpoints_preservesExactHeightHistory() public {
+    function test_record_higherCheckpointReplacesPreviouslyLatestRoots() public {
         bytes32 w10 = keccak256("w10");
         bytes32 f10 = keccak256("f10");
         bytes32 w100 = keccak256("w100");
@@ -82,10 +68,6 @@ contract TZRootManagerTest is Test {
         _record(w10, f10, 10);
         _record(w100, f100, 100);
 
-        _assertRoots(10, w10, f10);
-        _assertRoots(11, bytes32(0), bytes32(0));
-        _assertRoots(99, bytes32(0), bytes32(0));
-        _assertRoots(100, w100, f100);
         _assertLatest(100, w100, f100);
     }
 
@@ -96,7 +78,6 @@ contract TZRootManagerTest is Test {
 
         _record(w, f, height);
 
-        _assertRoots(height, w, f);
         _assertLatest(height, w, f);
     }
 
@@ -108,7 +89,6 @@ contract TZRootManagerTest is Test {
         vm.prank(aliasedSender);
         manager.record(w, f, 0);
 
-        _assertRoots(0, bytes32(0), bytes32(0));
         _assertLatest(0, bytes32(0), bytes32(0));
     }
 
@@ -117,7 +97,6 @@ contract TZRootManagerTest is Test {
         vm.prank(aliasedSender);
         manager.record(bytes32(0), keccak256("f"), 10);
 
-        _assertRoots(10, bytes32(0), bytes32(0));
         _assertLatest(0, bytes32(0), bytes32(0));
     }
 
@@ -126,7 +105,6 @@ contract TZRootManagerTest is Test {
         vm.prank(aliasedSender);
         manager.record(keccak256("w"), bytes32(0), 10);
 
-        _assertRoots(10, bytes32(0), bytes32(0));
         _assertLatest(0, bytes32(0), bytes32(0));
     }
 
@@ -142,7 +120,7 @@ contract TZRootManagerTest is Test {
         manager.record(keccak256("w"), keccak256("f"), 1);
     }
 
-    function test_record_lowerHeight_revertsStaleRootAndPreservesHistory() public {
+    function test_record_lowerHeight_revertsStaleRootAndPreservesLatest() public {
         bytes32 w = keccak256("w");
         bytes32 f = keccak256("f");
         _record(w, f, 10);
@@ -151,8 +129,6 @@ contract TZRootManagerTest is Test {
         vm.prank(aliasedSender);
         manager.record(keccak256("w2"), keccak256("f2"), 9);
 
-        _assertRoots(9, bytes32(0), bytes32(0));
-        _assertRoots(10, w, f);
         _assertLatest(10, w, f);
     }
 
@@ -165,11 +141,10 @@ contract TZRootManagerTest is Test {
         vm.prank(aliasedSender);
         manager.record(w, f, 10);
 
-        _assertRoots(10, w, f);
         _assertLatest(10, w, f);
     }
 
-    function test_record_sameHeightDifferentRoots_revertsStaleRootAndPreservesHistory() public {
+    function test_record_sameHeightDifferentRoots_revertsStaleRootAndPreservesLatest() public {
         bytes32 originalW = keccak256("w");
         bytes32 originalF = keccak256("f");
         _record(originalW, originalF, 10);
@@ -180,7 +155,6 @@ contract TZRootManagerTest is Test {
         vm.prank(aliasedSender);
         manager.record(correctedW, correctedF, 10);
 
-        _assertRoots(10, originalW, originalF);
         _assertLatest(10, originalW, originalF);
     }
 
@@ -204,16 +178,10 @@ contract TZRootManagerTest is Test {
             vm.expectRevert(StaleRoot.selector);
             vm.prank(aliasedSender);
             manager.record(secondW, secondF, secondHeight);
-            if (secondHeight < firstHeight) {
-                _assertRoots(secondHeight, bytes32(0), bytes32(0));
-            }
-            _assertRoots(firstHeight, firstW, firstF);
             _assertLatest(firstHeight, firstW, firstF);
         } else {
             _record(secondW, secondF, secondHeight);
-            _assertRoots(secondHeight, secondW, secondF);
             _assertLatest(secondHeight, secondW, secondF);
-            _assertRoots(firstHeight, firstW, firstF);
         }
     }
 
