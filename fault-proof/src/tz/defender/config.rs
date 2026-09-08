@@ -39,9 +39,13 @@ pub struct DefenderConfig {
     pub chain_id: u64,
     /// L2 finality depth (blocks) before an event/root is actionable.
     pub finality_blocks: u64,
-    /// Startup lookback (blocks) to rescan for still-open challenges.
+    /// Extra L2-block margin beyond finality when computing the startup rescan window.
+    pub reorg_safety_margin: u64,
+    /// Startup lookback (L2 blocks) to rescan for still-open challenges.
     pub startup_lookback: u64,
-    /// Backoff between retries when waiting for WB record / covering root.
+    /// Maximum number of bounded resends for a single challenge before it terminates.
+    pub max_resend: u32,
+    /// Backoff between retries when waiting for the witness record or the latest root.
     pub retry_backoff: Duration,
     /// Safety margin before the on-chain response deadline (stop responding within it).
     pub deadline_safety_margin: Duration,
@@ -85,7 +89,7 @@ impl DefenderConfig {
             }
         };
 
-        Ok(Self {
+        let cfg = Self {
             challenge_contract: parse_addr("DEFENDER_CHALLENGE_CONTRACT")?,
             root_manager: parse_addr("DEFENDER_ROOT_MANAGER")?,
             wb_endpoint: req("DEFENDER_WB_ENDPOINT")?
@@ -93,7 +97,9 @@ impl DefenderConfig {
                 .context("DEFENDER_WB_ENDPOINT must be a URL")?,
             chain_id,
             finality_blocks: opt_u64("DEFENDER_FINALITY_BLOCKS", 32)?,
+            reorg_safety_margin: opt_u64("DEFENDER_REORG_SAFETY_MARGIN", 16)?,
             startup_lookback: opt_u64("DEFENDER_STARTUP_LOOKBACK", 10_000)?,
+            max_resend: opt_u64("DEFENDER_MAX_RESEND", 3)? as u32,
             retry_backoff: Duration::from_secs(opt_u64("DEFENDER_RETRY_BACKOFF_SECS", 15)?),
             deadline_safety_margin: Duration::from_secs(opt_u64(
                 "DEFENDER_DEADLINE_SAFETY_MARGIN_SECS",
@@ -101,7 +107,48 @@ impl DefenderConfig {
             )?),
             cache_capacity: opt_u64("DEFENDER_CACHE_CAPACITY", 1024)? as usize,
             signer_secret: Redacted(req("DEFENDER_SIGNER_SECRET")?),
-        })
+        };
+
+        // When both the challenge response period and a conservative minimum L2 block interval are
+        // configured, the startup rescan window must be at least the derived block-count lower
+        // bound so a challenge still open after downtime stays inside the window.
+        if let (Some(period), Some(interval)) = (
+            read("DEFENDER_MAX_CHALLENGE_RESPONSE_SECS")
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().parse::<u64>())
+                .transpose()
+                .context("DEFENDER_MAX_CHALLENGE_RESPONSE_SECS must be an integer")?,
+            read("DEFENDER_MIN_L2_BLOCK_INTERVAL_SECS")
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().parse::<u64>())
+                .transpose()
+                .context("DEFENDER_MIN_L2_BLOCK_INTERVAL_SECS must be an integer")?,
+        ) {
+            let lower_bound = cfg.startup_lookback_blocks(period, interval);
+            if cfg.startup_lookback < lower_bound {
+                bail!(
+                    "DEFENDER_STARTUP_LOOKBACK ({}) is below the required block lower bound ({})",
+                    cfg.startup_lookback,
+                    lower_bound
+                );
+            }
+        }
+
+        Ok(cfg)
+    }
+
+    /// Lower bound, in L2 BLOCKS, for how far back to rescan on startup so a challenge still open
+    /// after downtime is inside the window. All terms are block counts; seconds and block counts
+    /// are never added directly — the response period is converted to blocks via the conservative
+    /// minimum L2 block interval first.
+    pub fn startup_lookback_blocks(
+        &self,
+        max_challenge_response_secs: u64,
+        min_l2_block_interval_secs: u64,
+    ) -> u64 {
+        let interval = min_l2_block_interval_secs.max(1);
+        let period_blocks = max_challenge_response_secs.div_ceil(interval);
+        period_blocks + self.finality_blocks + self.reorg_safety_margin
     }
 }
 
@@ -146,6 +193,31 @@ mod tests {
         let mut m = full_env();
         m.insert("DEFENDER_TZ_CHAIN_ID", "0".to_string());
         assert!(DefenderConfig::parse_from(reader(m)).is_err());
+    }
+
+    #[test]
+    fn startup_lookback_lower_bound_is_blocks_not_seconds() {
+        let cfg = DefenderConfig::parse_from(reader(full_env())).unwrap();
+        // period=7200s, min L2 block interval=2s ⇒ ceil(3600) blocks; + finality + reorg margin.
+        let lb = cfg.startup_lookback_blocks(7200, 2);
+        assert!(lb >= 3600 + cfg.finality_blocks, "must add finality depth in BLOCKS");
+        // Seconds and blocks are never added directly.
+        assert_ne!(lb, 7200 + 32);
+    }
+
+    #[test]
+    fn too_small_startup_lookback_is_rejected() {
+        let mut m = full_env();
+        m.insert("DEFENDER_STARTUP_LOOKBACK", "1".to_string());
+        m.insert("DEFENDER_MAX_CHALLENGE_RESPONSE_SECS", "7200".to_string());
+        m.insert("DEFENDER_MIN_L2_BLOCK_INTERVAL_SECS", "2".to_string());
+        assert!(DefenderConfig::parse_from(reader(m)).is_err());
+    }
+
+    #[test]
+    fn max_resend_defaults_and_parses() {
+        let cfg = DefenderConfig::parse_from(reader(full_env())).unwrap();
+        assert_eq!(cfg.max_resend, 3); // default
     }
 
     #[test]
