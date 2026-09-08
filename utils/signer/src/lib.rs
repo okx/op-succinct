@@ -18,23 +18,19 @@ use tokio::{sync::Mutex, time::Duration};
 
 pub mod kms;
 pub mod xlayer_remote_client;
+pub use kms::{is_kms_ref, maybe_resolve, KmsError, KMS_REF_PREFIX};
 pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
 
-/// Resolve the XLayer remote signer secret key from either KMS (when
-/// `ENABLE_KMS=true`) or the `XLAYER_SECRET_KEY` env var.
+/// Resolve the XLayer remote signer secret key. The `XLAYER_SECRET_KEY` value is
+/// passed through the unified KMS reference model: a `kms:<name>` value is
+/// resolved via the SDK; any literal value is returned unchanged.
 fn resolve_xlayer_secret_key() -> Result<String> {
-    if kms::is_kms_enabled() {
-        let key_name = std::env::var("KMS_SECRET_KEY_NAME")
-            .context("KMS_SECRET_KEY_NAME is required when ENABLE_KMS=true")?;
-        tracing::info!(kms_key = %key_name, "Fetching XLayer secret_key from KMS");
-        kms::fetch_secret(&key_name).context("failed to fetch XLAYER secret_key from KMS")
-    } else {
-        std::env::var("XLAYER_SECRET_KEY")
-            .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")
-    }
+    let raw = std::env::var("XLAYER_SECRET_KEY")
+        .context("XLAYER_SECRET_KEY is required when XLAYER_SIGNER_ENABLED=true")?;
+    kms::maybe_resolve(&raw).context("failed to resolve XLAYER_SECRET_KEY")
 }
 
 #[derive(Clone, Debug)]
@@ -115,8 +111,11 @@ impl Signer {
                         .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/ecologyOperate".to_string()),
                     query_sign_uri: std::env::var("XLAYER_QUERY_SIGN_URI")
                         .unwrap_or_else(|_| "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo".to_string()),
-                    access_key: std::env::var("XLAYER_ACCESS_KEY")
-                        .context("XLAYER_ACCESS_KEY is required when XLAYER_SIGNER_ENABLED=true")?,
+                    access_key: {
+                        let raw = std::env::var("XLAYER_ACCESS_KEY")
+                            .context("XLAYER_ACCESS_KEY is required when XLAYER_SIGNER_ENABLED=true")?;
+                        kms::maybe_resolve(&raw).context("failed to resolve XLAYER_ACCESS_KEY")?
+                    },
                     secret_key: resolve_xlayer_secret_key()?,
                     timeout: Duration::from_secs(
                         std::env::var("XLAYER_TIMEOUT")
@@ -166,7 +165,9 @@ impl Signer {
                 Address::from_str(&signer_address_str).context("Failed to parse SIGNER_ADDRESS")?;
             Ok(Signer::new_web3_signer(signer_url, signer_address))
         } else if let Ok(private_key_str) = std::env::var("PRIVATE_KEY") {
-            Signer::new_local_signer(&private_key_str)
+            let resolved =
+                kms::maybe_resolve(&private_key_str).context("failed to resolve PRIVATE_KEY")?;
+            Signer::new_local_signer(&resolved)
         } else {
             anyhow::bail!(
                 "None of the required signer configurations are set in environment:\n\
@@ -375,6 +376,26 @@ mod tests {
     use op_succinct_host_utils::OPSuccinctL2OutputOracle::OPSuccinctL2OutputOracleInstance as OPSuccinctL2OOContract;
 
     use super::*;
+
+    #[test]
+    fn local_signer_passthrough_literal_private_key() {
+        // A literal (non-kms:) PRIVATE_KEY resolves unchanged and builds a LocalSigner.
+        // Well-known Anvil dev key #0 (public test vector, not a real secret).
+        let key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        let resolved = crate::maybe_resolve(key).expect("passthrough");
+        assert_eq!(resolved, key);
+        let signer = Signer::new_local_signer(&resolved).expect("local signer");
+        assert_eq!(
+            format!("{:?}", signer.address()).to_lowercase(),
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        );
+    }
+
+    #[cfg(not(feature = "kms"))]
+    #[test]
+    fn kms_ref_private_key_without_feature_errors() {
+        assert!(matches!(crate::maybe_resolve("kms:private_key"), Err(crate::KmsError::Disabled)));
+    }
 
     #[tokio::test]
     #[ignore]
