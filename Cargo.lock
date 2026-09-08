@@ -14716,7 +14716,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "tz-block-processor"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=e56881eb29879166752294c87b207a23bb2dcc26#e56881eb29879166752294c87b207a23bb2dcc26"
+source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14737,7 +14737,7 @@ dependencies = [
 [[package]]
 name = "tz-dex"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=e56881eb29879166752294c87b207a23bb2dcc26#e56881eb29879166752294c87b207a23bb2dcc26"
+source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14764,7 +14764,7 @@ dependencies = [
 [[package]]
 name = "tz-macros"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=e56881eb29879166752294c87b207a23bb2dcc26#e56881eb29879166752294c87b207a23bb2dcc26"
+source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14774,7 +14774,7 @@ dependencies = [
 [[package]]
 name = "tz-primitives"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=e56881eb29879166752294c87b207a23bb2dcc26#e56881eb29879166752294c87b207a23bb2dcc26"
+source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14798,7 +14798,7 @@ dependencies = [
 [[package]]
 name = "tz-witness"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=e56881eb29879166752294c87b207a23bb2dcc26#e56881eb29879166752294c87b207a23bb2dcc26"
+source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "thiserror 2.0.18",
  "tz-primitives",
