@@ -570,3 +570,47 @@ forge-build *ARGS:
     --sig "idonotexist()" \
     --skip-simulation \
     2>/dev/null || true
+
+# ── KMS crate management (operator-only; the real SDK URL never enters the committed manifest) ──
+
+# Swap the in-tree stub for a real ok-kms-rust checkout (idempotent). Local pre-prod only.
+kms-crate url="ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git" tag="v1.0.0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DEST="stubs/ok-kms-rust"
+    if [ -f "$DEST/.ok-kms-real" ]; then
+      echo "ok-kms-rust: real SDK already in place; nothing to do"
+      exit 0
+    fi
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+    git clone --depth 1 --branch "{{tag}}" "{{url}}" "$TMP/ok-kms-rust"
+    rm -rf "$DEST"
+    mkdir -p "$DEST"
+    (cd "$TMP/ok-kms-rust" && tar --exclude=.git -cf - .) | (cd "$DEST" && tar -xf -)
+    touch "$DEST/.ok-kms-real"
+    echo "ok-kms-rust: real SDK checked out at {{tag}} into $DEST"
+
+# Restore the committed in-tree stub, undoing `just kms-crate`.
+kms-crate-restore:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git checkout -- stubs/ok-kms-rust
+    git clean -fdq stubs/ok-kms-rust
+    echo "ok-kms-rust: committed stub restored (git status clean)"
+
+# Build a fault-proof binary with --features kms and REFUSE a stub-linked binary.
+build-kms bin="proposer" *features='kms':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/tmp
+    TMPDIR="$(pwd)/target/tmp" CARGO_TARGET_DIR="$(pwd)/target" \
+      cargo build --release -p op-succinct-fp --bin {{bin}} --features {{features}}
+    BIN="target/release/{{bin}}"
+    COUNT="$(grep -ac OK_KMS_STUB "$BIN" || true)"
+    if [ "${COUNT:-0}" -gt 0 ]; then
+      echo "ERROR: {{bin}} is linked against the ok-kms-rust STUB (OK_KMS_STUB x$COUNT)." >&2
+      echo "Run \`just kms-crate\` with the real SDK before a production KMS build." >&2
+      exit 1
+    fi
+    echo "OK: {{bin}} built with kms features and is NOT stub-linked"
