@@ -17,7 +17,7 @@ use crate::tz::withdraw::{error::WbError, types::HistoricalInclusionProof};
 use super::{
     cache::ProofCache,
     challenge_contract::{ChallengeContract, ChallengeOpened},
-    rootmanager_client::CoveringRootSource,
+    rootmanager_client::LatestRootSource,
     verifier::verify_inclusion,
 };
 
@@ -75,7 +75,7 @@ pub enum HandlerOutcome {
 pub struct Handler {
     challenge: Arc<dyn ChallengeContract>,
     witness: Arc<dyn WitnessSource>,
-    root_manager: Arc<dyn CoveringRootSource>,
+    root_manager: Arc<dyn LatestRootSource>,
     cache: Mutex<ProofCache>,
     deadline_safety_margin_secs: u64,
 }
@@ -84,7 +84,7 @@ impl Handler {
     pub fn new(
         challenge: Arc<dyn ChallengeContract>,
         witness: Arc<dyn WitnessSource>,
-        root_manager: Arc<dyn CoveringRootSource>,
+        root_manager: Arc<dyn LatestRootSource>,
         cache_capacity: usize,
         deadline_safety_margin_secs: u64,
     ) -> Self {
@@ -113,30 +113,13 @@ impl Handler {
             return Ok(HandlerOutcome::Skipped(SkipReason::DeadlinePassed));
         }
 
-        // 2. Canonical record height comes from the WB, not the caller.
-        let record_height = match self.witness.canonical_record_height(ev.leaf_hash).await {
-            Ok(h) => h,
-            Err(e) => {
-                return Ok(self.classify_wait(
-                    e,
-                    now,
-                    status.deadline,
-                    RetryReason::WaitingForRecord,
-                ));
-            }
-        };
+        // 2. Confirm the WB knows the record; a not-yet-included record is a bounded wait.
+        if let Err(e) = self.witness.canonical_record_height(ev.leaf_hash).await {
+            return Ok(self.classify_wait(e, now, status.deadline, RetryReason::WaitingForRecord));
+        }
 
-        // 3. Wait for a finalized RootManager checkpoint that covers the record.
-        let (checkpoint_height, withdrawal_root) =
-            match self.root_manager.latest_finalized_covering(record_height).await? {
-                Some(pair) => pair,
-                None => {
-                    if self.has_time(now, status.deadline) {
-                        return Ok(HandlerOutcome::Retry(RetryReason::WaitingForCoveringRoot));
-                    }
-                    return Ok(HandlerOutcome::StoppedNoProof);
-                }
-            };
+        // 3. Bind the current latest RootManager checkpoint (latest-only semantics).
+        let (checkpoint_height, withdrawal_root) = self.root_manager.latest_root().await?;
 
         // 4. Obtain the proof: LRU cache first, else the WB at that exact root.
         let key = (ev.leaf_hash, withdrawal_root);
@@ -310,7 +293,7 @@ mod tests {
         let witness = Arc::new(MockWitness::new(10, proof));
         let rm = Arc::new(MockRootManager::new());
         if let Some(h) = rm_height {
-            rm.record(h, root);
+            rm.set_latest(h, root);
         }
         let handler = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
         (cc, handler, root)
@@ -369,7 +352,7 @@ mod tests {
         let witness = Arc::new(MockWitness::new(10, proof));
         witness.set_record_err(WbError::WithdrawalNotFound);
         let rm = Arc::new(MockRootManager::new());
-        rm.record(20, root);
+        rm.set_latest(20, root);
         let h = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
         assert_eq!(
             h.handle(&ev(), 0).await.unwrap(),
@@ -385,7 +368,7 @@ mod tests {
         let witness = Arc::new(MockWitness::new(10, valid_proof(l).0));
         witness.set_record_err(WbError::NotReady);
         let rm = Arc::new(MockRootManager::new());
-        rm.record(20, root);
+        rm.set_latest(20, root);
         let h = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
         // now + SAFETY (100) >= deadline (1000)? now=950 ⇒ 1050 >= 1000 ⇒ out of time.
         assert_eq!(h.handle(&ev(), 950).await.unwrap(), HandlerOutcome::StoppedNoProof);
@@ -393,13 +376,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn covering_root_absent_retries() {
-        // RootManager has nothing covering the record yet.
+    async fn missing_latest_root_is_error() {
+        // With latest-only semantics there is always a current root once the system is running;
+        // a missing latest root is a hard error, not a silent wait, and never sends a tx.
         let (cc, handler, _r) = setup(10_000, None);
-        assert_eq!(
-            handler.handle(&ev(), 0).await.unwrap(),
-            HandlerOutcome::Retry(RetryReason::WaitingForCoveringRoot)
-        );
+        assert!(handler.handle(&ev(), 0).await.is_err());
         assert!(cc.prove_calls().is_empty());
     }
 
@@ -414,7 +395,7 @@ mod tests {
         cc.set_status(l, ChallengeStatus { open: true, deadline: 10_000 });
         let witness = Arc::new(MockWitness::new(10, bad));
         let rm = Arc::new(MockRootManager::new());
-        rm.record(20, root);
+        rm.set_latest(20, root);
         let handler = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
         assert_eq!(handler.handle(&ev(), 0).await.unwrap(), HandlerOutcome::VerifyFailed);
         assert!(cc.prove_calls().is_empty());
@@ -449,7 +430,7 @@ mod tests {
         }
         let witness = Arc::new(RacingWitness { proof, cc: cc.clone(), leaf: l });
         let rm = Arc::new(MockRootManager::new());
-        rm.record(20, root);
+        rm.set_latest(20, root);
         let handler = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
         assert_eq!(
             handler.handle(&ev(), 0).await.unwrap(),

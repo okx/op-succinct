@@ -1,9 +1,9 @@
-//! TZRootManager access for the Defender (spec §7.4).
+//! TZRootManager access for the Defender.
 //!
-//! The handler binds `(checkpointHeight, withdrawalRoot)` to a **finalized** RootManager
-//! checkpoint that covers the record height. This is abstracted behind [`CoveringRootSource`] so
-//! the state machine is unit-testable with [`MockRootManager`]; the on-chain
-//! [`RootManagerClient`] reads `getLatestRoots()` from `TZRootManager` at a finalized block.
+//! The handler binds `(checkpointHeight, withdrawalRoot)` to the RootManager's current latest
+//! checkpoint. This is abstracted behind [`LatestRootSource`] so the state machine is
+//! unit-testable with [`MockRootManager`]; the on-chain [`RootManagerClient`] reads
+//! `getLatestRoots()` from `TZRootManager` at the current/latest state.
 
 use alloy_primitives::B256;
 use alloy_provider::Provider;
@@ -16,21 +16,19 @@ sol! {
     #[sol(rpc)]
     interface ITZRootManager {
         function getLatestRoots() external view returns (uint256 height, bytes32 withdrawalRoot, bytes32 forceTxRoot);
-        function getRoots(uint256 height) external view returns (bytes32 withdrawalRoot, bytes32 forceTxRoot);
     }
 }
 
-/// Source of the finalized covering `(checkpointHeight, withdrawalRoot)` for a record height.
+/// Source of the current latest RootManager checkpoint.
 #[async_trait]
-pub trait CoveringRootSource: Send + Sync {
-    /// Return the latest finalized RootManager checkpoint whose height `>= record_height`, with
-    /// its `withdrawalRoot`; `None` if no finalized checkpoint covers the record yet.
-    async fn latest_finalized_covering(&self, record_height: u64) -> Result<Option<(u64, B256)>>;
+pub trait LatestRootSource: Send + Sync {
+    /// The current latest RootManager checkpoint `(checkpoint_height, withdrawal_root)`, read at the
+    /// L2 current/latest state — NOT a finalized/lagging view. A prove transaction is verified
+    /// against the contract's then-current root, so a finalized root would be stale and rejected.
+    async fn latest_root(&self) -> Result<(u64, B256)>;
 }
 
-/// On-chain TZRootManager client reading `getLatestRoots()`. The "finalized" guarantee is
-/// provided by the caller reading against a finalized L1 view; this client returns the latest
-/// recorded covering root or `None`.
+/// On-chain TZRootManager client reading `getLatestRoots()` at the current/latest state.
 pub struct RootManagerClient<P: Provider + Clone> {
     inner: ITZRootManager::ITZRootManagerInstance<P>,
 }
@@ -42,8 +40,8 @@ impl<P: Provider + Clone> RootManagerClient<P> {
 }
 
 #[async_trait]
-impl<P: Provider + Clone + Send + Sync + 'static> CoveringRootSource for RootManagerClient<P> {
-    async fn latest_finalized_covering(&self, record_height: u64) -> Result<Option<(u64, B256)>> {
+impl<P: Provider + Clone + Send + Sync + 'static> LatestRootSource for RootManagerClient<P> {
+    async fn latest_root(&self) -> Result<(u64, B256)> {
         let latest = self
             .inner
             .getLatestRoots()
@@ -52,18 +50,14 @@ impl<P: Provider + Clone + Send + Sync + 'static> CoveringRootSource for RootMan
             .context("failed to read TZRootManager.getLatestRoots")?;
         let height = crate::checked_l2_block_number(latest.height)
             .context("RootManager latest height exceeds u64")?;
-        if height >= record_height {
-            Ok(Some((height, latest.withdrawalRoot)))
-        } else {
-            Ok(None)
-        }
+        Ok((height, latest.withdrawalRoot))
     }
 }
 
-/// In-memory covering-root source for tests: a sorted list of `(height, withdrawalRoot)`.
+/// In-memory latest-root source for tests: holds the current latest `(height, withdrawalRoot)`.
 #[derive(Default)]
 pub struct MockRootManager {
-    checkpoints: std::sync::Mutex<Vec<(u64, B256)>>,
+    latest: std::sync::Mutex<Option<(u64, B256)>>,
 }
 
 impl MockRootManager {
@@ -71,20 +65,16 @@ impl MockRootManager {
         Self::default()
     }
 
-    /// Record a finalized checkpoint.
-    pub fn record(&self, height: u64, withdrawal_root: B256) {
-        let mut c = self.checkpoints.lock().unwrap();
-        c.push((height, withdrawal_root));
-        c.sort_by_key(|(h, _)| *h);
+    /// Set the current latest checkpoint (latest-only semantics: replaces any prior value).
+    pub fn set_latest(&self, height: u64, withdrawal_root: B256) {
+        *self.latest.lock().unwrap() = Some((height, withdrawal_root));
     }
 }
 
 #[async_trait]
-impl CoveringRootSource for MockRootManager {
-    async fn latest_finalized_covering(&self, record_height: u64) -> Result<Option<(u64, B256)>> {
-        let c = self.checkpoints.lock().unwrap();
-        // The latest checkpoint covers the record iff its height >= record_height.
-        Ok(c.last().filter(|(h, _)| *h >= record_height).copied())
+impl LatestRootSource for MockRootManager {
+    async fn latest_root(&self) -> Result<(u64, B256)> {
+        self.latest.lock().unwrap().ok_or_else(|| anyhow::anyhow!("no latest root set"))
     }
 }
 
@@ -93,17 +83,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn covering_requires_latest_height_ge_record() {
+    async fn latest_root_returns_current_latest_pair() {
         let rm = MockRootManager::new();
-        assert!(rm.latest_finalized_covering(100).await.unwrap().is_none());
-        rm.record(90, B256::repeat_byte(0x01));
-        // 90 < 100 ⇒ not covered yet.
-        assert!(rm.latest_finalized_covering(100).await.unwrap().is_none());
-        rm.record(120, B256::repeat_byte(0x02));
-        // latest (120) >= 100 ⇒ covered, bind its withdrawalRoot.
-        assert_eq!(
-            rm.latest_finalized_covering(100).await.unwrap(),
-            Some((120, B256::repeat_byte(0x02)))
-        );
+        // No root set yet ⇒ error (no latest available).
+        assert!(rm.latest_root().await.is_err());
+        rm.set_latest(90, B256::repeat_byte(0x01));
+        assert_eq!(rm.latest_root().await.unwrap(), (90, B256::repeat_byte(0x01)));
+        // A newer root replaces the latest (latest-only semantics).
+        rm.set_latest(120, B256::repeat_byte(0x02));
+        assert_eq!(rm.latest_root().await.unwrap(), (120, B256::repeat_byte(0x02)));
     }
 }
