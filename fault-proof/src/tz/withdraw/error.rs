@@ -22,6 +22,12 @@ pub enum WbError {
     /// The requested withdrawal record is unknown to the witness builder.
     #[error("witness-builder has no record for the requested withdrawal")]
     WithdrawalNotFound,
+    /// The requested `withdrawalRoot` has no corresponding witness-builder root index. This is NOT
+    /// "the record is not included in that root" (that is `WithdrawalNotFound`). Whether it is a
+    /// transient index lag or a hard error is decided by the caller based on whether the root came
+    /// from an authoritative latest-root read.
+    #[error("witness-builder has no root index for the requested withdrawal root")]
+    RootNotFound,
     /// The record exists but is not included in the requested checkpoint.
     #[error("record is not included in the requested checkpoint")]
     RecordNotInCheckpoint,
@@ -62,6 +68,7 @@ impl WbError {
             WbError::UnsupportedVersion |
             WbError::CheckpointNotFound |
             WbError::WithdrawalNotFound |
+            WbError::RootNotFound |
             WbError::RecordNotInCheckpoint |
             WbError::RootMismatch |
             WbError::WitnessStoreCorrupt => false,
@@ -80,6 +87,7 @@ mod tests {
         assert!(!WbError::permanent_transport("invalid url").is_retryable());
         assert!(!WbError::RootMismatch.is_retryable());
         assert!(!WbError::WithdrawalNotFound.is_retryable());
+        assert!(!WbError::RootNotFound.is_retryable());
         assert!(!WbError::WitnessStoreCorrupt.is_retryable());
         assert!(!WbError::CheckpointNotFound.is_retryable());
         assert!(!WbError::RecordNotInCheckpoint.is_retryable());

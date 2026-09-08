@@ -29,6 +29,27 @@ use super::{
 
 const WB_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPPORTED_SCHEMA_VERSION: u16 = 2;
+/// Business error code the witness builder returns when the requested withdrawal root has no
+/// corresponding root index (a legal root not yet indexed).
+const ROOT_NOT_FOUND_CODE: i32 = 11009;
+
+/// Which endpoint a request targeted, so a `404` can be mapped to the semantically-correct error.
+#[derive(Clone, Copy)]
+enum WbEndpoint {
+    Checkpoint,
+    Boundary,
+    Record,
+    Proof,
+}
+
+/// Minimal shape of a witness-builder error body, used to classify a proof-endpoint `404`.
+#[derive(Deserialize)]
+struct ErrBody {
+    #[serde(default)]
+    code: Option<i32>,
+    #[serde(default)]
+    name: Option<String>,
+}
 
 // Real WB v2 routes verified against tradezone `feature/witness-builder-withdraw-v1` @ bb695f3a
 // (`crates/chain/src/rpc/handlers/{zkvm_snapshot,witness}.rs`). Record is a PATH param
@@ -81,6 +102,7 @@ impl WbClient {
 
     async fn get<T: for<'de> Deserialize<'de>>(
         &self,
+        endpoint: WbEndpoint,
         route: &str,
         query: &[(&str, String)],
     ) -> Result<T, WbError> {
@@ -103,7 +125,7 @@ impl WbClient {
             return Err(WbError::transient_transport(format!("witness-builder HTTP {status}")));
         }
         if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(WbError::CheckpointNotFound);
+            return Err(Self::classify_not_found(endpoint, resp).await);
         }
         if status.is_client_error() {
             return Err(WbError::InvalidRequest);
@@ -118,6 +140,25 @@ impl WbClient {
         env.data.ok_or(WbError::CheckpointNotFound)
     }
 
+    /// Map a `404` to a per-endpoint error. The proof endpoint distinguishes a legal-but-unindexed
+    /// root (`code 11009` / `name "RootNotFound"`) from any other or unparseable `404`, which is a
+    /// protocol error and fails closed. Other endpoints keep their existing not-found meaning.
+    async fn classify_not_found(endpoint: WbEndpoint, resp: reqwest::Response) -> WbError {
+        match endpoint {
+            WbEndpoint::Proof => match resp.json::<ErrBody>().await {
+                Ok(b)
+                    if b.code == Some(ROOT_NOT_FOUND_CODE)
+                        && b.name.as_deref() == Some("RootNotFound") =>
+                {
+                    WbError::RootNotFound
+                }
+                _ => WbError::InvalidRequest,
+            },
+            WbEndpoint::Record => WbError::WithdrawalNotFound,
+            WbEndpoint::Checkpoint | WbEndpoint::Boundary => WbError::CheckpointNotFound,
+        }
+    }
+
     /// Fetch the four-field checkpoint at `height` and its top-level `chainId` (R2 #1/#3).
     ///
     /// Sends BOTH `format=root` AND `schemaVersion=2` (R2 #1: omitting `schemaVersion` makes the WB
@@ -128,6 +169,7 @@ impl WbClient {
     pub async fn get_checkpoint_v2(&self, height: u64) -> Result<CheckpointV2Envelope, WbError> {
         let d: CheckpointDto = self
             .get(
+                WbEndpoint::Checkpoint,
                 ROUTE_CHECKPOINT,
                 &[
                     ("height", height.to_string()),
@@ -180,7 +222,8 @@ impl WbClient {
         &self,
         height: u64,
     ) -> Result<TreeBoundaryWitness, WbError> {
-        let d: BoundaryDto = self.get(ROUTE_BOUNDARY, &[("height", height.to_string())]).await?;
+        let d: BoundaryDto =
+            self.get(WbEndpoint::Boundary, ROUTE_BOUNDARY, &[("height", height.to_string())]).await?;
         if d.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(WbError::UnsupportedVersion);
         }
@@ -206,7 +249,7 @@ impl WbClient {
     /// `record.rawTradezoneWithdrawal`.
     pub async fn get_canonical_record(&self, record_hash: B256) -> Result<WithdrawRecord, WbError> {
         let route = format!("{ROUTE_RECORD_PREFIX}{record_hash:#x}");
-        let d: LookupDto = self.get(&route, &[]).await?;
+        let d: LookupDto = self.get(WbEndpoint::Record, &route, &[]).await?;
         Ok(d.record.into_record())
     }
 
@@ -214,7 +257,7 @@ impl WbClient {
     /// height is taken from the WB (never the caller); a zero/absent height means not-yet-included.
     pub async fn get_canonical_record_height(&self, record_hash: B256) -> Result<u64, WbError> {
         let route = format!("{ROUTE_RECORD_PREFIX}{record_hash:#x}");
-        let d: LookupDto = self.get(&route, &[]).await?;
+        let d: LookupDto = self.get(WbEndpoint::Record, &route, &[]).await?;
         if d.canonical_block_height == 0 {
             return Err(WbError::WithdrawalNotFound);
         }
@@ -231,6 +274,7 @@ impl WbClient {
     ) -> Result<HistoricalInclusionProof, WbError> {
         let d: ProofDto = self
             .get(
+                WbEndpoint::Proof,
                 ROUTE_PROOF,
                 &[
                     ("recordHash", format!("{record_hash:#x}")),
@@ -642,5 +686,38 @@ mod tests {
         ));
         // Silence unused import warning when only some branches run.
         let _ = business_root(B256::ZERO, 0, WITHDRAWAL_TAG);
+    }
+
+    #[tokio::test]
+    async fn proof_root_not_found_is_classified_and_unknown_404_fails_closed() {
+        // 404 + code 11009 + name RootNotFound ⇒ RootNotFound.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "code": 11009, "name": "RootNotFound", "message": "root not indexed"
+            })))
+            .mount(&server)
+            .await;
+        let err = client(&server, 196)
+            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WbError::RootNotFound));
+        assert!(!err.is_retryable(), "transport layer must not blanket-retry RootNotFound");
+
+        // Unknown / plain 404 on the proof endpoint ⇒ fail-closed, NOT CheckpointNotFound.
+        let server2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server2)
+            .await;
+        let err2 = client(&server2, 196)
+            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
+            .await
+            .unwrap_err();
+        assert!(!matches!(err2, WbError::CheckpointNotFound));
+        assert!(!err2.is_retryable());
     }
 }
