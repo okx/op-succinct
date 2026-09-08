@@ -16,7 +16,7 @@ use crate::tz::withdraw::{error::WbError, types::HistoricalInclusionProof};
 
 use super::{
     cache::ProofCache,
-    challenge_contract::{ChallengeContract, ChallengeOpened},
+    challenge_contract::{ChallengeOpened, ChallengeReader, ChallengeSender},
     rootmanager_client::LatestRootSource,
     verifier::verify_inclusion,
 };
@@ -73,7 +73,8 @@ pub enum HandlerOutcome {
 /// The Defender's per-challenge handler. Generic over the three seams so it is fully unit-testable
 /// with in-memory mocks.
 pub struct Handler {
-    challenge: Arc<dyn ChallengeContract>,
+    reader: Arc<dyn ChallengeReader>,
+    sender: Arc<dyn ChallengeSender>,
     witness: Arc<dyn WitnessSource>,
     root_manager: Arc<dyn LatestRootSource>,
     cache: Mutex<ProofCache>,
@@ -82,14 +83,16 @@ pub struct Handler {
 
 impl Handler {
     pub fn new(
-        challenge: Arc<dyn ChallengeContract>,
+        reader: Arc<dyn ChallengeReader>,
+        sender: Arc<dyn ChallengeSender>,
         witness: Arc<dyn WitnessSource>,
         root_manager: Arc<dyn LatestRootSource>,
         cache_capacity: usize,
         deadline_safety_margin_secs: u64,
     ) -> Self {
         Self {
-            challenge,
+            reader,
+            sender,
             witness,
             root_manager,
             cache: Mutex::new(ProofCache::new(cache_capacity)),
@@ -105,7 +108,7 @@ impl Handler {
     /// Drive one challenge. `now` is the current unix time (injected for deterministic tests).
     pub async fn handle(&self, ev: &ChallengeOpened, now: u64) -> Result<HandlerOutcome> {
         // 1. Is the challenge still open and within its deadline?
-        let status = self.challenge.get_challenge(ev.leaf_hash).await?;
+        let status = self.reader.get_challenge(ev.challenge_id).await?;
         if !status.open {
             return Ok(HandlerOutcome::Skipped(SkipReason::AlreadyClosed));
         }
@@ -151,7 +154,7 @@ impl Handler {
         self.cache.lock().unwrap().put(key, proof.clone());
 
         // 6. Re-check on-chain status + deadline before submitting (even on a cache hit).
-        let status2 = self.challenge.get_challenge(ev.leaf_hash).await?;
+        let status2 = self.reader.get_challenge(ev.challenge_id).await?;
         if !status2.open {
             return Ok(HandlerOutcome::Skipped(SkipReason::OtherResponderWon));
         }
@@ -161,9 +164,9 @@ impl Handler {
 
         // 7. Submit.
         match self
-            .challenge
+            .sender
             .prove_challenge(
-                ev.leaf_hash,
+                ev.challenge_id,
                 checkpoint_height,
                 proof.leaf_index,
                 proof.count,
@@ -206,7 +209,7 @@ mod tests {
     use super::*;
     use crate::tz::{
         defender::{
-            challenge_contract::{ChallengeStatus, MockChallengeContract},
+            challenge_contract::{ChallengeId, ChallengeStatus, MockChallengeContract},
             rootmanager_client::MockRootManager,
         },
         withdraw::{tree_adapter::single_leaf_withdrawal_fixture, types::WithdrawRecord},
@@ -285,29 +288,30 @@ mod tests {
         B256::repeat_byte(LEAF[0])
     }
 
+    fn ev() -> ChallengeOpened {
+        ChallengeOpened::new(196, Address::repeat_byte(0x01), B256::repeat_byte(0x02), 0, leaf(), 10)
+    }
+
+    fn cid() -> ChallengeId {
+        ev().challenge_id
+    }
+
+    fn open_status(deadline: u64) -> ChallengeStatus {
+        ChallengeStatus { open: true, deadline, chain_timestamp: 0 }
+    }
+
     fn setup(deadline: u64, rm_height: Option<u64>) -> (Arc<MockChallengeContract>, Handler, B256) {
         let l = leaf();
         let (proof, root) = valid_proof(l);
         let cc = Arc::new(MockChallengeContract::new());
-        cc.set_status(l, ChallengeStatus { open: true, deadline });
+        cc.set_status(cid(), open_status(deadline));
         let witness = Arc::new(MockWitness::new(10, proof));
         let rm = Arc::new(MockRootManager::new());
         if let Some(h) = rm_height {
             rm.set_latest(h, root);
         }
-        let handler = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
+        let handler = Handler::new(cc.clone(), cc.clone(), witness, rm, 16, SAFETY);
         (cc, handler, root)
-    }
-
-    fn ev() -> ChallengeOpened {
-        ChallengeOpened {
-            chain_id: 196,
-            contract: Address::repeat_byte(0x01),
-            tx_hash: B256::repeat_byte(0x02),
-            log_index: 0,
-            leaf_hash: leaf(),
-            block_number: 10,
-        }
     }
 
     #[tokio::test]
@@ -325,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn closed_challenge_sends_no_tx() {
         let (cc, handler, _r) = setup(10_000, Some(20));
-        cc.set_status(leaf(), ChallengeStatus { open: false, deadline: 10_000 });
+        cc.set_status(cid(), ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 });
         assert_eq!(
             handler.handle(&ev(), 0).await.unwrap(),
             HandlerOutcome::Skipped(SkipReason::AlreadyClosed)
@@ -353,7 +357,7 @@ mod tests {
         witness.set_record_err(WbError::WithdrawalNotFound);
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
-        let h = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
+        let h = Handler::new(cc.clone(), cc.clone(), witness, rm, 16, SAFETY);
         assert_eq!(
             h.handle(&ev(), 0).await.unwrap(),
             HandlerOutcome::Retry(RetryReason::WaitingForRecord)
@@ -369,7 +373,7 @@ mod tests {
         witness.set_record_err(WbError::NotReady);
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
-        let h = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
+        let h = Handler::new(cc.clone(), cc.clone(), witness, rm, 16, SAFETY);
         // now + SAFETY (100) >= deadline (1000)? now=950 ⇒ 1050 >= 1000 ⇒ out of time.
         assert_eq!(h.handle(&ev(), 950).await.unwrap(), HandlerOutcome::StoppedNoProof);
         assert!(cc.prove_calls().is_empty());
@@ -392,11 +396,11 @@ mod tests {
         let mut bad = valid_proof(l).0;
         bad.leaf_hash = B256::repeat_byte(0xEE);
         let cc = Arc::new(MockChallengeContract::new());
-        cc.set_status(l, ChallengeStatus { open: true, deadline: 10_000 });
+        cc.set_status(cid(), open_status(10_000));
         let witness = Arc::new(MockWitness::new(10, bad));
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
-        let handler = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
+        let handler = Handler::new(cc.clone(), cc.clone(), witness, rm, 16, SAFETY);
         assert_eq!(handler.handle(&ev(), 0).await.unwrap(), HandlerOutcome::VerifyFailed);
         assert!(cc.prove_calls().is_empty());
     }
@@ -406,12 +410,12 @@ mod tests {
         let l = leaf();
         let (proof, root) = valid_proof(l);
         let cc = Arc::new(MockChallengeContract::new());
-        cc.set_status(l, ChallengeStatus { open: true, deadline: 10_000 });
+        cc.set_status(cid(), open_status(10_000));
         // A witness that, on the proof call, also closes the challenge (someone else responded).
         struct RacingWitness {
             proof: HistoricalInclusionProof,
             cc: Arc<MockChallengeContract>,
-            leaf: B256,
+            cid: ChallengeId,
         }
         #[async_trait]
         impl WitnessSource for RacingWitness {
@@ -424,14 +428,17 @@ mod tests {
                 _r: B256,
             ) -> Result<HistoricalInclusionProof, WbError> {
                 // Another defender wins the race right before we submit.
-                self.cc.set_status(self.leaf, ChallengeStatus { open: false, deadline: 10_000 });
+                self.cc.set_status(
+                    self.cid,
+                    ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
+                );
                 Ok(self.proof.clone())
             }
         }
-        let witness = Arc::new(RacingWitness { proof, cc: cc.clone(), leaf: l });
+        let witness = Arc::new(RacingWitness { proof, cc: cc.clone(), cid: cid() });
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
-        let handler = Handler::new(cc.clone(), witness, rm, 16, SAFETY);
+        let handler = Handler::new(cc.clone(), cc.clone(), witness, rm, 16, SAFETY);
         assert_eq!(
             handler.handle(&ev(), 0).await.unwrap(),
             HandlerOutcome::Skipped(SkipReason::OtherResponderWon)
