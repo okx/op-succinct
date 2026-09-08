@@ -99,7 +99,6 @@ mod tests {
             record_hash: B256::ZERO,
             leaf_hash: B256::ZERO,
             canonical_block_height: 1,
-            checkpoint_height: 2,
             withdrawal_root: root,
             leaf_index: 0,
             count: 1,

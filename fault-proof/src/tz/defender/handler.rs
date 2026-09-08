@@ -29,12 +29,10 @@ pub trait WitnessSource: Send + Sync {
     /// caller). `WithdrawalNotFound` / `NotReady` mean "not yet" and may be retried before
     /// deadline.
     async fn canonical_record_height(&self, leaf_hash: B256) -> Result<u64, WbError>;
-    /// Historical inclusion proof for `leaf_hash` at an exact `(checkpoint_height,
-    /// withdrawal_root)`.
+    /// Inclusion proof for `leaf_hash` bound to an exact `withdrawal_root`.
     async fn historical_proof(
         &self,
         leaf_hash: B256,
-        checkpoint_height: u64,
         withdrawal_root: B256,
     ) -> Result<HistoricalInclusionProof, WbError>;
 }
@@ -147,7 +145,7 @@ impl Handler {
             Some(p) => p,
             None => match self
                 .witness
-                .historical_proof(ev.leaf_hash, checkpoint_height, withdrawal_root)
+                .historical_proof(ev.leaf_hash, withdrawal_root)
                 .await
             {
                 Ok(p) => p,
@@ -259,7 +257,6 @@ mod tests {
             record_hash: leaf,
             leaf_hash: leaf,
             canonical_block_height: 10,
-            checkpoint_height: 20,
             withdrawal_root: root,
             leaf_index: 0,
             count: 1,
@@ -294,7 +291,6 @@ mod tests {
         async fn historical_proof(
             &self,
             _leaf: B256,
-            _cp: u64,
             _root: B256,
         ) -> Result<HistoricalInclusionProof, WbError> {
             *self.proof_calls.lock().unwrap() += 1;
@@ -444,7 +440,6 @@ mod tests {
             async fn historical_proof(
                 &self,
                 _l: B256,
-                _c: u64,
                 _r: B256,
             ) -> Result<HistoricalInclusionProof, WbError> {
                 // Another defender wins the race right before we submit.

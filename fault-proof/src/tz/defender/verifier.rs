@@ -69,7 +69,6 @@ mod tests {
             record_hash: leaf,
             leaf_hash: leaf,
             canonical_block_height: 10,
-            checkpoint_height: 20,
             withdrawal_root: root,
             leaf_index: 0,
             count: 1,

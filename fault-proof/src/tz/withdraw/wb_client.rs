@@ -30,7 +30,7 @@ use super::{
 const WB_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPPORTED_SCHEMA_VERSION: u16 = 2;
 
-// Real WB v2 routes verified against tradezone `feature/witness-builder-withdraw-v1` @ e56881eb
+// Real WB v2 routes verified against tradezone `feature/witness-builder-withdraw-v1` @ bb695f3a
 // (`crates/chain/src/rpc/handlers/{zkvm_snapshot,witness}.rs`). Record is a PATH param
 // (`{recordHash}`); the others take query params.
 const ROUTE_CHECKPOINT: &str = "chain/dex_state_snapshot";
@@ -221,11 +221,12 @@ impl WbClient {
         Ok(d.canonical_block_height)
     }
 
-    /// Fetch a historical inclusion proof bound to an exact `(checkpoint_height, withdrawal_root)`.
-    pub async fn get_historical_inclusion_proof(
+    /// Fetch an inclusion proof addressed by `record_hash` and the exact `withdrawal_root`. The
+    /// request carries only those two parameters; the successful response is not expected to carry
+    /// a checkpoint height.
+    pub async fn get_inclusion_proof(
         &self,
         record_hash: B256,
-        checkpoint_height: u64,
         withdrawal_root: B256,
     ) -> Result<HistoricalInclusionProof, WbError> {
         let d: ProofDto = self
@@ -233,7 +234,6 @@ impl WbClient {
                 ROUTE_PROOF,
                 &[
                     ("recordHash", format!("{record_hash:#x}")),
-                    ("checkpointHeight", checkpoint_height.to_string()),
                     ("withdrawalRoot", format!("{withdrawal_root:#x}")),
                 ],
             )
@@ -248,7 +248,6 @@ impl WbClient {
             record_hash: d.record_hash,
             leaf_hash: d.leaf_hash,
             canonical_block_height: d.canonical_block_height,
-            checkpoint_height: d.checkpoint_height,
             withdrawal_root: d.withdrawal_root,
             leaf_index: d.leaf_index,
             count: d.count,
@@ -364,7 +363,8 @@ impl WithdrawRecordDto {
     }
 }
 
-/// WithdrawalProofResponse (§R2.1-D).
+/// Withdrawal inclusion-proof response body. The root-addressed proof does not carry a checkpoint
+/// height; the height needed for an on-chain prove call is sourced separately from the RootManager.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProofDto {
@@ -372,7 +372,6 @@ struct ProofDto {
     record_hash: B256,
     leaf_hash: B256,
     canonical_block_height: u64,
-    checkpoint_height: u64,
     withdrawal_root: B256,
     leaf_index: u32,
     count: u32,
@@ -409,16 +408,16 @@ mod tests {
             .and(query_param("height", "100"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
                 "schemaVersion": 2, "chainId": 196, "height": 100, "status": "ready",
-                "claimRoot": claim,
-                "components": { "blockHash": bh, "appHash": ah, "withdrawalRoot": wr, "forceRoot": fr }
+                "claimRoot": claim, "canonicalBlockHash": bh, "appHash": ah,
+                "withdrawalRoot": wr, "forceRoot": fr
             }))))
             .mount(&server)
             .await;
         let cp = client(&server, 196).get_checkpoint_v2(100).await.unwrap();
         assert_eq!(cp.chain_id, 196);
-        assert_eq!(cp.withdrawal_root, wr);
-        assert_eq!(cp.force_root, fr);
-        assert_eq!(cp.claim_root, claim);
+        assert_eq!(cp.checkpoint.withdrawal_root, wr);
+        assert_eq!(cp.checkpoint.force_root, fr);
+        assert_eq!(cp.checkpoint.claim_root, claim);
     }
 
     #[tokio::test]
@@ -442,9 +441,9 @@ mod tests {
             .and(path("/chain/dex_state_snapshot"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
                 "schemaVersion": 2, "chainId": 196, "height": 100, "status": "ready",
-                "claimRoot": B256::repeat_byte(0xEE), // does not match components
-                "components": { "blockHash": B256::repeat_byte(0x11), "appHash": B256::repeat_byte(0x22),
-                    "withdrawalRoot": B256::repeat_byte(0x33), "forceRoot": B256::repeat_byte(0x44) }
+                "claimRoot": B256::repeat_byte(0xEE), // does not match the four flat fields
+                "canonicalBlockHash": B256::repeat_byte(0x11), "appHash": B256::repeat_byte(0x22),
+                "withdrawalRoot": B256::repeat_byte(0x33), "forceRoot": B256::repeat_byte(0x44)
             }))))
             .mount(&server)
             .await;
@@ -477,12 +476,12 @@ mod tests {
         // count=2 ⇒ popcount(2)=1 active branch. Provide 1 (valid) then 2 (invalid).
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/chain/tree_boundary_witness"))
+            .and(path("/chain/witness/tree-boundary"))
             .and(query_param("height", "50"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
-                "schemaVersion": 2, "chainId": 196, "blockHeight": 50,
-                "withdrawal": { "count": 2, "activeBranches": [B256::repeat_byte(0x11)] },
-                "force": { "count": 0, "activeBranches": [] }
+                "schemaVersion": 2, "blockHeight": 50, "blockHash": B256::repeat_byte(0xaa),
+                "withdrawalCount": 2, "withdrawalActiveBranches": [B256::repeat_byte(0x11)],
+                "forceCount": 0, "forceActiveBranches": []
             }))))
             .mount(&server)
             .await;
@@ -493,11 +492,12 @@ mod tests {
 
         let server2 = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/chain/tree_boundary_witness"))
+            .and(path("/chain/witness/tree-boundary"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
-                "schemaVersion": 2, "chainId": 196, "blockHeight": 50,
-                "withdrawal": { "count": 2, "activeBranches": [B256::repeat_byte(0x11), B256::repeat_byte(0x22)] },
-                "force": { "count": 0, "activeBranches": [] }
+                "schemaVersion": 2, "blockHeight": 50, "blockHash": B256::repeat_byte(0xaa),
+                "withdrawalCount": 2,
+                "withdrawalActiveBranches": [B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
+                "forceCount": 0, "forceActiveBranches": []
             }))))
             .mount(&server2)
             .await;
@@ -514,7 +514,7 @@ mod tests {
         // (`withdrawalCount`/`withdrawalActiveBranches`/…) the current `BoundaryDto` deserializes.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/chain/tree_boundary_witness"))
+            .and(path("/chain/witness/tree-boundary"))
             .and(query_param("height", "100"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
                 "schemaVersion": 2, "blockHeight": 100,
@@ -532,15 +532,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn boundary_declared_root_mismatch_is_corrupt() {
-        // count=1, 1 active branch, but a declared root that does not match the frontier rebuild.
+    async fn boundary_bad_force_popcount_is_corrupt() {
+        // The force tree's active-branch count must equal popcount(count); a mismatch is a
+        // fail-closed corruption signal. forceCount=2 ⇒ popcount(2)=1, but two branches are sent.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/chain/tree_boundary_witness"))
+            .and(path("/chain/witness/tree-boundary"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
-                "schemaVersion": 2, "chainId": 196, "blockHeight": 50,
-                "withdrawal": { "count": 1, "activeBranches": [B256::repeat_byte(0x11)], "declaredRoot": B256::repeat_byte(0xFF) },
-                "force": { "count": 0, "activeBranches": [] }
+                "schemaVersion": 2, "blockHeight": 50, "blockHash": B256::repeat_byte(0xaa),
+                "withdrawalCount": 0, "withdrawalActiveBranches": [],
+                "forceCount": 2,
+                "forceActiveBranches": [B256::repeat_byte(0x11), B256::repeat_byte(0x22)]
             }))))
             .mount(&server)
             .await;
@@ -563,49 +565,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proof_maps_and_bad_siblings_len_is_corrupt() {
+    async fn proof_request_is_root_addressed_no_checkpoint_height() {
         let server = MockServer::start().await;
         let rec = serde_json::json!({
             "version": 1, "chainId": 196, "transactionHash": B256::repeat_byte(0x01),
-            "tokenType": 0, "tokenAddress": Address::ZERO, "tokenIds": [], "amounts": [],
-            "from": Address::ZERO, "to": Address::ZERO
+            "rawTradezoneWithdrawal": {
+                "tokenType": 0, "tokenAddress": Address::ZERO, "tokenIds": [], "amounts": [],
+                "from": Address::ZERO, "to": Address::ZERO
+            }
         });
         let sibs: Vec<String> = (0..32).map(|_| format!("{:#x}", B256::ZERO)).collect();
         Mock::given(method("GET"))
-            .and(path("/chain/historical_inclusion_proof"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .and(query_param("recordHash", format!("{:#x}", B256::repeat_byte(0x01))))
+            .and(query_param("withdrawalRoot", format!("{:#x}", B256::repeat_byte(0x33))))
+            // No checkpointHeight query param is sent.
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
                 "record": rec, "recordHash": B256::repeat_byte(0x01), "leafHash": B256::repeat_byte(0x01),
-                "canonicalBlockHeight": 10, "checkpointHeight": 20, "withdrawalRoot": B256::repeat_byte(0x33),
+                "canonicalBlockHeight": 10, "withdrawalRoot": B256::repeat_byte(0x33),
                 "leafIndex": 0, "count": 1, "siblings": sibs
             }))))
             .mount(&server)
             .await;
         let p = client(&server, 196)
-            .get_historical_inclusion_proof(B256::repeat_byte(0x01), 20, B256::repeat_byte(0x33))
+            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
             .await
             .unwrap();
         assert_eq!(p.count, 1);
-        assert_eq!(p.checkpoint_height, 20);
+        assert_eq!(p.withdrawal_root, B256::repeat_byte(0x33));
+    }
+
+    #[tokio::test]
+    async fn proof_maps_and_bad_siblings_len_is_corrupt() {
+        let server = MockServer::start().await;
+        let rec = serde_json::json!({
+            "version": 1, "chainId": 196, "transactionHash": B256::repeat_byte(0x01),
+            "rawTradezoneWithdrawal": {
+                "tokenType": 0, "tokenAddress": Address::ZERO, "tokenIds": [], "amounts": [],
+                "from": Address::ZERO, "to": Address::ZERO
+            }
+        });
+        let sibs: Vec<String> = (0..32).map(|_| format!("{:#x}", B256::ZERO)).collect();
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                "record": rec, "recordHash": B256::repeat_byte(0x01), "leafHash": B256::repeat_byte(0x01),
+                "canonicalBlockHeight": 10, "withdrawalRoot": B256::repeat_byte(0x33),
+                "leafIndex": 0, "count": 1, "siblings": sibs
+            }))))
+            .mount(&server)
+            .await;
+        let p = client(&server, 196)
+            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
+            .await
+            .unwrap();
+        assert_eq!(p.count, 1);
+        assert_eq!(p.withdrawal_root, B256::repeat_byte(0x33));
 
         // Bad siblings length ⇒ corrupt.
         let server2 = MockServer::start().await;
         let short: Vec<String> = (0..31).map(|_| format!("{:#x}", B256::ZERO)).collect();
         Mock::given(method("GET"))
-            .and(path("/chain/historical_inclusion_proof"))
+            .and(path("/chain/witness/withdrawal-proof"))
             .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
                 "record": rec, "recordHash": B256::repeat_byte(0x01), "leafHash": B256::repeat_byte(0x01),
-                "canonicalBlockHeight": 10, "checkpointHeight": 20, "withdrawalRoot": B256::repeat_byte(0x33),
+                "canonicalBlockHeight": 10, "withdrawalRoot": B256::repeat_byte(0x33),
                 "leafIndex": 0, "count": 1, "siblings": short
             }))))
             .mount(&server2)
             .await;
         assert!(matches!(
             client(&server2, 196)
-                .get_historical_inclusion_proof(
-                    B256::repeat_byte(0x01),
-                    20,
-                    B256::repeat_byte(0x33)
-                )
+                .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
                 .await,
             Err(WbError::WitnessStoreCorrupt)
         ));
