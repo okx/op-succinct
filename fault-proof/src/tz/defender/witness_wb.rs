@@ -33,9 +33,8 @@ impl WitnessSource for WbWitnessSource {
     async fn historical_proof(
         &self,
         leaf_hash: B256,
-        checkpoint_height: u64,
         withdrawal_root: B256,
     ) -> Result<HistoricalInclusionProof, WbError> {
-        self.wb.get_historical_inclusion_proof(leaf_hash, checkpoint_height, withdrawal_root).await
+        self.wb.get_inclusion_proof(leaf_hash, withdrawal_root).await
     }
 }

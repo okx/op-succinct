@@ -1,40 +1,43 @@
-//! Independent TradeZone Defender binary (spec §7.4, §7.5).
+//! Independent TradeZone Defender binary.
 //!
-//! Runs its OWN main loop, config, and signer — fully separate from the Proposer and L1
+//! Runs its own main loop, config, and signer — fully separate from the Proposer and L1
 //! Challenger. It watches the X Layer Withdraw-challenge contract and, before each challenge's
-//! response deadline, answers with a locally-verified historical inclusion proof.
+//! response deadline, answers with a locally-verified inclusion proof.
 //!
-//! Signer policy (KB): production MUST use a remote/HSM-backed signer (`XLayerRemoteSigner`,
-//! `CloudHsmSigner`, or `Web3Signer`) — never `LocalSigner`. This binary builds its signer via
-//! `SignerLock::from_env`, the same env-driven path the proposer/challenger use, which enforces
-//! that policy.
+//! Signer: no transaction signer is wired in this stage. The challenge/prove ABI and its on-chain
+//! submission path are not yet delivered (the sender is the in-memory mock seam below), so the
+//! binary constructs no signer and makes NO signer-policy guarantee. When the real challenge sender
+//! adapter lands it will construct and validate its own signer; nothing here should be read as a
+//! promise that a remote/HSM signer is already enforced.
 //!
-//! Challenge-contract seam (spec §5 decision 1): the real X Layer challenge/prove ABI is not yet
-//! finalized, so the binary wires the in-memory `MockChallengeContract` and logs a prominent
-//! warning. When the real ABI lands, only the `ChallengeContract` implementation changes — the
-//! watcher, handler state machine, and local verification are unchanged.
+//! Challenge-contract seam: the real X Layer challenge/prove ABI is not yet finalized, so the
+//! binary wires the in-memory `MockChallengeContract` and logs a prominent warning. When the real
+//! ABI lands, only the event-source/reader/sender implementations change — the watcher, handler
+//! state machine, and local verification are unchanged.
+//!
+//! Topology: the challenge contract and the RootManager live on X Layer / L2. `DEFENDER_L2_RPC`
+//! (the X Layer/L2 provider) supplies challenge events, the L2 tip used for finality gating,
+//! challenge status/deadline reads, the current/latest RootManager root, and the eventual proof
+//! transaction. The witness builder RPC supplies only record/proof witness data.
 
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use alloy_provider::{Provider, ProviderBuilder};
 use anyhow::{Context, Result};
 use clap::Parser;
 use fault_proof::tz::{
     defender::{
-        challenge_contract::MockChallengeContract,
+        challenge_contract::{ChallengeEventSource, MockChallengeContract, ScanWindow},
         config::DefenderConfig,
-        handler::{Handler, HandlerOutcome},
+        handler::{Handler, InFlightGate},
         rootmanager_client::RootManagerClient,
+        supervisor::Supervisor,
         watcher::Watcher,
         witness_wb::WbWitnessSource,
     },
     withdraw::wb_client::WbClient,
 };
 use op_succinct_host_utils::setup_logger;
-use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
@@ -65,8 +68,10 @@ fn main() {
         });
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+/// The watcher tip is the current L2 block height read from the X Layer/L2 provider — never the L1
+/// settlement provider. The watcher then gates events by the configured finality depth.
+async fn l2_watch_tip<P: Provider>(l2_provider: &P) -> Result<u64> {
+    l2_provider.get_block_number().await.context("failed to read X Layer/L2 block height")
 }
 
 async fn run() -> Result<()> {
@@ -79,72 +84,93 @@ async fn run() -> Result<()> {
         wb_endpoint = %config.wb_endpoint,
         chain_id = config.chain_id,
         finality_blocks = config.finality_blocks,
+        max_resend = config.max_resend,
         cache_capacity = config.cache_capacity,
         "tz-defender configuration loaded"
     );
 
-    // Independent signer (KB rule: remote/HSM-backed, never LocalSigner — enforced by SignerLock).
-    let _signer = SignerLock::from_env().await.context("failed to build defender signer")?;
+    // No transaction signer is constructed here: this stage sends no real prove transaction (the
+    // challenge sender is the mock seam below), so building an unused signer — which would also
+    // read shared signer env and could fall back to a local key — is deliberately omitted. The
+    // real signer is constructed and validated by the challenge sender adapter when the
+    // on-chain ABI is delivered.
 
-    // Witness Builder v2 client + witness-source adapter.
+    // Witness Builder v2 client + witness-source adapter (record/proof witness data only).
     let wb = Arc::new(WbClient::new(config.wb_endpoint.clone(), config.chain_id)?);
     let witness = Arc::new(WbWitnessSource::new(wb));
 
-    // RootManager (finalized covering roots) is read on the settlement L1 view.
-    let l1_rpc = std::env::var("DEFENDER_L1_RPC")
-        .context("DEFENDER_L1_RPC must be set (settlement-layer RPC for TZRootManager reads)")?;
-    let l1_provider = ProviderBuilder::default()
-        .connect_http(l1_rpc.parse().context("DEFENDER_L1_RPC must be a URL")?);
-    let root_manager = Arc::new(RootManagerClient::new(config.root_manager, l1_provider.clone()));
+    // X Layer / L2 provider: challenge events, the L2 tip for finality gating, challenge
+    // status/deadline reads, and the current/latest RootManager root all read here.
+    let l2_rpc = std::env::var("DEFENDER_L2_RPC")
+        .context("DEFENDER_L2_RPC must be set (X Layer/L2 RPC for events, tip, and RootManager)")?;
+    let l2_provider = ProviderBuilder::default()
+        .connect_http(l2_rpc.parse().context("DEFENDER_L2_RPC must be a URL")?);
+    let root_manager = Arc::new(RootManagerClient::new(config.root_manager, l2_provider.clone()));
 
-    // Challenge-contract seam (decision 1): mock until the real X Layer ABI is wired.
+    // Challenge-contract seam: mock until the real X Layer ABI is wired.
     tracing::warn!(
         "tz-defender is running against the in-memory MockChallengeContract seam: the real X \
          Layer Withdraw-challenge ABI is not yet wired. Watcher/handler/verification are final; \
-         only the ChallengeContract implementation will be swapped in."
+         only the challenge event-source/reader/sender implementations will be swapped in."
     );
     let challenge = Arc::new(MockChallengeContract::new());
 
-    let mut watcher = Watcher::new(challenge.clone(), config.finality_blocks);
+    // Global single-process in-flight gate (at most one broadcast in flight); lost on restart.
+    let gate = InFlightGate::new();
+    let watcher = Watcher::new(challenge.clone());
     let handler = Handler::new(
+        challenge.clone(),
         challenge.clone(),
         witness,
         root_manager,
+        config.chain_id,
         config.cache_capacity,
         config.deadline_safety_margin.as_secs(),
+        config.max_resend,
+    );
+    let mut supervisor = Supervisor::new(
+        watcher,
+        handler,
+        challenge.clone(),
+        gate,
+        config.finality_blocks,
+        config.startup_lookback,
+        config.reorg_safety_margin,
     );
 
-    tracing::info!("tz-defender started; entering watch loop");
-    loop {
-        match l1_provider.get_block_number().await {
-            Ok(l2_tip) => match watcher.poll(l2_tip).await {
-                Ok(events) => {
-                    for ev in events {
-                        let now = now_unix();
-                        match handler.handle(&ev, now).await {
-                            Ok(HandlerOutcome::Proved(tx)) => tracing::info!(
-                                leaf = %ev.leaf_hash, %tx, "defender proved challenge"
-                            ),
-                            Ok(HandlerOutcome::VerifyFailed) => tracing::error!(
-                                leaf = %ev.leaf_hash,
-                                "ALERT: local proof verification failed; no transaction sent"
-                            ),
-                            Ok(HandlerOutcome::StoppedNoProof) => tracing::error!(
-                                leaf = %ev.leaf_hash,
-                                "ALERT: deadline reached without a usable proof"
-                            ),
-                            Ok(other) => tracing::info!(
-                                leaf = %ev.leaf_hash, ?other, "defender handled challenge"
-                            ),
-                            Err(e) => {
-                                tracing::error!(leaf = %ev.leaf_hash, error = %e, "handler error")
-                            }
-                        }
+    // Startup recovery: rescan an EXPLICIT bounded window (finality applied once), reconcile
+    // still-open challenges by current on-chain status only. `config.startup_lookback` reaches the
+    // scan path here (the reviewed binary called a parameterless watch()).
+    match l2_watch_tip(&l2_provider).await {
+        Ok(head) => {
+            let actionable_to = head.saturating_sub(config.finality_blocks);
+            let startup_window = ScanWindow {
+                from_block: actionable_to.saturating_sub(config.startup_lookback),
+                to_block: actionable_to,
+            };
+            match challenge.watch_opened(startup_window).await {
+                Ok(rediscovered) => {
+                    if let Err(e) = supervisor.reconcile_on_startup(&rediscovered).await {
+                        tracing::error!(error = %e, "startup reconciliation failed");
                     }
                 }
-                Err(e) => tracing::error!(error = %e, "challenge watcher poll failed"),
-            },
-            Err(e) => tracing::error!(error = %e, "failed to read settlement tip"),
+                Err(e) => tracing::error!(error = %e, "startup rescan failed"),
+            }
+        }
+        Err(e) => tracing::error!(error = %e, "failed to read X Layer/L2 head for startup rescan"),
+    }
+
+    tracing::info!("tz-defender started; entering supervisor loop");
+    loop {
+        // Pass the RAW L2 latest head; the supervisor computes actionable_to = H - finality_blocks
+        // exactly once (Model A).
+        match l2_watch_tip(&l2_provider).await {
+            Ok(l2_head) => {
+                if let Err(e) = supervisor.tick(l2_head).await {
+                    tracing::error!(error = %e, "supervisor tick failed");
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "failed to read X Layer/L2 head"),
         }
         tokio::time::sleep(config.retry_backoff).await;
     }

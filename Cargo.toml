@@ -154,10 +154,10 @@ op-succinct-bindings = { path = "bindings" }
 
 # tradezone (range guest deps) — TradeZone GitLab feature branch, fixed rev (WB Withdraw/Force work).
 # HTTPS transport (SSH not available in all build/CI environments; the fixed rev pins the tree source).
-tz-block-processor = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26", features = ["tee"] }
-tz-dex = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26", features = ["zkvm"] }
-tz-primitives = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26" }
-tz-witness = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "e56881eb29879166752294c87b207a23bb2dcc26" }
+tz-block-processor = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562", features = ["tee"] }
+tz-dex = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562", features = ["zkvm"] }
+tz-primitives = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562" }
+tz-witness = { git = "https://gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
@@ -194,12 +194,10 @@ alloy = { version = "1.6.3", features = [
 ] }
 
 # Keccak with the SHA3 patch is more efficient than the default Keccak.
-# NOTE (TRDZN-1339 R2): bumped from 1.5.6 to satisfy tradezone tz-primitives (rev e56881eb) which
-# requires alloy-primitives ^1.6.1. This bump alone does NOT build: it pulls a newer
-# alloy-sol-type-parser (winnow 0.7.x) while op-succinct's retained alloy-dyn-abi 1.5.7 uses
-# winnow 1.0.x — an unresolvable two-major winnow split. Completing the switch requires a
-# COORDINATED alloy-core + winnow upgrade across the git-pinned kona/sp1/reth stack (out of this
-# stage's scope; see implementation-report.md "Blockers").
+# NOTE: pinned at 1.6.1 to satisfy the tradezone tz-primitives requirement of alloy-primitives
+# ^1.6.1. The alloy-core family is kept consistent in the lockfile (alloy-dyn-abi/alloy-core aligned
+# to 1.6.1 alongside alloy-sol-types/json-abi at 1.6.1), which builds without any change to the
+# git-pinned kona/sp1/reth stack.
 alloy-primitives = { version = "1.6.1", default-features = false, features = [
     "sha3-keccak",
 ] }

@@ -80,17 +80,17 @@ pub struct WithdrawRecord {
     pub to: Address,
 }
 
-/// A historical Withdraw inclusion proof, bound to an exact `(checkpoint_height,
-/// withdrawal_root)` pair. Verified locally before the Defender submits `proveChallenge`
-/// (spec §7.4): the verifier enforces `count > 0`, `leaf_index < count`, `siblings.len() == 32`,
-/// rebuilds the inner root, and checks the outer `count + tag` wrapper equals `withdrawal_root`.
+/// A Withdraw inclusion proof, bound to an exact `withdrawal_root`. Verified locally before the
+/// Defender submits its prove call: the verifier enforces `count > 0`, `leaf_index < count`,
+/// `siblings.len() == 32`, rebuilds the inner root, and checks the outer `count + tag` wrapper
+/// equals `withdrawal_root`. The checkpoint height needed for an on-chain prove call is sourced
+/// separately from the RootManager, not from this proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoricalInclusionProof {
     pub record: WithdrawRecord,
     pub record_hash: B256,
     pub leaf_hash: B256,
     pub canonical_block_height: u64,
-    pub checkpoint_height: u64,
     pub withdrawal_root: B256,
     pub leaf_index: u32,
     pub count: u32,
