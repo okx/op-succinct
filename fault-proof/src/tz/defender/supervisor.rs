@@ -1,7 +1,7 @@
 //! Event-driven supervisor loop.
 //!
 //! Each tick reads the L2 latest head `H`, computes `actionable_to = H - finality_blocks` **once**
-//! (Model A, R5-3), scans an explicit [`ScanWindow`] (`[startup_lookback, actionable_to]` on the
+//! (Model A), scans an explicit [`ScanWindow`] (`[startup_lookback, actionable_to]` on the
 //! first tick, a reorg-safe cursor for `from_block` afterwards, `to_block` always `actionable_to`),
 //! merges newly-discovered challenges (deduplicated by [`ChallengeId`]) into a pending map, and
 //! re-drives every non-terminal challenge one step. Discovery (dedup) and pending work (retry) are
@@ -10,12 +10,12 @@
 //! seen.
 //!
 //! Two invariants the reviewed version violated are restored here:
-//! - **Per-challenge failure isolation** (MR105-4): a transient status/RootManager/receipt error
-//!   for one challenge is caught and the challenge is **preserved** in `pending` (never
-//!   removed-then-`?`); the tick keeps driving the others.
-//! - **Single in-flight broadcast, nearest-deadline-first** (MR105-5/D7): broadcasting is gated by
-//!   a shared [`InFlightGate`]; challenges are driven nearest-deadline-first so the free gate is
-//!   granted to the most urgent challenge.
+//! - **Per-challenge failure isolation**: a transient status/RootManager/receipt error for one
+//!   challenge is caught and the challenge is **preserved** in `pending` (never removed-then-`?`);
+//!   the tick keeps driving the others.
+//! - **Single in-flight broadcast, nearest-deadline-first**: broadcasting is gated by a shared
+//!   [`InFlightGate`]; challenges are driven nearest-deadline-first so the free gate is granted to
+//!   the most urgent challenge.
 //!
 //! Restart recovery keeps no persistence: a prior transaction hash and the in-flight gate are lost
 //! across a restart, so on startup the supervisor rescans a bounded window and, for each

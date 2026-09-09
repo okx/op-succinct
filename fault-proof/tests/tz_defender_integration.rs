@@ -176,7 +176,7 @@ fn inject(
 }
 
 /// Happy path: covering-root gate, real WB record + proof fetch, leaf-bound verify, optimistic
-/// submit (Submitted, NOT Proved), then a receipt+status-confirmed Proved. (§7 T1/T7/T15)
+/// submit (Submitted, NOT Proved), then a receipt+status-confirmed Proved.
 #[tokio::test]
 async fn full_pipeline_covering_gate_submits_then_proved() {
     let r = valid_record(0x42);
@@ -217,7 +217,7 @@ async fn full_pipeline_covering_gate_submits_then_proved() {
 }
 
 /// The covering-root gate waits (no proof request) until the latest checkpoint covers the record
-/// height. (§7 T15 end-to-end)
+/// height (end-to-end).
 #[tokio::test]
 async fn covering_gate_waits_when_checkpoint_behind_record() {
     let r = valid_record(0x42);
@@ -250,8 +250,7 @@ async fn covering_gate_waits_when_checkpoint_behind_record() {
     assert_eq!(cc.prove_calls().len(), 1);
 }
 
-/// A WB proof for a DIFFERENT leaf than the challenge's is rejected by leaf binding; no tx. (§7
-/// T16)
+/// A WB proof for a DIFFERENT leaf than the challenge's is rejected by leaf binding; no tx.
 #[tokio::test]
 async fn leaf_binding_rejects_proof_of_other_leaf() {
     let challenged = valid_record(0x42);
@@ -279,7 +278,7 @@ async fn leaf_binding_rejects_proof_of_other_leaf() {
 }
 
 /// Real WB numeric-code classification on the proof endpoint: 11009 (authoritative root) is a
-/// bounded wait; a plain/unknown 404 fails closed. Neither sends a tx. (§7 T10/T13/T14)
+/// bounded wait; a plain/unknown 404 fails closed. Neither sends a tx.
 #[tokio::test]
 async fn wb_root_not_found_11009_waits_and_plain_404_fails_closed() {
     let r = valid_record(0x42);
@@ -327,8 +326,7 @@ async fn wb_root_not_found_11009_waits_and_plain_404_fails_closed() {
 }
 
 /// 11006 NotReady arrives as HTTP 409 and is a wait (not mapped to InvalidRequest by status); a
-/// checkpoint-only code (11003) on the proof endpoint is a joint-tuple violation ⇒ fail closed. (§7
-/// T14)
+/// checkpoint-only code (11003) on the proof endpoint is a joint-tuple violation ⇒ fail closed.
 #[tokio::test]
 async fn wb_not_ready_409_waits_and_joint_tuple_fails_closed() {
     let r = valid_record(0x42);
@@ -378,7 +376,7 @@ async fn wb_not_ready_409_waits_and_joint_tuple_fails_closed() {
     assert!(cc2.prove_calls().is_empty());
 }
 
-/// An uncertain (pending) receipt reconciles on the next tick rather than resending. (§7 T7)
+/// An uncertain (pending) receipt reconciles on the next tick rather than resending.
 #[tokio::test]
 async fn pending_receipt_reconciles_not_resends() {
     let r = valid_record(0x42);
@@ -404,7 +402,7 @@ async fn pending_receipt_reconciles_not_resends() {
 
 /// The supervisor applies finality exactly once (Model A) — the scan window's `to_block` is
 /// `H - finality_blocks` — and drives a discovered challenge to Submitted; the scan tip is the L2
-/// head passed in, not an L1 provider. (§7 T2/T5/T19)
+/// head passed in, not an L1 provider.
 #[tokio::test]
 async fn supervisor_single_finality_scan_and_redrive() {
     let r = valid_record(0x42);
@@ -435,7 +433,7 @@ async fn supervisor_single_finality_scan_and_redrive() {
     assert_eq!(cc.prove_calls().len(), 1, "submitted once");
 }
 
-/// No events ⇒ no pending work and no transactions. (§7 T13)
+/// No events ⇒ no pending work and no transactions.
 #[tokio::test]
 async fn no_event_is_a_noop() {
     let server = MockServer::start().await;
@@ -451,7 +449,7 @@ async fn no_event_is_a_noop() {
 }
 
 /// The same leaf challenged twice yields two distinct challenge ids, both dispatched once; a rescan
-/// of the same window does not re-dispatch either (dedup by ChallengeId). (§7 T2/T3)
+/// of the same window does not re-dispatch either (dedup by ChallengeId).
 #[tokio::test]
 async fn same_leaf_two_challenges_distinct_and_dedup() {
     let leaf = leaf_of(&valid_record(0x42));
@@ -466,7 +464,7 @@ async fn same_leaf_two_challenges_distinct_and_dedup() {
 }
 
 /// Restart recovery uses current status only: a still-open challenge is re-enqueued (best effort),
-/// a closed one is skipped. No prior transaction receipt is queried. (§7 T4b)
+/// a closed one is skipped. No prior transaction receipt is queried.
 #[tokio::test]
 async fn restart_rescan_reconciles_status_only() {
     let leaf = leaf_of(&valid_record(0x42));

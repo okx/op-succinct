@@ -111,7 +111,7 @@ async fn run() -> Result<()> {
     );
     let challenge = Arc::new(MockChallengeContract::new());
 
-    // Global single-process in-flight gate (≤ 1 broadcast in flight, D7); does not survive restart.
+    // Global single-process in-flight gate (at most one broadcast in flight); lost on restart.
     let gate = InFlightGate::new();
     let watcher = Watcher::new(challenge.clone());
     let handler = Handler::new(

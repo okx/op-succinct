@@ -166,7 +166,7 @@ mod tests {
         assert!(matches!(verify_inclusion(&proof, root), Err(WbError::RootMismatch)));
     }
 
-    // --- Leaf-bound verification (MR105-3) ---
+    // --- Leaf-bound verification ---
 
     /// A valid Erc20 record; `amount` seeds the transaction hash + amount so distinct seeds give
     /// distinct leaves.

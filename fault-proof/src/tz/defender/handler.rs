@@ -1,7 +1,7 @@
-//! Single-challenge Defender state machine (design §5).
+//! Single-challenge Defender state machine.
 //!
 //! One [`Handler::drive`] step advances one challenge; the supervisor re-drives every non-terminal
-//! challenge each tick. The flow per challenge (§4.4) is: covering-root gate → fetch proof →
+//! challenge each tick. The flow per challenge is: covering-root gate → fetch proof →
 //! leaf-bound verify → pre-broadcast status/deadline recheck → acquire the global in-flight gate →
 //! gated submit → confirm → counted resend. A broadcast transaction is only
 //! [`ChallengeState::Submitted`]; reaching [`ChallengeState::Proved`] requires a successful receipt
@@ -49,7 +49,7 @@ pub trait WitnessSource: Send + Sync {
 /// supervisor can observe progress without a side channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitReason {
-    /// The RootManager latest checkpoint does not yet cover the record height (D10).
+    /// The RootManager latest checkpoint does not yet cover the record height.
     RootBehindRecord,
     /// The record is not yet known to the witness builder (WB code 11004).
     WithdrawalNotFound,
@@ -64,7 +64,7 @@ pub enum WaitReason {
 }
 
 /// State of a single challenge as it moves from discovery to a terminal outcome. Retry context
-/// (`attempts`, bound `root`, wait `reason`) lives here (D8) — never in a side map.
+/// (`attempts`, bound `root`, wait `reason`) lives here — never in a side map.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChallengeState {
     /// Newly discovered; not yet worked.
@@ -78,7 +78,7 @@ pub enum ChallengeState {
     /// confirmed. `root` is the withdrawal root it was submitted against; `attempts` the resend
     /// count so far.
     Submitted { tx: TxHash, attempts: u32, root: B256 },
-    /// The broadcast outcome is unknown (holds the in-flight gate, R5-1). If `tx_hash` is present
+    /// The broadcast outcome is unknown (holds the in-flight gate). If `tx_hash` is present
     /// the handler reconciles via status + receipt; with no `tx_hash` and still open it keeps
     /// holding the gate and polling — never inferring "not broadcast", never resending.
     ReconcileUnknown { tx_hash: Option<TxHash>, attempts: u32, root: Option<B256> },
@@ -119,7 +119,7 @@ impl ChallengeState {
     }
 }
 
-/// Global single-process in-flight transaction gate (D7): at most one challenge may hold it, so at
+/// Global single-process in-flight transaction gate: at most one challenge may hold it, so at
 /// most one prove transaction is in flight across all `ChallengeId`s. It does NOT survive a
 /// restart.
 #[derive(Clone, Default)]
@@ -284,8 +284,7 @@ impl Handler {
         attempts: u32,
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
-        // 1. Covering-root gate (D10, MR105-2): the record must be covered by the latest
-        //    checkpoint.
+        // 1. Covering-root gate: the record must be covered by the latest checkpoint.
         let record_height = match self.witness.canonical_record_height(ev.leaf_hash).await {
             Ok(h) => h,
             Err(e) => return Ok(Self::classify_witness_wait(e, attempts, None)),
@@ -306,13 +305,13 @@ impl Handler {
             Err(e) => return Ok(Self::classify_witness_wait(e, attempts, Some(withdrawal_root))),
         };
 
-        // 3. Local leaf-bound verification (MR105-3) — never send an unverified or mis-bound proof.
+        // 3. Local leaf-bound verification — never send an unverified or mis-bound proof.
         if verify(&proof, ev.leaf_hash, withdrawal_root, self.chain_id).is_err() {
             return Ok(ChallengeState::PermanentFailure);
         }
         self.cache.lock().unwrap().put((ev.leaf_hash, withdrawal_root), proof.clone());
 
-        // 4. Pre-broadcast recheck (MR105-7): fresh status + deadline before EVERY send.
+        // 4. Pre-broadcast recheck: fresh status + deadline before EVERY send.
         let status = self.reader.get_challenge(ev.challenge_id).await?;
         if !status.open {
             return Ok(ChallengeState::Closed);
@@ -321,7 +320,7 @@ impl Handler {
             return Ok(ChallengeState::Expired);
         }
 
-        // 5. Acquire the global in-flight gate (D7). If another challenge holds it, stay Ready.
+        // 5. Acquire the global in-flight gate. If another challenge holds it, stay Ready.
         if !gate.try_acquire(ev.challenge_id) {
             return Ok(ChallengeState::Ready { attempts });
         }
@@ -410,7 +409,7 @@ impl Handler {
         }
     }
 
-    /// Reconcile an unknown broadcast outcome. The gate is held by `ev` (R5-1) and released only on
+    /// Reconcile an unknown broadcast outcome. The gate is held by `ev` and released only on
     /// a confirmed terminal outcome. With no `tx_hash` and still open, keep holding + polling;
     /// never resend, never infer "not broadcast".
     async fn reconcile_unknown(

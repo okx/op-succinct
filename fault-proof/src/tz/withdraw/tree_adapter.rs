@@ -150,11 +150,11 @@ pub fn two_leaf_withdrawal_fixture(
     let f1 = merkle::append(&TreeFrontier::default(), leaf0).expect("append leaf0").frontier;
     let a2 = merkle::append(&f1, leaf1).expect("append leaf1");
     let root = merkle::business_root(TreeNamespace::Withdrawal, 2, a2.inner_root);
-    // index 0's co-path: level-0 sibling is leaf1; every higher level is an empty subtree.
+    // index 0's co-path: the level 0 sibling is leaf1; every higher level is an empty subtree.
     let mut sib0 = [B256::ZERO; TREE_DEPTH];
     sib0[0] = leaf1;
     sib0[1..TREE_DEPTH].copy_from_slice(&z[1..TREE_DEPTH]);
-    // index 1's co-path: level-0 sibling is leaf0; every higher level is an empty subtree.
+    // index 1's co-path: the level 0 sibling is leaf0; every higher level is an empty subtree.
     let mut sib1 = [B256::ZERO; TREE_DEPTH];
     sib1[0] = leaf0;
     sib1[1..TREE_DEPTH].copy_from_slice(&z[1..TREE_DEPTH]);

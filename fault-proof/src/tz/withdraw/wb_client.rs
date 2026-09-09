@@ -142,7 +142,7 @@ impl WbClient {
             }
             return env.data.ok_or(WbError::CheckpointNotFound);
         }
-        // Non-2xx: parse the unified `{code, message, data}` envelope BEFORE trusting the HTTP
+        // Non-success status: parse the unified `{code, message, data}` envelope BEFORE the HTTP
         // status (never blanket-map "any 4xx" to InvalidRequest); then classify by the joint tuple.
         let body = resp.text().await.unwrap_or_default();
         Err(match serde_json::from_str::<ErrEnvelope>(&body) {
@@ -236,8 +236,9 @@ impl WbClient {
         }
     }
 
-    /// A non-2xx response whose body is not a witness-builder error envelope: a 5xx is a transient
-    /// transport failure (retry with backoff); any other status (4xx/409) fails closed.
+    /// A non-success response whose body is not a witness-builder error envelope: a 5xx is
+    /// transient transport failure (retry with backoff); any other status (4xx/409) fails
+    /// closed.
     fn unparsed_error_status(status: reqwest::StatusCode) -> WbError {
         if status.is_server_error() {
             WbError::transient_transport(format!("witness-builder HTTP {status}"))
