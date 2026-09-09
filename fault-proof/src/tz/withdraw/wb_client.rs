@@ -29,11 +29,20 @@ use super::{
 
 const WB_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPPORTED_SCHEMA_VERSION: u16 = 2;
-/// Business error code the witness builder returns when the requested withdrawal root has no
-/// corresponding root index (a legal root not yet indexed).
-const ROOT_NOT_FOUND_CODE: i32 = 11009;
+// Numeric business error codes in the witness-builder's unified `{code, message, data}` envelope.
+// There is NO `name` field; classification is by these numeric codes plus a joint
+// `(endpoint, HTTP status, code, message prefix)` validation that fails closed on any mismatch.
+const CODE_INVALID_REQUEST: i32 = 11001;
+const CODE_PROTOCOL_NOT_ACCEPTED: i32 = 11002;
+const CODE_CHECKPOINT_NOT_FOUND: i32 = 11003;
+const CODE_WITHDRAWAL_NOT_FOUND: i32 = 11004;
+const CODE_RECORD_NOT_IN_CHECKPOINT: i32 = 11005;
+const CODE_NOT_READY: i32 = 11006;
+const CODE_STORE_CORRUPT: i32 = 11008;
+const CODE_ROOT_NOT_FOUND: i32 = 11009;
 
-/// Which endpoint a request targeted, so a `404` can be mapped to the semantically-correct error.
+/// Which endpoint a request targeted, so an error code can be validated against the endpoint's
+/// allowed set and mapped to the semantically-correct [`WbError`].
 #[derive(Clone, Copy)]
 enum WbEndpoint {
     Checkpoint,
@@ -42,13 +51,14 @@ enum WbEndpoint {
     Proof,
 }
 
-/// Minimal shape of a witness-builder error body, used to classify a proof-endpoint `404`.
+/// The witness-builder's unified error envelope. Only `code` and `message` are needed to classify;
+/// `data` is present on the wire but not consulted here.
 #[derive(Deserialize)]
-struct ErrBody {
+struct ErrEnvelope {
     #[serde(default)]
     code: Option<i32>,
     #[serde(default)]
-    name: Option<String>,
+    message: Option<String>,
 }
 
 // Real WB v2 routes verified against tradezone `feature/witness-builder-withdraw-v1` @ bb695f3a
@@ -121,41 +131,112 @@ impl WbClient {
             WbError::transient_transport(format!("request failed: {e}"))
         })?;
         let status = resp.status();
-        if status.is_server_error() {
-            return Err(WbError::transient_transport(format!("witness-builder HTTP {status}")));
+        if status.is_success() {
+            let env: ApiEnvelope<T> = resp
+                .json()
+                .await
+                .map_err(|e| WbError::permanent_transport(format!("invalid JSON: {e}")))?;
+            if env.code != 0 {
+                // A 2xx that still carries a business error code is a protocol inconsistency.
+                return Err(Self::classify(endpoint, status, env.code, &env.message));
+            }
+            return env.data.ok_or(WbError::CheckpointNotFound);
         }
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(Self::classify_not_found(endpoint, resp).await);
-        }
-        if status.is_client_error() {
-            return Err(WbError::InvalidRequest);
-        }
-        let env: ApiEnvelope<T> = resp
-            .json()
-            .await
-            .map_err(|e| WbError::permanent_transport(format!("invalid JSON: {e}")))?;
-        if env.code != 0 {
-            return Err(WbError::InvalidRequest);
-        }
-        env.data.ok_or(WbError::CheckpointNotFound)
+        // Non-2xx: parse the unified `{code, message, data}` envelope BEFORE trusting the HTTP
+        // status (never blanket-map "any 4xx" to InvalidRequest); then classify by the joint tuple.
+        let body = resp.text().await.unwrap_or_default();
+        Err(match serde_json::from_str::<ErrEnvelope>(&body) {
+            Ok(env) => match env.code {
+                Some(code) => {
+                    Self::classify(endpoint, status, code, env.message.as_deref().unwrap_or(""))
+                }
+                // Parsed JSON without a numeric code is not a WB error envelope ⇒ fail closed.
+                None => Self::unparsed_error_status(status),
+            },
+            // Unparseable / empty / non-envelope body.
+            Err(_) => Self::unparsed_error_status(status),
+        })
     }
 
-    /// Map a `404` to a per-endpoint error. The proof endpoint distinguishes a legal-but-unindexed
-    /// root (`code 11009` / `name "RootNotFound"`) from any other or unparseable `404`, which is a
-    /// protocol error and fails closed. Other endpoints keep their existing not-found meaning.
-    async fn classify_not_found(endpoint: WbEndpoint, resp: reqwest::Response) -> WbError {
-        match endpoint {
-            WbEndpoint::Proof => match resp.json::<ErrBody>().await {
-                Ok(b)
-                    if b.code == Some(ROOT_NOT_FOUND_CODE)
-                        && b.name.as_deref() == Some("RootNotFound") =>
-                {
-                    WbError::RootNotFound
-                }
-                _ => WbError::InvalidRequest,
-            },
-            WbEndpoint::Record => WbError::WithdrawalNotFound,
-            WbEndpoint::Checkpoint | WbEndpoint::Boundary => WbError::CheckpointNotFound,
+    /// Classify a witness-builder error response by the joint tuple `(endpoint, HTTP status,
+    /// numeric code, message prefix)`. Any of: a code outside the endpoint's allowed set, an
+    /// HTTP-status/code disagreement, or a message-prefix/code conflict is a [`WbError::Protocol`]
+    /// (fail-closed) — never a normal wait/retry.
+    fn classify(
+        endpoint: WbEndpoint,
+        status: reqwest::StatusCode,
+        code: i32,
+        message: &str,
+    ) -> WbError {
+        // 1. The code must be legitimate for this endpoint (per-endpoint allowed sets).
+        let allowed: &[i32] = match endpoint {
+            WbEndpoint::Proof => &[
+                CODE_INVALID_REQUEST,
+                CODE_WITHDRAWAL_NOT_FOUND,
+                CODE_RECORD_NOT_IN_CHECKPOINT,
+                CODE_NOT_READY,
+                CODE_STORE_CORRUPT,
+                CODE_ROOT_NOT_FOUND,
+            ],
+            WbEndpoint::Checkpoint | WbEndpoint::Boundary => {
+                &[CODE_INVALID_REQUEST, CODE_CHECKPOINT_NOT_FOUND, CODE_NOT_READY, CODE_STORE_CORRUPT]
+            }
+            WbEndpoint::Record => {
+                &[CODE_INVALID_REQUEST, CODE_WITHDRAWAL_NOT_FOUND, CODE_NOT_READY, CODE_STORE_CORRUPT]
+            }
+        };
+        if !allowed.contains(&code) {
+            return WbError::Protocol;
+        }
+        // 2. The code determines the expected HTTP status and the mapped error.
+        let (expected_status, err): (u16, WbError) = match code {
+            CODE_INVALID_REQUEST => (400, WbError::InvalidRequest),
+            CODE_CHECKPOINT_NOT_FOUND => (404, WbError::CheckpointNotFound),
+            CODE_WITHDRAWAL_NOT_FOUND => (404, WbError::WithdrawalNotFound),
+            CODE_RECORD_NOT_IN_CHECKPOINT => (404, WbError::RecordNotInCheckpoint),
+            CODE_NOT_READY => (409, WbError::NotReady),
+            CODE_STORE_CORRUPT => (500, WbError::WitnessStoreCorrupt),
+            CODE_ROOT_NOT_FOUND => (404, WbError::RootNotFound),
+            // Unreachable given the allowed-set gate above; fail closed defensively.
+            _ => return WbError::Protocol,
+        };
+        // 3. HTTP status must agree with the code.
+        if status.as_u16() != expected_status {
+            return WbError::Protocol;
+        }
+        // 4. If the message begins with a recognizable variant token, it must name THIS code (a
+        //    token naming a different code is a conflict). An unrecognized/empty message is not.
+        if let Some(prefix_code) = Self::code_for_message_prefix(message) {
+            if prefix_code != code {
+                return WbError::Protocol;
+            }
+        }
+        err
+    }
+
+    /// If a message begins with a known witness-builder error-kind token, return the numeric code
+    /// that token implies (used only to detect code↔prefix conflicts).
+    fn code_for_message_prefix(message: &str) -> Option<i32> {
+        match message.split([':', ' ']).next().unwrap_or("") {
+            "InvalidRequest" => Some(CODE_INVALID_REQUEST),
+            "ProtocolNotAccepted" => Some(CODE_PROTOCOL_NOT_ACCEPTED),
+            "CheckpointNotFound" => Some(CODE_CHECKPOINT_NOT_FOUND),
+            "WithdrawalNotFound" => Some(CODE_WITHDRAWAL_NOT_FOUND),
+            "RecordNotInCheckpoint" => Some(CODE_RECORD_NOT_IN_CHECKPOINT),
+            "NotReady" => Some(CODE_NOT_READY),
+            "StoreCorrupt" => Some(CODE_STORE_CORRUPT),
+            "RootNotFound" => Some(CODE_ROOT_NOT_FOUND),
+            _ => None,
+        }
+    }
+
+    /// A non-2xx response whose body is not a witness-builder error envelope: a 5xx is a transient
+    /// transport failure (retry with backoff); any other status (4xx/409) fails closed.
+    fn unparsed_error_status(status: reqwest::StatusCode) -> WbError {
+        if status.is_server_error() {
+            WbError::transient_transport(format!("witness-builder HTTP {status}"))
+        } else {
+            WbError::Protocol
         }
     }
 
@@ -688,36 +769,142 @@ mod tests {
         let _ = business_root(B256::ZERO, 0, WITHDRAWAL_TAG);
     }
 
+    /// WB errors are classified by the numeric `code` over the unified `{code,message,data}`
+    /// envelope (there is NO `name` field), with joint `(endpoint, status, code, prefix)`
+    /// validation that fails closed on any mismatch.
     #[tokio::test]
-    async fn proof_root_not_found_is_classified_and_unknown_404_fails_closed() {
-        // 404 + code 11009 + name RootNotFound ⇒ RootNotFound.
-        let server = MockServer::start().await;
+    async fn wb_errors_classified_by_numeric_code_not_name() {
+        let leaf = B256::repeat_byte(0x01);
+        let root = B256::repeat_byte(0x33);
+
+        // (1) 11009 on the proof endpoint, real envelope shape, HTTP 404 ⇒ RootNotFound.
+        let s = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/chain/witness/withdrawal-proof"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                "code": 11009, "name": "RootNotFound", "message": "root not indexed"
-            })))
-            .mount(&server)
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "RootNotFound: 0x33", "data": null})))
+            .mount(&s)
             .await;
-        let err = client(&server, 196)
-            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, WbError::RootNotFound));
-        assert!(!err.is_retryable(), "transport layer must not blanket-retry RootNotFound");
+        let e = client(&s, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(matches!(e, WbError::RootNotFound));
+        assert!(!e.is_retryable(), "transport layer must not blanket-retry RootNotFound");
 
-        // Unknown / plain 404 on the proof endpoint ⇒ fail-closed, NOT CheckpointNotFound.
-        let server2 = MockServer::start().await;
+        // (2) 11006 NotReady arrives as HTTP 409 (not generic 4xx→InvalidRequest).
+        let s2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!(
+                {"code": 11006, "message": "NotReady: rebuilding", "data": null})))
+            .mount(&s2)
+            .await;
+        let e2 = client(&s2, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(matches!(e2, WbError::NotReady));
+        assert!(e2.is_retryable());
+
+        // (3) Joint-tuple mismatch: 11003 (a checkpoint code) on the PROOF endpoint ⇒ Protocol.
+        let s3 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11003, "message": "CheckpointNotFound: 9", "data": null})))
+            .mount(&s3)
+            .await;
+        assert!(matches!(
+            client(&s3, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::Protocol
+        ));
+
+        // (4) Unknown / plain 404 (no envelope) ⇒ Protocol fail-closed, NOT CheckpointNotFound.
+        let s4 = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/chain/witness/withdrawal-proof"))
             .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
-            .mount(&server2)
+            .mount(&s4)
             .await;
-        let err2 = client(&server2, 196)
-            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
-            .await
-            .unwrap_err();
-        assert!(!matches!(err2, WbError::CheckpointNotFound));
-        assert!(!err2.is_retryable());
+        let e4 = client(&s4, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(matches!(e4, WbError::Protocol));
+        assert!(!e4.is_retryable());
+
+        // (5) HTTP-status↔code disagreement: 11009 returned with HTTP 409 ⇒ Protocol.
+        let s5 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "RootNotFound: 0x33", "data": null})))
+            .mount(&s5)
+            .await;
+        assert!(matches!(
+            client(&s5, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::Protocol
+        ));
+
+        // (6) code↔message-prefix conflict: 11009 carrying a `NotReady:` message ⇒ Protocol.
+        let s6 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "NotReady: mislabelled", "data": null})))
+            .mount(&s6)
+            .await;
+        assert!(matches!(
+            client(&s6, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::Protocol
+        ));
+    }
+
+    /// A 500 carrying code 11008 is a permanent store-corruption (body parsed before status), while
+    /// a plain 500 with no envelope stays a retryable transient transport error.
+    #[tokio::test]
+    async fn wb_500_store_corrupt_is_permanent_but_plain_5xx_is_transient() {
+        let leaf = B256::repeat_byte(0x01);
+        let root = B256::repeat_byte(0x33);
+
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!(
+                {"code": 11008, "message": "StoreCorrupt: dag", "data": null})))
+            .mount(&s)
+            .await;
+        let e = client(&s, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(matches!(e, WbError::WitnessStoreCorrupt));
+        assert!(!e.is_retryable(), "a store-corrupt 500 must not be retried");
+
+        let s2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("upstream boom"))
+            .mount(&s2)
+            .await;
+        assert!(client(&s2, 196).get_inclusion_proof(leaf, root).await.unwrap_err().is_retryable());
+    }
+
+    /// The record endpoint has its own allowed set: 11004 ⇒ WithdrawalNotFound, but a proof-only
+    /// code such as 11009 here is a joint-tuple violation ⇒ Protocol fail-closed.
+    #[tokio::test]
+    async fn record_endpoint_numeric_codes_and_joint_validation() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/{:#x}", B256::repeat_byte(0x01))))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11004, "message": "WithdrawalNotFound: 0x01", "data": null})))
+            .mount(&s)
+            .await;
+        assert!(matches!(
+            client(&s, 196).get_canonical_record(B256::repeat_byte(0x01)).await.unwrap_err(),
+            WbError::WithdrawalNotFound
+        ));
+
+        let s2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/{:#x}", B256::repeat_byte(0x02))))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "RootNotFound: x", "data": null})))
+            .mount(&s2)
+            .await;
+        assert!(matches!(
+            client(&s2, 196).get_canonical_record(B256::repeat_byte(0x02)).await.unwrap_err(),
+            WbError::Protocol
+        ));
     }
 }

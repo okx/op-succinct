@@ -41,6 +41,11 @@ pub enum WbError {
     /// a declared root that does not rebuild) — permanent, alert (spec §4).
     #[error("witness-builder boundary/witness store is corrupt or inconsistent")]
     WitnessStoreCorrupt,
+    /// The response violated the wire protocol contract: an error code outside the endpoint's
+    /// allowed set, an HTTP-status/code disagreement, a message-prefix/code conflict, or an
+    /// unparseable / non-envelope error body. Always fail-closed (never a normal wait/retry).
+    #[error("witness-builder response violated the protocol contract")]
+    Protocol,
     /// A transport-level failure. `retryable` distinguishes transient (timeout / 5xx / connect)
     /// from permanent transport problems.
     #[error("witness-builder transport error ({}): {message}", if *.retryable { "retryable" } else { "permanent" })]
@@ -71,7 +76,8 @@ impl WbError {
             WbError::RootNotFound |
             WbError::RecordNotInCheckpoint |
             WbError::RootMismatch |
-            WbError::WitnessStoreCorrupt => false,
+            WbError::WitnessStoreCorrupt |
+            WbError::Protocol => false,
         }
     }
 }
@@ -93,6 +99,7 @@ mod tests {
         assert!(!WbError::RecordNotInCheckpoint.is_retryable());
         assert!(!WbError::InvalidRequest.is_retryable());
         assert!(!WbError::UnsupportedVersion.is_retryable());
+        assert!(!WbError::Protocol.is_retryable());
     }
 
     #[test]
