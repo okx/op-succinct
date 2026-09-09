@@ -1,3 +1,5 @@
-# Transient marker written by `just kms-crate` when the real SDK is swapped in.
-# Never commit it (nor any real-SDK checkout); `just kms-crate-restore` reverts the swap.
-/.ok-kms-real
+# Real ok-kms-rust SDK artifacts installed by `just kms-crate` (never committed — C3).
+# `just kms-crate-restore` removes them via `git clean -fdx stubs/ok-kms-rust`.
+# NOTE (round-4 / Spec §5.2): do NOT add any early-exit "already installed" marker file here —
+# a marker on an ignore path survives `git clean` without `-x` and would gate the next install.
+/libs/

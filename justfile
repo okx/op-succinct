@@ -573,28 +573,35 @@ forge-build *ARGS:
 
 # ── KMS crate management (operator-only; the real SDK SSH URL never enters a committed *.toml) ──
 
-# Swap the in-tree stub for a real ok-kms-rust checkout (idempotent). Local pre-prod only.
+# Swap the in-tree stub for a real ok-kms-rust checkout. IDEMPOTENT / re-entrant (Spec §5.2):
+# "obtain source" (Step 1) is skippable/cached, but "install libs/*.so" (Step 2) runs EVERY time,
+# so libs/*.so are present after every invocation — including a 2nd run after kms-crate-restore.
 kms-crate url="ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git" tag="v1.0.0":
     #!/usr/bin/env bash
     set -euo pipefail
     DEST="stubs/ok-kms-rust"
-    if [ -f "$DEST/.ok-kms-real" ]; then
-      echo "ok-kms-rust: real SDK already in place; nothing to do"
-      exit 0
+    CACHE="${KMS_CRATE_CACHE:-target/kms-crate-src/ok-kms-rust}"   # under target/ (git-ignored)
+    # ── Step 1: OBTAIN SOURCE (skippable / reused) — clone once; reuse or refresh a cached checkout.
+    if [ ! -e "$CACHE/.git" ]; then
+      rm -rf "$CACHE"; mkdir -p "$(dirname "$CACHE")"
+      git clone --branch "{{tag}}" "{{url}}" "$CACHE"
+    else
+      git -C "$CACHE" fetch --tags --quiet origin || true
+      git -C "$CACHE" checkout --quiet "{{tag}}"
     fi
-    TMP="$(mktemp -d)"
-    trap 'rm -rf "$TMP"' EXIT
-    git clone --depth 1 --branch "{{tag}}" "{{url}}" "$TMP/ok-kms-rust"
-    rm -rf "$DEST"
-    mkdir -p "$DEST"
-    (cd "$TMP/ok-kms-rust" && tar --exclude=.git -cf - .) | (cd "$DEST" && tar -xf -)
-    touch "$DEST/.ok-kms-real"
-    echo "ok-kms-rust: real SDK checked out at {{tag}} into $DEST"
+    # ── Step 2: INSTALL (UNCONDITIONAL — runs every invocation; never gated by a marker).
+    # Overlay the real SDK contents (including libs/*.so) onto the path-dependency dir.
+    ( cd "$CACHE" && tar --exclude=.git -cf - . ) | ( cd "$DEST" && tar -xf - )
+    # Fail loudly if the real SDK did not deliver the shared objects.
+    ls "$DEST"/libs/*.so >/dev/null 2>&1 || { echo "ERROR: ok-kms-rust provided no libs/*.so under $DEST/libs" >&2; exit 1; }
+    echo "ok-kms-rust: real SDK installed into $DEST (libs/*.so present)"
 
-# Restore the committed in-tree stub, undoing `just kms-crate`.
+# Restore the committed in-tree stub, undoing `just kms-crate`. Leaves NO state that could
+# suppress the next `kms-crate` install: -x removes ignored artifacts (libs/), and there is no marker.
 kms-crate-restore:
     #!/usr/bin/env bash
     set -euo pipefail
-    git checkout -- stubs/ok-kms-rust
-    git clean -fdq stubs/ok-kms-rust
+    DEST="stubs/ok-kms-rust"
+    git checkout -- "$DEST"      # restore tracked stub sources (Cargo.toml, src/lib.rs, .gitignore)
+    git clean -fdx "$DEST"       # remove untracked + IGNORED real-SDK artifacts (incl. libs/*.so)
     echo "ok-kms-rust: committed stub restored (git status clean)"
