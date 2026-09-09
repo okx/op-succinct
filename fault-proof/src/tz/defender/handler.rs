@@ -86,10 +86,17 @@ pub enum ChallengeState {
     /// confirmed. `root` is the withdrawal root it was submitted against; `attempts` the resend
     /// count so far.
     Submitted { tx: TxHash, attempts: u32, root: B256 },
-    /// The broadcast outcome is unknown (holds the in-flight gate). If `tx_hash` is present
-    /// the handler reconciles via status + receipt; with no `tx_hash` and still open it keeps
-    /// holding the gate and polling — never inferring "not broadcast", never resending.
-    ReconcileUnknown { tx_hash: Option<TxHash>, attempts: u32, root: Option<B256> },
+    /// The broadcast outcome is unknown but a queryable `tx` exists (holds the in-flight gate):
+    /// reconcile via receipt + on-chain status. `root` is the withdrawal root the tx was submitted
+    /// against and is ALWAYS known — the type forbids a tx without its bound root — so a confirmed
+    /// revert here feeds the real root into the counted resend path, never a zero/default root.
+    ReconcileUnknownTx { tx: TxHash, attempts: u32, root: B256 },
+    /// The broadcast outcome is unknown and there is NO queryable tx (holds the in-flight gate):
+    /// keep polling status only — never infer "not broadcast", never resend — until the challenge
+    /// closes or the L2-time deadline passes. Carries no `root` because none is ever consumed on
+    /// this path (there is no tx to reconcile and no resend), so no unknown root can be defaulted
+    /// to zero.
+    ReconcileUnknownNoTx { attempts: u32 },
     /// A confirmed revert eligible for a bounded resend on a later tick; `attempts` already
     /// reflects the incremented resend count and `prev_root` is the withdrawal root that
     /// reverted. Both are persisted here BEFORE the next tick queries the latest root, so a
@@ -267,8 +274,12 @@ impl Handler {
                 *state = self.confirm_submitted(ev, tx, attempts, root, &status, gate).await?;
                 return Ok(());
             }
-            ChallengeState::ReconcileUnknown { tx_hash, attempts, root } => {
-                *state = self.reconcile_unknown(ev, tx_hash, attempts, root, &status, gate).await?;
+            ChallengeState::ReconcileUnknownTx { tx, attempts, root } => {
+                *state = self.reconcile_unknown_tx(ev, tx, attempts, root, &status, gate).await?;
+                return Ok(());
+            }
+            ChallengeState::ReconcileUnknownNoTx { attempts } => {
+                *state = self.reconcile_unknown_no_tx(ev, attempts, &status, gate).await?;
                 return Ok(());
             }
             _ => {}
@@ -392,14 +403,14 @@ impl Handler {
             Err(SenderError::ConfirmedRejection) => {
                 self.on_confirmed_revert(ev, attempts, withdrawal_root, gate).await
             }
-            // Unknown outcome ⇒ hold the gate and reconcile; never infer not-broadcast.
-            Err(SenderError::UnknownBroadcastOutcome { tx_hash }) => {
-                Ok(ChallengeState::ReconcileUnknown {
-                    tx_hash,
-                    attempts,
-                    root: Some(withdrawal_root),
-                })
-            }
+            // Unknown outcome ⇒ hold the gate and reconcile; never infer not-broadcast. A present
+            // tx carries its bound root (reconcile via receipt); with no tx we poll status only.
+            Err(SenderError::UnknownBroadcastOutcome { tx_hash }) => Ok(match tx_hash {
+                Some(tx) => {
+                    ChallengeState::ReconcileUnknownTx { tx, attempts, root: withdrawal_root }
+                }
+                None => ChallengeState::ReconcileUnknownNoTx { attempts },
+            }),
         }
     }
 
@@ -470,65 +481,76 @@ impl Handler {
         }
     }
 
-    /// Reconcile an unknown broadcast outcome. The gate is held by `ev` and released only on
-    /// a confirmed terminal outcome. With no `tx_hash` and still open, keep holding + polling;
-    /// never resend, never infer "not broadcast".
-    async fn reconcile_unknown(
+    /// Reconcile an unknown broadcast outcome that HAS a queryable tx, via its receipt and the
+    /// current on-chain status. The gate is held by `ev` and released only on a confirmed terminal
+    /// outcome. `root` is the concrete withdrawal root the tx was submitted against, so a confirmed
+    /// revert feeds the REAL root straight into the counted resend path — there is no optional root
+    /// to default to zero.
+    async fn reconcile_unknown_tx(
         &self,
         ev: &ChallengeOpened,
-        tx_hash: Option<TxHash>,
+        tx: TxHash,
         attempts: u32,
-        root: Option<B256>,
+        root: B256,
         status: &ChallengeStatus,
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
-        if let Some(tx) = tx_hash {
-            return match self.sender.confirm(tx).await? {
-                TxStatus::Success => {
-                    if !status.open {
-                        // Only OUR resolution is `Proved`; a challenge closed by another responder
-                        // is `Closed` even with a successful receipt for our tx.
-                        gate.release(ev.challenge_id);
-                        if status.resolved_by_us {
-                            Ok(ChallengeState::Proved(tx))
-                        } else {
-                            Ok(ChallengeState::Closed)
-                        }
-                    } else if self.past_deadline(status) {
-                        gate.release(ev.challenge_id);
-                        Ok(ChallengeState::Expired)
+        match self.sender.confirm(tx).await? {
+            TxStatus::Success => {
+                if !status.open {
+                    // Only OUR resolution is `Proved`; a challenge closed by another responder is
+                    // `Closed` even with a successful receipt for our tx.
+                    gate.release(ev.challenge_id);
+                    if status.resolved_by_us {
+                        Ok(ChallengeState::Proved(tx))
                     } else {
-                        Ok(ChallengeState::ReconcileUnknown { tx_hash, attempts, root })
-                    }
-                }
-                TxStatus::Pending => {
-                    // Non-terminal receipt for a tx that may have broadcast: keep holding the gate
-                    // and keep reconciling. A reached deadline is recorded but does NOT release the
-                    // gate, because the tx may still be live in the mempool and releasing it would
-                    // risk a second, concurrent broadcast.
-                    if self.past_deadline(status) {
-                        tracing::warn!(
-                            challenge_id = ?ev.challenge_id,
-                            "unknown-outcome prove tx still pending past the L2-time deadline; \
-                             holding the in-flight gate and continuing to reconcile"
-                        );
-                    }
-                    Ok(ChallengeState::ReconcileUnknown { tx_hash, attempts, root })
-                }
-                TxStatus::Reverted => {
-                    if !status.open {
-                        gate.release(ev.challenge_id);
                         Ok(ChallengeState::Closed)
-                    } else if self.past_deadline(status) {
-                        gate.release(ev.challenge_id);
-                        Ok(ChallengeState::Expired)
-                    } else {
-                        self.on_confirmed_revert(ev, attempts, root.unwrap_or_default(), gate).await
                     }
+                } else if self.past_deadline(status) {
+                    gate.release(ev.challenge_id);
+                    Ok(ChallengeState::Expired)
+                } else {
+                    Ok(ChallengeState::ReconcileUnknownTx { tx, attempts, root })
                 }
-            };
+            }
+            TxStatus::Pending => {
+                // Non-terminal receipt for a tx that may have broadcast: keep holding the gate and
+                // keep reconciling. A reached deadline is recorded but does NOT release the gate,
+                // because the tx may still be live in the mempool and releasing it would risk a
+                // second, concurrent broadcast.
+                if self.past_deadline(status) {
+                    tracing::warn!(
+                        challenge_id = ?ev.challenge_id,
+                        "unknown-outcome prove tx still pending past the L2-time deadline; \
+                         holding the in-flight gate and continuing to reconcile"
+                    );
+                }
+                Ok(ChallengeState::ReconcileUnknownTx { tx, attempts, root })
+            }
+            TxStatus::Reverted => {
+                if !status.open {
+                    gate.release(ev.challenge_id);
+                    Ok(ChallengeState::Closed)
+                } else if self.past_deadline(status) {
+                    gate.release(ev.challenge_id);
+                    Ok(ChallengeState::Expired)
+                } else {
+                    self.on_confirmed_revert(ev, attempts, root, gate).await
+                }
+            }
         }
-        // No tx hash: never infer not-broadcast, never resend. Hold the gate and poll status.
+    }
+
+    /// Reconcile an unknown broadcast outcome with NO queryable tx. The gate is held by `ev`; never
+    /// infer "not broadcast" and never resend — just poll status, holding the gate until the
+    /// challenge closes or the L2-time deadline passes.
+    async fn reconcile_unknown_no_tx(
+        &self,
+        ev: &ChallengeOpened,
+        attempts: u32,
+        status: &ChallengeStatus,
+        gate: &InFlightGate,
+    ) -> Result<ChallengeState> {
         if !status.open {
             gate.release(ev.challenge_id);
             return Ok(ChallengeState::Closed);
@@ -537,7 +559,7 @@ impl Handler {
             gate.release(ev.challenge_id);
             return Ok(ChallengeState::Expired);
         }
-        Ok(ChallengeState::ReconcileUnknown { tx_hash: None, attempts, root })
+        Ok(ChallengeState::ReconcileUnknownNoTx { attempts })
     }
 
     /// Handle a confirmed revert (from a receipt or a `ConfirmedRejection`): the reverted tx is no
@@ -557,15 +579,22 @@ impl Handler {
         // The reverted tx is terminal (a confirmed on-chain revert / confirmed rejection), so it is
         // no longer in flight: release the gate.
         gate.release(ev.challenge_id);
-        let next_attempt = attempts + 1;
-        if next_attempt > self.max_resend {
-            return Ok(ChallengeState::PermanentFailure);
+        // Bounded retry — fail closed at the cap. `attempts` counts the resends already done and
+        // may reach the configured `max_resend`, which `DEFENDER_MAX_RESEND` legitimately allows to
+        // be `u32::MAX`. Increment with `checked_add` and treat BOTH "would exceed the cap" and
+        // "would overflow u32" as terminal, so the bound can never be bypassed by wraparound: a
+        // bare `attempts + 1 > max_resend` computes `u32::MAX + 1` FIRST at the ceiling, which
+        // panics in debug and wraps to 0 in release, silently re-enabling unbounded resends.
+        // The INCREMENTED count and the reverted root are persisted into `RetryableRevert` BEFORE
+        // any fallible RootManager/WB query, so a transient failure on the next tick retains the
+        // retry context (counter not reset, same root not resent); a resend proceeds only once the
+        // latest root has actually changed.
+        match attempts.checked_add(1) {
+            Some(next_attempt) if next_attempt <= self.max_resend => {
+                Ok(ChallengeState::RetryableRevert { attempts: next_attempt, prev_root })
+            }
+            _ => Ok(ChallengeState::PermanentFailure),
         }
-        // Persist the confirmed revert, the incremented attempt count, and the reverted root BEFORE
-        // any fallible RootManager/WB query. The latest root is read next tick from this state; if
-        // that read fails transiently the context is retained (counter not reset, same root not
-        // resent). A resend proceeds only once the latest root has changed.
-        Ok(ChallengeState::RetryableRevert { attempts: next_attempt, prev_root })
     }
 }
 
@@ -831,7 +860,7 @@ mod tests {
         let gate = InFlightGate::new();
         let mut state = ChallengeState::Discovered;
         h.drive(&ev, &mut state, &gate).await.unwrap();
-        assert!(matches!(state, ChallengeState::ReconcileUnknown { tx_hash: None, .. }));
+        assert!(matches!(state, ChallengeState::ReconcileUnknownNoTx { .. }));
         assert_eq!(gate.holder(), Some(ev.challenge_id), "unknown outcome HOLDS the gate");
         let before = cc.prove_calls().len();
         h.drive(&ev, &mut state, &gate).await.unwrap(); // still open, no tx hash ⇒ no resend
@@ -1100,11 +1129,8 @@ mod tests {
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
         gate.try_acquire(ev.challenge_id);
-        let mut state = ChallengeState::ReconcileUnknown {
-            tx_hash: Some(TxHash::repeat_byte(0x99)),
-            attempts: 0,
-            root: Some(root),
-        };
+        let mut state =
+            ChallengeState::ReconcileUnknownTx { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(matches!(state, ChallengeState::Closed), "closed-by-other ⇒ Closed, got {state:?}");
         assert_eq!(gate.holder(), None);
@@ -1244,14 +1270,11 @@ mod tests {
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
         gate.try_acquire(ev.challenge_id);
-        let mut state = ChallengeState::ReconcileUnknown {
-            tx_hash: Some(TxHash::repeat_byte(0x99)),
-            attempts: 0,
-            root: Some(root),
-        };
+        let mut state =
+            ChallengeState::ReconcileUnknownTx { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
-            matches!(state, ChallengeState::ReconcileUnknown { tx_hash: Some(_), .. }),
+            matches!(state, ChallengeState::ReconcileUnknownTx { .. }),
             "unknown+pending past deadline keeps reconciling, got {state:?}"
         );
         assert_eq!(
@@ -1309,6 +1332,69 @@ mod tests {
             "unchanged root after recovery ⇒ no same-root resend, terminal, got {state:?}"
         );
         assert!(cc.prove_calls().is_empty(), "the same reverted root is never rebroadcast");
+    }
+
+    // ── The bounded-retry cap must fail closed at the u32 ceiling — never overflow ──
+
+    #[tokio::test]
+    async fn resend_cap_at_u32_max_fails_closed_without_overflow() {
+        // Ceiling case: `max_resend == u32::MAX` (a value `DEFENDER_MAX_RESEND` accepts) and the
+        // challenge is already at `attempts == u32::MAX`. A confirmed revert here must fail closed
+        // to `PermanentFailure` WITHOUT computing `attempts + 1` — a bare increment panics in a
+        // debug build and wraps to 0 in release, which would silently bypass the bounded-retry cap
+        // and resend forever. Reverting the `checked_add` fix makes this test panic (debug) or land
+        // in a non-terminal `RetryableRevert { attempts: 0 }` (release), so it is a regression
+        // lock.
+        let (cc, witness, rm, ev, root) = setup_ready(100_000, 0, 20);
+        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Reverted);
+        cc.keep_open(ev.challenge_id);
+        let h = handler_with(cc.clone(), witness, rm, u32::MAX);
+        let gate = InFlightGate::new();
+        gate.try_acquire(ev.challenge_id);
+        let mut state =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: u32::MAX, root };
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::PermanentFailure),
+            "attempts==u32::MAX at the cap ⇒ fail closed, no overflow/wrap, got {state:?}"
+        );
+        assert!(state.is_terminal(), "the capped challenge is terminal (bounded-retry exhausted)");
+        assert_eq!(gate.holder(), None, "gate released at the terminal cap");
+    }
+
+    // ── An unknown-outcome tx carries its concrete bound root; a revert never defaults an
+    //    unknown root to zero (the illegal "tx without a bound root" state is untypable) ──
+
+    #[tokio::test]
+    async fn reconcile_unknown_tx_revert_uses_bound_root_not_zero() {
+        // A `ReconcileUnknownTx` always carries the concrete `B256` root its tx was submitted
+        // against — the type has no optional root to default. When that tx reverts, the REAL root
+        // (not a zero/default) flows into the counted resend path, so the next tick's
+        // "root changed?" comparison cannot mistake the actual, unchanged root for an updated one
+        // and resend against it. The prior `root.unwrap_or_default()` on an `Option` root would
+        // have substituted `B256::ZERO` for an unknown root.
+        let (cc, witness, rm, ev, root) = setup_ready(100_000, 0, 20);
+        assert_ne!(
+            root,
+            B256::ZERO,
+            "the bound root must be non-zero for this assertion to be meaningful"
+        );
+        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Reverted);
+        cc.keep_open(ev.challenge_id);
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+        gate.try_acquire(ev.challenge_id);
+        let mut state =
+            ChallengeState::ReconcileUnknownTx { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(
+                state,
+                ChallengeState::RetryableRevert { attempts: 1, prev_root } if prev_root == root
+            ),
+            "reverted unknown-outcome tx records the REAL bound root, never a zero default, got {state:?}"
+        );
+        assert_eq!(gate.holder(), None, "the reverted tx released the gate");
     }
 
     // ── Lock-poison resilience: a panic while a production state lock is held must not turn every
