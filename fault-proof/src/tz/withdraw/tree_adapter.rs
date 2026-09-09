@@ -134,6 +134,33 @@ pub fn single_leaf_withdrawal_fixture(leaf: B256) -> ([B256; TREE_DEPTH], B256) 
     (siblings, root)
 }
 
+/// Build a valid two-leaf (`count == 2`) Withdrawal tree `[leaf0, leaf1]` and return the inclusion
+/// proof co-path for BOTH leaves plus the shared business root — TEST-FIXTURE SUPPORT ONLY. Two
+/// distinct challenges in the same tree share one root but have proofs at different leaf indices;
+/// and, holding `leaf0` fixed while varying `leaf1`, the SAME `leaf0` becomes provable under a
+/// changing root (exercising the root-staleness resend path). Uses only `tz_witness::merkle`
+/// primitives so it is byte-consistent with [`verify_proof`].
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+pub fn two_leaf_withdrawal_fixture(
+    leaf0: B256,
+    leaf1: B256,
+) -> (([B256; TREE_DEPTH], u32), ([B256; TREE_DEPTH], u32), B256) {
+    let z = merkle::zero_hashes();
+    let f1 = merkle::append(&TreeFrontier::default(), leaf0).expect("append leaf0").frontier;
+    let a2 = merkle::append(&f1, leaf1).expect("append leaf1");
+    let root = merkle::business_root(TreeNamespace::Withdrawal, 2, a2.inner_root);
+    // index 0's co-path: level-0 sibling is leaf1; every higher level is an empty subtree.
+    let mut sib0 = [B256::ZERO; TREE_DEPTH];
+    sib0[0] = leaf1;
+    sib0[1..TREE_DEPTH].copy_from_slice(&z[1..TREE_DEPTH]);
+    // index 1's co-path: level-0 sibling is leaf0; every higher level is an empty subtree.
+    let mut sib1 = [B256::ZERO; TREE_DEPTH];
+    sib1[0] = leaf0;
+    sib1[1..TREE_DEPTH].copy_from_slice(&z[1..TREE_DEPTH]);
+    ((sib0, 0), (sib1, 1), root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
