@@ -1,0 +1,3 @@
+# Transient marker written by `just kms-crate` when the real SDK is swapped in.
+# Never commit it (nor any real-SDK checkout); `just kms-crate-restore` reverts the swap.
+/.ok-kms-real
