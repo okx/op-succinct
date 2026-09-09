@@ -5,15 +5,16 @@
 //! first tick, a reorg-safe cursor for `from_block` afterwards, `to_block` always `actionable_to`),
 //! merges newly-discovered challenges (deduplicated by [`ChallengeId`]) into a pending map, and
 //! re-drives every non-terminal challenge one step. Discovery (dedup) and pending work (retry) are
-//! decoupled, so a challenge that is waiting for the witness, awaiting confirmation, or eligible for
-//! a bounded resend is re-driven on subsequent ticks rather than dropped once its event is seen.
+//! decoupled, so a challenge that is waiting for the witness, awaiting confirmation, or eligible
+//! for a bounded resend is re-driven on subsequent ticks rather than dropped once its event is
+//! seen.
 //!
 //! Two invariants the reviewed version violated are restored here:
-//! - **Per-challenge failure isolation** (MR105-4): a transient status/RootManager/receipt error for
-//!   one challenge is caught and the challenge is **preserved** in `pending` (never removed-then-`?`);
-//!   the tick keeps driving the others.
-//! - **Single in-flight broadcast, nearest-deadline-first** (MR105-5/D7): broadcasting is gated by a
-//!   shared [`InFlightGate`]; challenges are driven nearest-deadline-first so the free gate is
+//! - **Per-challenge failure isolation** (MR105-4): a transient status/RootManager/receipt error
+//!   for one challenge is caught and the challenge is **preserved** in `pending` (never
+//!   removed-then-`?`); the tick keeps driving the others.
+//! - **Single in-flight broadcast, nearest-deadline-first** (MR105-5/D7): broadcasting is gated by
+//!   a shared [`InFlightGate`]; challenges are driven nearest-deadline-first so the free gate is
 //!   granted to the most urgent challenge.
 //!
 //! Restart recovery keeps no persistence: a prior transaction hash and the in-flight gate are lost
@@ -41,8 +42,8 @@ pub struct Supervisor {
     gate: InFlightGate,
     finality_blocks: u64,
     startup_lookback: u64,
-    /// Reorg-safe steady-state cursor for `from_block`; `None` until the first tick (which uses the
-    /// explicit startup lookback window).
+    /// Reorg-safe steady-state cursor for `from_block`; `None` until the first tick (which uses
+    /// the explicit startup lookback window).
     cursor: Option<u64>,
     pending: HashMap<ChallengeId, (ChallengeOpened, ChallengeState)>,
 }
@@ -88,9 +89,10 @@ impl Supervisor {
         // Advance the reorg-safe cursor so the next tick continues just past this window.
         self.cursor = Some(actionable_to.saturating_add(1));
 
-        // Order pending challenges nearest-deadline-first so the single in-flight gate is granted to
-        // the most urgent challenge. A status-read error while ordering does NOT drop the challenge:
-        // it is ordered last (u64::MAX) and still driven (its own drive re-reads + handles it).
+        // Order pending challenges nearest-deadline-first so the single in-flight gate is granted
+        // to the most urgent challenge. A status-read error while ordering does NOT drop
+        // the challenge: it is ordered last (u64::MAX) and still driven (its own drive
+        // re-reads + handles it).
         let mut ids: Vec<ChallengeId> = self.pending.keys().copied().collect();
         let mut deadlines: HashMap<ChallengeId, u64> = HashMap::new();
         for id in &ids {
@@ -179,7 +181,7 @@ mod tests {
             types::{HistoricalInclusionProof, WithdrawRecord},
         },
     };
-    use alloy_primitives::{Address, B256, TxHash, U256};
+    use alloy_primitives::{Address, TxHash, B256, U256};
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
 
@@ -267,8 +269,14 @@ mod tests {
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
         let handler = handler_with(cc.clone(), witness.clone(), rm);
-        let mut sup =
-            Supervisor::new(Watcher::new(cc.clone()), handler, cc.clone(), InFlightGate::new(), 0, 1_000);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+        );
 
         // Tick 1: witness not ready ⇒ the challenge stays pending (not dropped).
         sup.tick(200).await.unwrap();
@@ -338,14 +346,26 @@ mod tests {
         let b = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x0B), 0, leaf_b, 100);
         cc.inject_opened(a.clone(), 10_000);
         cc.inject_opened(b.clone(), 10_000);
-        cc.set_status(a.challenge_id, ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 });
-        cc.set_status(b.challenge_id, ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 });
+        cc.set_status(
+            a.challenge_id,
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
+        );
+        cc.set_status(
+            b.challenge_id,
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
+        );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
         let handler = handler_with(cc.clone(), witness, rm);
-        let mut sup =
-            Supervisor::new(Watcher::new(cc.clone()), handler, cc.clone(), InFlightGate::new(), 0, 1_000);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+        );
 
         // A's status RPC fails this whole tick; B must still be driven, and A must be preserved
         // (never removed-then-`?`).
@@ -363,7 +383,8 @@ mod tests {
             sup.pending_state(b.challenge_id)
         );
 
-        // A recovers on the next tick once its RPC succeeds (gate held by B ⇒ Ready, i.e. advanced).
+        // A recovers on the next tick once its RPC succeeds (gate held by B ⇒ Ready, i.e.
+        // advanced).
         cc.clear_status_failure(a.challenge_id);
         sup.tick(200).await.unwrap();
         assert!(
@@ -380,12 +401,26 @@ mod tests {
         let rm = Arc::new(MockRootManager::new());
         let handler = handler_with(cc.clone(), witness, rm);
         // finality_blocks = 32, startup_lookback = 1000.
-        let mut sup =
-            Supervisor::new(Watcher::new(cc.clone()), handler, cc.clone(), InFlightGate::new(), 32, 1_000);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            32,
+            1_000,
+        );
         sup.tick(10_000).await.unwrap();
         let w = cc.last_scan_window().expect("watch_opened received an explicit window");
-        assert_eq!(w.to_block, 10_000 - 32, "actionable_to = H - finality_blocks (subtracted ONCE)");
-        assert_eq!(w.from_block, (10_000 - 32) - 1_000, "explicit startup [actionable_to - lookback, .]");
+        assert_eq!(
+            w.to_block,
+            10_000 - 32,
+            "actionable_to = H - finality_blocks (subtracted ONCE)"
+        );
+        assert_eq!(
+            w.from_block,
+            (10_000 - 32) - 1_000,
+            "explicit startup [actionable_to - lookback, .]"
+        );
     }
 
     #[tokio::test]
@@ -398,14 +433,26 @@ mod tests {
         let b = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x0B), 0, leaf_b, 100);
         cc.inject_opened(a.clone(), 9_000);
         cc.inject_opened(b.clone(), 5_000);
-        cc.set_status(a.challenge_id, ChallengeStatus { open: true, deadline: 9_000, chain_timestamp: 0 });
-        cc.set_status(b.challenge_id, ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 0 });
+        cc.set_status(
+            a.challenge_id,
+            ChallengeStatus { open: true, deadline: 9_000, chain_timestamp: 0 },
+        );
+        cc.set_status(
+            b.challenge_id,
+            ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 0 },
+        );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
         let handler = handler_with(cc.clone(), witness, rm);
-        let mut sup =
-            Supervisor::new(Watcher::new(cc.clone()), handler, cc.clone(), InFlightGate::new(), 0, 1_000);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+        );
 
         sup.tick(500).await.unwrap();
         let calls = cc.prove_calls();
@@ -436,26 +483,41 @@ mod tests {
         let (_p, leaf_o, _r) = valid_proof(0x10);
         let (_p2, leaf_c, _r2) = valid_proof(0x11);
         let cc = Arc::new(MockChallengeContract::new());
-        let open = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x10), 0, leaf_o, 100);
-        let closed = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x11), 0, leaf_c, 100);
+        let open =
+            ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x10), 0, leaf_o, 100);
+        let closed =
+            ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x11), 0, leaf_c, 100);
         cc.inject_opened(open.clone(), 10_000);
         cc.inject_opened(closed.clone(), 10_000);
-        cc.set_status(closed.challenge_id, ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 });
+        cc.set_status(
+            closed.challenge_id,
+            ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
+        );
 
         let witness = Arc::new(SwitchWitness::not_ready());
         let rm = Arc::new(MockRootManager::new());
         let handler = handler_with(cc.clone(), witness, rm);
-        let mut sup =
-            Supervisor::new(Watcher::new(cc.clone()), handler, cc.clone(), InFlightGate::new(), 0, 1_000);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+        );
 
-        let rediscovered = crate::tz::defender::challenge_contract::ChallengeEventSource::watch_opened(
-            &*cc,
-            ScanWindow { from_block: 0, to_block: 10_000 },
-        )
-        .await
-        .unwrap();
+        let rediscovered =
+            crate::tz::defender::challenge_contract::ChallengeEventSource::watch_opened(
+                &*cc,
+                ScanWindow { from_block: 0, to_block: 10_000 },
+            )
+            .await
+            .unwrap();
         sup.reconcile_on_startup(&rediscovered).await.unwrap();
         assert!(sup.is_pending(open.challenge_id), "still-open ⇒ best-effort re-drive");
-        assert!(!sup.is_pending(closed.challenge_id), "closed ⇒ not enqueued (no old-receipt lookup)");
+        assert!(
+            !sup.is_pending(closed.challenge_id),
+            "closed ⇒ not enqueued (no old-receipt lookup)"
+        );
     }
 }

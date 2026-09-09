@@ -101,26 +101,27 @@ impl ChallengeState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            ChallengeState::Proved(_)
-                | ChallengeState::Closed
-                | ChallengeState::Expired
-                | ChallengeState::PermanentFailure
+            ChallengeState::Proved(_) |
+                ChallengeState::Closed |
+                ChallengeState::Expired |
+                ChallengeState::PermanentFailure
         )
     }
 
     /// The resend count carried by a non-terminal, pre-broadcast state.
     fn attempts(&self) -> u32 {
         match self {
-            ChallengeState::WaitingWitness { attempts, .. }
-            | ChallengeState::Ready { attempts }
-            | ChallengeState::RetryableRevert { attempts } => *attempts,
+            ChallengeState::WaitingWitness { attempts, .. } |
+            ChallengeState::Ready { attempts } |
+            ChallengeState::RetryableRevert { attempts } => *attempts,
             _ => 0,
         }
     }
 }
 
 /// Global single-process in-flight transaction gate (D7): at most one challenge may hold it, so at
-/// most one prove transaction is in flight across all `ChallengeId`s. It does NOT survive a restart.
+/// most one prove transaction is in flight across all `ChallengeId`s. It does NOT survive a
+/// restart.
 #[derive(Clone, Default)]
 pub struct InFlightGate {
     holder: Arc<Mutex<Option<ChallengeId>>>,
@@ -201,10 +202,14 @@ impl Handler {
 
     /// Classify a witness error into either a bounded wait (carrying the retry context) or a
     /// permanent failure. Waits: `WithdrawalNotFound` (11004), `RecordNotInCheckpoint` (11005),
-    /// `NotReady` (11006), authoritative `RootNotFound` (11009), and transient transport. Everything
-    /// else (mismatch, store corruption, protocol, invalid request, permanent transport) is
-    /// permanent and fails closed.
-    fn classify_witness_wait(err: WbError, attempts: u32, last_root: Option<B256>) -> ChallengeState {
+    /// `NotReady` (11006), authoritative `RootNotFound` (11009), and transient transport.
+    /// Everything else (mismatch, store corruption, protocol, invalid request, permanent
+    /// transport) is permanent and fails closed.
+    fn classify_witness_wait(
+        err: WbError,
+        attempts: u32,
+        last_root: Option<B256>,
+    ) -> ChallengeState {
         let reason = match err {
             WbError::WithdrawalNotFound => Some(WaitReason::WithdrawalNotFound),
             WbError::RecordNotInCheckpoint => Some(WaitReason::RecordNotInCheckpoint),
@@ -279,7 +284,8 @@ impl Handler {
         attempts: u32,
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
-        // 1. Covering-root gate (D10, MR105-2): the record must be covered by the latest checkpoint.
+        // 1. Covering-root gate (D10, MR105-2): the record must be covered by the latest
+        //    checkpoint.
         let record_height = match self.witness.canonical_record_height(ev.leaf_hash).await {
             Ok(h) => h,
             Err(e) => return Ok(Self::classify_witness_wait(e, attempts, None)),
@@ -293,7 +299,8 @@ impl Handler {
             });
         }
 
-        // 2. Obtain the proof (LRU cache, else WB), classifying errors per the wait/permanent split.
+        // 2. Obtain the proof (LRU cache, else WB), classifying errors per the wait/permanent
+        //    split.
         let proof = match self.fetch_proof(ev.leaf_hash, withdrawal_root).await {
             Ok(p) => p,
             Err(e) => return Ok(Self::classify_witness_wait(e, attempts, Some(withdrawal_root))),
@@ -347,7 +354,8 @@ impl Handler {
             Ok(SubmitOutcome::Submitted(tx)) => {
                 Ok(ChallengeState::Submitted { tx, attempts, root: withdrawal_root })
             }
-            // Provably never broadcast ⇒ release the gate and retry next tick (the ONLY safe retry).
+            // Provably never broadcast ⇒ release the gate and retry next tick (the ONLY safe
+            // retry).
             Err(SenderError::SafeToRetryPreBroadcast) => {
                 gate.release(ev.challenge_id);
                 Ok(ChallengeState::Ready { attempts })
@@ -357,9 +365,13 @@ impl Handler {
                 self.on_confirmed_revert(ev, attempts, withdrawal_root, gate).await
             }
             // Unknown outcome ⇒ hold the gate and reconcile; never infer not-broadcast.
-            Err(SenderError::UnknownBroadcastOutcome { tx_hash }) => Ok(
-                ChallengeState::ReconcileUnknown { tx_hash, attempts, root: Some(withdrawal_root) },
-            ),
+            Err(SenderError::UnknownBroadcastOutcome { tx_hash }) => {
+                Ok(ChallengeState::ReconcileUnknown {
+                    tx_hash,
+                    attempts,
+                    root: Some(withdrawal_root),
+                })
+            }
         }
     }
 
@@ -399,8 +411,8 @@ impl Handler {
     }
 
     /// Reconcile an unknown broadcast outcome. The gate is held by `ev` (R5-1) and released only on
-    /// a confirmed terminal outcome. With no `tx_hash` and still open, keep holding + polling; never
-    /// resend, never infer "not broadcast".
+    /// a confirmed terminal outcome. With no `tx_hash` and still open, keep holding + polling;
+    /// never resend, never infer "not broadcast".
     async fn reconcile_unknown(
         &self,
         ev: &ChallengeOpened,
@@ -451,8 +463,8 @@ impl Handler {
     /// Handle a confirmed revert (from a receipt or a `ConfirmedRejection`): the reverted tx is no
     /// longer in flight, so release the gate; then decide a bounded, counted resend. A resend is
     /// attempted only if within `max_resend` AND the latest root changed (resending the same root
-    /// would revert again). The incremented counter is carried into `RetryableRevert` (in-state), so
-    /// a witness-builder lag on the next tick cannot reset it.
+    /// would revert again). The incremented counter is carried into `RetryableRevert` (in-state),
+    /// so a witness-builder lag on the next tick cannot reset it.
     async fn on_confirmed_revert(
         &self,
         ev: &ChallengeOpened,
@@ -526,7 +538,14 @@ mod tests {
     }
 
     fn ev_for(leaf: B256) -> ChallengeOpened {
-        ChallengeOpened::new(CHAIN_ID, Address::repeat_byte(0x01), B256::repeat_byte(0x02), 0, leaf, 10)
+        ChallengeOpened::new(
+            CHAIN_ID,
+            Address::repeat_byte(0x01),
+            B256::repeat_byte(0x02),
+            0,
+            leaf,
+            10,
+        )
     }
 
     /// A scriptable witness whose record height, proof result, and a one-shot proof error are all
@@ -597,11 +616,15 @@ mod tests {
         deadline: u64,
         chain_ts: u64,
         checkpoint_height: u64,
-    ) -> (Arc<MockChallengeContract>, Arc<MockWitness>, Arc<MockRootManager>, ChallengeOpened, B256) {
+    ) -> (Arc<MockChallengeContract>, Arc<MockWitness>, Arc<MockRootManager>, ChallengeOpened, B256)
+    {
         let (_rec, proof, leaf, root) = valid_proof(0x42);
         let cc = Arc::new(MockChallengeContract::new());
         let ev = ev_for(leaf);
-        cc.set_status(ev.challenge_id, ChallengeStatus { open: true, deadline, chain_timestamp: chain_ts });
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline, chain_timestamp: chain_ts },
+        );
         let witness = Arc::new(MockWitness::ok(proof, 10));
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(checkpoint_height, root);
@@ -627,7 +650,10 @@ mod tests {
         // Confirmation requires a successful receipt AND a resolved on-chain status.
         cc.mark_resolved_in_our_favor(ev.challenge_id);
         h.drive(&ev, &mut state, &gate).await.unwrap();
-        assert!(matches!(state, ChallengeState::Proved(_)), "confirmed only after receipt + status");
+        assert!(
+            matches!(state, ChallengeState::Proved(_)),
+            "confirmed only after receipt + status"
+        );
         assert_eq!(gate.holder(), None, "gate released on Proved");
     }
 
@@ -638,9 +664,13 @@ mod tests {
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
         gate.try_acquire(ev.challenge_id);
-        let mut state = ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
+        let mut state =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
         h.drive(&ev, &mut state, &gate).await.unwrap();
-        assert!(matches!(state, ChallengeState::Submitted { .. }), "pending ⇒ reconcile, not resend");
+        assert!(
+            matches!(state, ChallengeState::Submitted { .. }),
+            "pending ⇒ reconcile, not resend"
+        );
         assert!(cc.prove_calls().is_empty(), "never resend on a pending receipt");
     }
 
@@ -654,7 +684,10 @@ mod tests {
         let mut state = ChallengeState::Discovered;
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
-            matches!(state, ChallengeState::WaitingWitness { reason: WaitReason::RootBehindRecord, .. }),
+            matches!(
+                state,
+                ChallengeState::WaitingWitness { reason: WaitReason::RootBehindRecord, .. }
+            ),
             "checkpoint behind record ⇒ RootBehindRecord wait, got {state:?}"
         );
         assert_eq!(witness.proof_calls(), 0, "no proof requested while checkpoint behind record");
@@ -676,7 +709,10 @@ mod tests {
         let mut state = ChallengeState::Discovered;
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
-            matches!(state, ChallengeState::WaitingWitness { reason: WaitReason::RecordNotInCheckpoint, .. }),
+            matches!(
+                state,
+                ChallengeState::WaitingWitness { reason: WaitReason::RecordNotInCheckpoint, .. }
+            ),
             "11005 = wait-within-deadline, got {state:?}"
         );
         assert!(!state.is_terminal());
@@ -698,7 +734,10 @@ mod tests {
     #[tokio::test]
     async fn unknown_broadcast_outcome_holds_gate_no_resend_without_txhash() {
         let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
-        cc.set_sender_error(ev.challenge_id, SenderError::UnknownBroadcastOutcome { tx_hash: None });
+        cc.set_sender_error(
+            ev.challenge_id,
+            SenderError::UnknownBroadcastOutcome { tx_hash: None },
+        );
         cc.keep_open(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -708,7 +747,11 @@ mod tests {
         assert_eq!(gate.holder(), Some(ev.challenge_id), "unknown outcome HOLDS the gate");
         let before = cc.prove_calls().len();
         h.drive(&ev, &mut state, &gate).await.unwrap(); // still open, no tx hash ⇒ no resend
-        assert_eq!(cc.prove_calls().len(), before, "no resend without a confirmed-safe classification");
+        assert_eq!(
+            cc.prove_calls().len(),
+            before,
+            "no resend without a confirmed-safe classification"
+        );
         assert_eq!(gate.holder(), Some(ev.challenge_id), "gate still held while reconciling");
     }
 
@@ -726,7 +769,11 @@ mod tests {
 
     /// A valid count==2 proof for the challenged leaf `leaf` under a root that varies with `filler`
     /// (so the SAME leaf is provable under a changing root — the root-staleness resend path).
-    fn proof_for(record: &WithdrawRecord, leaf: B256, filler: u8) -> (HistoricalInclusionProof, B256) {
+    fn proof_for(
+        record: &WithdrawRecord,
+        leaf: B256,
+        filler: u8,
+    ) -> (HistoricalInclusionProof, B256) {
         let ((sib0, idx0), _sib1, root) =
             crate::tz::withdraw::tree_adapter::two_leaf_withdrawal_fixture(
                 leaf,
@@ -752,7 +799,10 @@ mod tests {
         let (p0, root0) = proof_for(&record, leaf, 0xF0);
         let cc = Arc::new(MockChallengeContract::new());
         let ev = ev_for(leaf);
-        cc.set_status(ev.challenge_id, ChallengeStatus { open: true, deadline: 100_000, chain_timestamp: 0 });
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline: 100_000, chain_timestamp: 0 },
+        );
         cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Reverted);
         cc.keep_open(ev.challenge_id);
         let witness = Arc::new(MockWitness::ok(p0, 10));
@@ -763,10 +813,11 @@ mod tests {
 
         // Start Submitted at attempts 0 against root0; the gate is held by this challenge.
         gate.try_acquire(ev.challenge_id);
-        let mut state = ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root: root0 };
+        let mut state =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root: root0 };
 
-        // Each confirmed revert with a changed root increments attempts; a WB-lag between the revert
-        // and the re-broadcast retains the counter (cannot reset it).
+        // Each confirmed revert with a changed root increments attempts; a WB-lag between the
+        // revert and the re-broadcast retains the counter (cannot reset it).
         for i in 1..=3u8 {
             let (next_proof, next_root) = proof_for(&record, leaf, 0xF0 + i);
             rm.set_latest(20 + i as u64, next_root);
@@ -794,14 +845,20 @@ mod tests {
 
         // A 4th confirmed revert would exceed max_resend=3 ⇒ terminal, gate released.
         h.drive(&ev, &mut state, &gate).await.unwrap();
-        assert!(matches!(state, ChallengeState::PermanentFailure), "capped at max_resend, got {state:?}");
+        assert!(
+            matches!(state, ChallengeState::PermanentFailure),
+            "capped at max_resend, got {state:?}"
+        );
         assert_eq!(gate.holder(), None, "gate released on the terminal cap");
     }
 
     #[tokio::test]
     async fn closed_challenge_becomes_closed_no_tx() {
         let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
-        cc.set_status(ev.challenge_id, ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 });
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
+        );
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
         let mut state = ChallengeState::Discovered;
@@ -844,7 +901,10 @@ mod tests {
         let (_rec, other_proof, _other_leaf, other_root) = valid_proof(0x11);
         let cc = Arc::new(MockChallengeContract::new());
         let ev = ev_for(record_leaf_hash(&valid_record(0x42)).unwrap()); // challenge for leaf 0x42
-        cc.set_status(ev.challenge_id, ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 });
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
+        );
         let witness = Arc::new(MockWitness::ok(other_proof, 10));
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, other_root);
@@ -861,7 +921,10 @@ mod tests {
         let (_rec, proof, leaf, _root) = valid_proof(0x42);
         let cc = Arc::new(MockChallengeContract::new());
         let ev = ev_for(leaf);
-        cc.set_status(ev.challenge_id, ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 });
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
+        );
         let witness = Arc::new(MockWitness::ok(proof, 10));
         let rm = Arc::new(MockRootManager::new()); // never set
         let h = handler_with(cc.clone(), witness, rm, 3);

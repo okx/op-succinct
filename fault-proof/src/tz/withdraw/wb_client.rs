@@ -178,12 +178,18 @@ impl WbClient {
                 CODE_STORE_CORRUPT,
                 CODE_ROOT_NOT_FOUND,
             ],
-            WbEndpoint::Checkpoint | WbEndpoint::Boundary => {
-                &[CODE_INVALID_REQUEST, CODE_CHECKPOINT_NOT_FOUND, CODE_NOT_READY, CODE_STORE_CORRUPT]
-            }
-            WbEndpoint::Record => {
-                &[CODE_INVALID_REQUEST, CODE_WITHDRAWAL_NOT_FOUND, CODE_NOT_READY, CODE_STORE_CORRUPT]
-            }
+            WbEndpoint::Checkpoint | WbEndpoint::Boundary => &[
+                CODE_INVALID_REQUEST,
+                CODE_CHECKPOINT_NOT_FOUND,
+                CODE_NOT_READY,
+                CODE_STORE_CORRUPT,
+            ],
+            WbEndpoint::Record => &[
+                CODE_INVALID_REQUEST,
+                CODE_WITHDRAWAL_NOT_FOUND,
+                CODE_NOT_READY,
+                CODE_STORE_CORRUPT,
+            ],
         };
         if !allowed.contains(&code) {
             return WbError::Protocol;
@@ -303,8 +309,9 @@ impl WbClient {
         &self,
         height: u64,
     ) -> Result<TreeBoundaryWitness, WbError> {
-        let d: BoundaryDto =
-            self.get(WbEndpoint::Boundary, ROUTE_BOUNDARY, &[("height", height.to_string())]).await?;
+        let d: BoundaryDto = self
+            .get(WbEndpoint::Boundary, ROUTE_BOUNDARY, &[("height", height.to_string())])
+            .await?;
         if d.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(WbError::UnsupportedVersion);
         }

@@ -128,7 +128,8 @@ pub enum SubmitOutcome {
 
 /// A typed submission failure. Distinguishing these is required so the handler never blind-resends
 /// or blanket-fails: only `SafeToRetryPreBroadcast` is a confirmed-safe retry, and
-/// `UnknownBroadcastOutcome` must hold the in-flight gate and reconcile (never infer not-broadcast).
+/// `UnknownBroadcastOutcome` must hold the in-flight gate and reconcile (never infer
+/// not-broadcast).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum SenderError {
     /// The submission was confirmed rejected on-chain (e.g. a reverted call). Handled via the
@@ -219,10 +220,8 @@ impl MockChallengeContract {
     /// Inject an already-built opened challenge and default its status to open (by its id).
     pub fn inject_opened(&self, ev: ChallengeOpened, deadline: u64) {
         let mut s = self.inner.lock().unwrap();
-        s.status.insert(
-            ev.challenge_id,
-            ChallengeStatus { open: true, deadline, chain_timestamp: 0 },
-        );
+        s.status
+            .insert(ev.challenge_id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
         s.opened.push(ev);
     }
 
@@ -238,7 +237,8 @@ impl MockChallengeContract {
         block_number: u64,
         deadline: u64,
     ) -> ChallengeId {
-        let ev = ChallengeOpened::new(chain_id, contract, tx_hash, log_index, leaf_hash, block_number);
+        let ev =
+            ChallengeOpened::new(chain_id, contract, tx_hash, log_index, leaf_hash, block_number);
         let id = ev.challenge_id;
         self.inject_opened(ev, deadline);
         id
@@ -321,10 +321,11 @@ impl ChallengeReader for MockChallengeContract {
         if s.fail_status.contains(&id) {
             anyhow::bail!("mock get_challenge transient failure (scripted until cleared)");
         }
-        Ok(s.status
-            .get(&id)
-            .copied()
-            .unwrap_or(ChallengeStatus { open: false, deadline: 0, chain_timestamp: 0 }))
+        Ok(s.status.get(&id).copied().unwrap_or(ChallengeStatus {
+            open: false,
+            deadline: 0,
+            chain_timestamp: 0,
+        }))
     }
 }
 
@@ -397,8 +398,24 @@ mod tests {
         let m = MockChallengeContract::new();
         let leaf = B256::repeat_byte(0xAB);
         // Two opens for the same leaf at different blocks ⇒ distinct ids; window filters by block.
-        let a = m.inject_opened_from(196, Address::repeat_byte(1), B256::repeat_byte(0x10), 0, leaf, 100, 5_000);
-        let b = m.inject_opened_from(196, Address::repeat_byte(1), B256::repeat_byte(0x11), 0, leaf, 250, 5_000);
+        let a = m.inject_opened_from(
+            196,
+            Address::repeat_byte(1),
+            B256::repeat_byte(0x10),
+            0,
+            leaf,
+            100,
+            5_000,
+        );
+        let b = m.inject_opened_from(
+            196,
+            Address::repeat_byte(1),
+            B256::repeat_byte(0x11),
+            0,
+            leaf,
+            250,
+            5_000,
+        );
         assert_ne!(a, b);
         let got = m.watch_opened(ScanWindow { from_block: 0, to_block: 200 }).await.unwrap();
         assert_eq!(got.len(), 1, "only block 100 is within [0,200]");
@@ -411,7 +428,15 @@ mod tests {
     #[tokio::test]
     async fn sender_outcomes_are_typed() {
         let m = MockChallengeContract::new();
-        let id = m.inject_opened_from(196, Address::repeat_byte(1), B256::repeat_byte(0x10), 0, B256::repeat_byte(0xAB), 10, 5_000);
+        let id = m.inject_opened_from(
+            196,
+            Address::repeat_byte(1),
+            B256::repeat_byte(0x10),
+            0,
+            B256::repeat_byte(0xAB),
+            10,
+            5_000,
+        );
         m.set_sender_error(id, SenderError::SafeToRetryPreBroadcast);
         assert!(matches!(
             m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
@@ -436,7 +461,10 @@ mod tests {
             10,
             5_000,
         );
-        mock.set_status(id, ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 4_200 });
+        mock.set_status(
+            id,
+            ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 4_200 },
+        );
         assert_eq!(mock.get_challenge(id).await.unwrap().chain_timestamp, 4_200);
     }
 
@@ -458,7 +486,13 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            ProveCall { challenge_id: id, checkpoint_height: 20, leaf_index: 3, count: 5, siblings: sibs }
+            ProveCall {
+                challenge_id: id,
+                checkpoint_height: 20,
+                leaf_index: 3,
+                count: 5,
+                siblings: sibs
+            }
         );
     }
 

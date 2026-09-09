@@ -22,9 +22,10 @@ sol! {
 /// Source of the current latest RootManager checkpoint.
 #[async_trait]
 pub trait LatestRootSource: Send + Sync {
-    /// The current latest RootManager checkpoint `(checkpoint_height, withdrawal_root)`, read at the
-    /// L2 current/latest state — NOT a finalized/lagging view. A prove transaction is verified
-    /// against the contract's then-current root, so a finalized root would be stale and rejected.
+    /// The current latest RootManager checkpoint `(checkpoint_height, withdrawal_root)`, read at
+    /// the L2 current/latest state — NOT a finalized/lagging view. A prove transaction is
+    /// verified against the contract's then-current root, so a finalized root would be stale
+    /// and rejected.
     async fn latest_root(&self) -> Result<(u64, B256)>;
 }
 

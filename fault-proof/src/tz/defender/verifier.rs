@@ -52,10 +52,10 @@ pub fn verify(
     chain_id: u64,
 ) -> Result<(), WbError> {
     // Bind the proof to the exact challenged leaf, the exact requested root, and our chain.
-    if proof.record_hash != requested_leaf
-        || proof.leaf_hash != requested_leaf
-        || proof.withdrawal_root != requested_root
-        || proof.record.chain_id != chain_id
+    if proof.record_hash != requested_leaf ||
+        proof.leaf_hash != requested_leaf ||
+        proof.withdrawal_root != requested_root ||
+        proof.record.chain_id != chain_id
     {
         return Err(WbError::RootMismatch);
     }
@@ -214,7 +214,10 @@ mod tests {
         let (proof_b, root_b) = valid_bound_proof(&valid_record(196, 0x0B));
         let leaf_a = record_leaf_hash(&valid_record(196, 0x0A)).unwrap();
         assert_ne!(leaf_a, proof_b.leaf_hash);
-        assert!(verify(&proof_b, leaf_a, root_b, 196).is_err(), "leaf binding must reject proof of B");
+        assert!(
+            verify(&proof_b, leaf_a, root_b, 196).is_err(),
+            "leaf binding must reject proof of B"
+        );
     }
 
     #[test]
@@ -229,7 +232,8 @@ mod tests {
 
     #[test]
     fn malformed_record_fails_closed_on_recompute() {
-        // Empty token arrays are not a valid canonical Erc20 record ⇒ record_leaf_hash fails closed.
+        // Empty token arrays are not a valid canonical Erc20 record ⇒ record_leaf_hash fails
+        // closed.
         let rec = WithdrawRecord {
             version: 1,
             chain_id: 196,
