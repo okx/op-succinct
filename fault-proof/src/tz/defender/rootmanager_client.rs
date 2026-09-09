@@ -59,6 +59,9 @@ impl<P: Provider + Clone + Send + Sync + 'static> LatestRootSource for RootManag
 #[derive(Default)]
 pub struct MockRootManager {
     latest: std::sync::Mutex<Option<(u64, B256)>>,
+    /// When `true`, the NEXT `latest_root` call returns a transient error (then resets), so tests
+    /// can simulate a RootManager RPC blip without disturbing the stored latest root.
+    fail_next: std::sync::Mutex<bool>,
 }
 
 impl MockRootManager {
@@ -70,11 +73,20 @@ impl MockRootManager {
     pub fn set_latest(&self, height: u64, withdrawal_root: B256) {
         *self.latest.lock().unwrap() = Some((height, withdrawal_root));
     }
+
+    /// Make the next `latest_root` call fail with a transient error, then resume returning the
+    /// stored latest root. Models a momentary RootManager RPC failure.
+    pub fn fail_latest_once(&self) {
+        *self.fail_next.lock().unwrap() = true;
+    }
 }
 
 #[async_trait]
 impl LatestRootSource for MockRootManager {
     async fn latest_root(&self) -> Result<(u64, B256)> {
+        if std::mem::replace(&mut *self.fail_next.lock().unwrap(), false) {
+            anyhow::bail!("transient RootManager RPC failure (scripted, one-shot)");
+        }
         self.latest.lock().unwrap().ok_or_else(|| anyhow::anyhow!("no latest root set"))
     }
 }

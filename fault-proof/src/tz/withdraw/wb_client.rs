@@ -140,7 +140,11 @@ impl WbClient {
                 // A 2xx that still carries a business error code is a protocol inconsistency.
                 return Err(Self::classify(endpoint, status, env.code, &env.message));
             }
-            return env.data.ok_or(WbError::CheckpointNotFound);
+            // A success envelope (`code == 0`) MUST carry `data`. A `2xx + code=0 + data=null` is a
+            // malformed success envelope, not a legitimate business "not found" — the WB signals a
+            // real not-found via a numeric error code on a non-2xx status. Fail closed rather than
+            // masquerading it as `CheckpointNotFound` (which would silently misroute the caller).
+            return env.data.ok_or(WbError::Protocol);
         }
         // Non-success status: parse the unified `{code, message, data}` envelope BEFORE the HTTP
         // status (never blanket-map "any 4xx" to InvalidRequest); then classify by the joint tuple.
@@ -210,29 +214,33 @@ impl WbClient {
         if status.as_u16() != expected_status {
             return WbError::Protocol;
         }
-        // 4. If the message begins with a recognizable variant token, it must name THIS code (a
-        //    token naming a different code is a conflict). An unrecognized/empty message is not.
-        if let Some(prefix_code) = Self::code_for_message_prefix(message) {
-            if prefix_code != code {
-                return WbError::Protocol;
-            }
+        // 4. The message MUST begin with the exact variant token this code implies. An unknown,
+        //    empty, or mismatched prefix is NOT a legitimate WB error for this code (a well-formed
+        //    WB error serializes `message = "{kind}: {detail}"`), so it fails closed — never a
+        //    normal wait/retry. This closes the gap where an empty or arbitrary prefix (e.g.
+        //    `code=11009` with message `"garbage"`) was previously waved through as `RootNotFound`.
+        let actual_prefix = message.split([':', ' ']).next().unwrap_or("");
+        if actual_prefix != Self::expected_message_prefix(code) {
+            return WbError::Protocol;
         }
         err
     }
 
-    /// If a message begins with a known witness-builder error-kind token, return the numeric code
-    /// that token implies (used only to detect code↔prefix conflicts).
-    fn code_for_message_prefix(message: &str) -> Option<i32> {
-        match message.split([':', ' ']).next().unwrap_or("") {
-            "InvalidRequest" => Some(CODE_INVALID_REQUEST),
-            "ProtocolNotAccepted" => Some(CODE_PROTOCOL_NOT_ACCEPTED),
-            "CheckpointNotFound" => Some(CODE_CHECKPOINT_NOT_FOUND),
-            "WithdrawalNotFound" => Some(CODE_WITHDRAWAL_NOT_FOUND),
-            "RecordNotInCheckpoint" => Some(CODE_RECORD_NOT_IN_CHECKPOINT),
-            "NotReady" => Some(CODE_NOT_READY),
-            "WitnessStoreCorrupt" => Some(CODE_STORE_CORRUPT),
-            "RootNotFound" => Some(CODE_ROOT_NOT_FOUND),
-            _ => None,
+    /// The stable message-kind prefix the witness builder serializes for a given numeric code
+    /// (`message = "{kind}: {detail}"`). A response whose message prefix does not strictly match
+    /// this is a protocol violation. Codes never reachable here (rejected earlier by the
+    /// allowed-set / status / mapping gates) map to `""`, which no non-empty prefix can equal.
+    fn expected_message_prefix(code: i32) -> &'static str {
+        match code {
+            CODE_INVALID_REQUEST => "InvalidRequest",
+            CODE_PROTOCOL_NOT_ACCEPTED => "ProtocolNotAccepted",
+            CODE_CHECKPOINT_NOT_FOUND => "CheckpointNotFound",
+            CODE_WITHDRAWAL_NOT_FOUND => "WithdrawalNotFound",
+            CODE_RECORD_NOT_IN_CHECKPOINT => "RecordNotInCheckpoint",
+            CODE_NOT_READY => "NotReady",
+            CODE_STORE_CORRUPT => "WitnessStoreCorrupt",
+            CODE_ROOT_NOT_FOUND => "RootNotFound",
+            _ => "",
         }
     }
 
@@ -967,6 +975,103 @@ mod tests {
             .await;
         assert!(matches!(
             client(&s2, 196).get_canonical_record(B256::repeat_byte(0x02)).await.unwrap_err(),
+            WbError::Protocol
+        ));
+    }
+
+    /// The message prefix is a STRICT joint discriminant: every code has an expected prefix, and an
+    /// accurate prefix is required. An unknown, empty, or mismatched prefix fails closed — it is
+    /// never waved through on HTTP status + code alone. Covers the four cases: accurate, unknown,
+    /// empty, and prefix/code conflict.
+    #[tokio::test]
+    async fn wb_prefix_must_strictly_match_code_else_fail_closed() {
+        let leaf = B256::repeat_byte(0x01);
+        let root = B256::repeat_byte(0x33);
+
+        // (accurate) 404 + 11009 + "RootNotFound: …" ⇒ the legitimate index-lag RootNotFound wait.
+        let s_ok = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "RootNotFound: 0x33", "data": null})))
+            .mount(&s_ok)
+            .await;
+        assert!(matches!(
+            client(&s_ok, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::RootNotFound
+        ));
+
+        // (unknown prefix) 404 + 11009 + "garbage" ⇒ the reviewer's counterexample: previously
+        // waved through as a retryable RootNotFound, now Protocol fail-closed.
+        let s_unknown = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "garbage", "data": null})))
+            .mount(&s_unknown)
+            .await;
+        let e_unknown = client(&s_unknown, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(matches!(e_unknown, WbError::Protocol), "unknown prefix must fail closed");
+        assert!(!e_unknown.is_retryable());
+
+        // (empty prefix) 404 + 11009 + "" ⇒ an empty message is not a legitimate WB error envelope
+        // for this code ⇒ Protocol fail-closed (not RootNotFound).
+        let s_empty = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "", "data": null})))
+            .mount(&s_empty)
+            .await;
+        assert!(matches!(
+            client(&s_empty, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::Protocol
+        ));
+
+        // (prefix/code conflict) 404 + 11009 carrying a `NotReady:` prefix ⇒ Protocol fail-closed.
+        let s_conflict = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "NotReady: mislabelled", "data": null})))
+            .mount(&s_conflict)
+            .await;
+        assert!(matches!(
+            client(&s_conflict, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::Protocol
+        ));
+    }
+
+    /// A `2xx + code=0 + data=null` is a malformed success envelope, not a legitimate not-found
+    /// business error. It must fail closed as `Protocol` on EVERY endpoint (proof and record),
+    /// never be masqueraded as `CheckpointNotFound`.
+    #[tokio::test]
+    async fn wb_malformed_success_envelope_fails_closed() {
+        // proof endpoint: 200 + {code:0, data:null}.
+        let s_proof = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(
+                {"code": 0, "message": "ok", "data": null})))
+            .mount(&s_proof)
+            .await;
+        let e_proof = client(&s_proof, 196)
+            .get_inclusion_proof(B256::repeat_byte(0x01), B256::repeat_byte(0x33))
+            .await
+            .unwrap_err();
+        assert!(matches!(e_proof, WbError::Protocol), "proof 200+code0+data:null ⇒ Protocol");
+        assert!(!e_proof.is_retryable());
+
+        // record endpoint: 200 + {code:0, data:null}.
+        let s_record = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/{:#x}", B256::repeat_byte(0x01))))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(
+                {"code": 0, "message": "ok", "data": null})))
+            .mount(&s_record)
+            .await;
+        assert!(matches!(
+            client(&s_record, 196).get_canonical_record(B256::repeat_byte(0x01)).await.unwrap_err(),
             WbError::Protocol
         ));
     }

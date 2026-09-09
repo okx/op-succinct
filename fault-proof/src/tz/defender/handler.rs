@@ -90,9 +90,12 @@ pub enum ChallengeState {
     /// the handler reconciles via status + receipt; with no `tx_hash` and still open it keeps
     /// holding the gate and polling — never inferring "not broadcast", never resending.
     ReconcileUnknown { tx_hash: Option<TxHash>, attempts: u32, root: Option<B256> },
-    /// A confirmed revert whose latest root has changed, eligible for a bounded resend on the next
-    /// tick; `attempts` already reflects the incremented resend count.
-    RetryableRevert { attempts: u32 },
+    /// A confirmed revert eligible for a bounded resend on a later tick; `attempts` already
+    /// reflects the incremented resend count and `prev_root` is the withdrawal root that
+    /// reverted. Both are persisted here BEFORE the next tick queries the latest root, so a
+    /// transient RootManager/WB failure during that query preserves the retry context (no
+    /// counter reset) and never resends the same root.
+    RetryableRevert { attempts: u32, prev_root: B256 },
     /// Receipt success plus an on-chain status confirming our resolution.
     Proved(TxHash),
     /// The challenge is no longer open (resolved by another responder).
@@ -121,7 +124,7 @@ impl ChallengeState {
         match self {
             ChallengeState::WaitingWitness { attempts, .. } |
             ChallengeState::Ready { attempts } |
-            ChallengeState::RetryableRevert { attempts } => *attempts,
+            ChallengeState::RetryableRevert { attempts, .. } => *attempts,
             _ => 0,
         }
     }
@@ -280,6 +283,24 @@ impl Handler {
             *state = ChallengeState::Expired;
             return Ok(());
         }
+
+        // A confirmed revert eligible for a bounded resend. The incremented `attempts` and the
+        // reverted `prev_root` were persisted into this state on the tick that observed the revert,
+        // BEFORE this query. So a transient RootManager failure here propagates as an error with
+        // the state left untouched — the retry context (counter + reverted root) survives
+        // and the same root is never resent. A resend proceeds only once the latest root
+        // has actually changed; an unchanged root means resending the same proof would
+        // revert again, which is terminal.
+        if let ChallengeState::RetryableRevert { attempts, prev_root } = state.clone() {
+            let (_checkpoint_height, withdrawal_root) = self.root_manager.latest_root().await?;
+            if withdrawal_root == prev_root {
+                *state = ChallengeState::PermanentFailure;
+                return Ok(());
+            }
+            *state = self.prepare_and_submit(ev, attempts, gate).await?;
+            return Ok(());
+        }
+
         let attempts = state.attempts();
         *state = self.prepare_and_submit(ev, attempts, gate).await?;
         Ok(())
@@ -417,14 +438,23 @@ impl Handler {
                 }
             }
             TxStatus::Pending => {
-                // A not-yet-mined receipt must still honour the L2-time deadline, or an expired tx
-                // would hold the global in-flight gate forever.
+                // A not-yet-mined receipt is NON-TERMINAL: the broadcast tx may still be in the
+                // mempool or awaiting inclusion. Releasing the global in-flight gate now — merely
+                // because the challenge deadline passed — would let another challenge broadcast a
+                // second, concurrent tx from the same signer while this one is still live and
+                // untracked. So keep holding the gate and keep reconciling; a reached deadline is
+                // recorded but is NOT, on its own, grounds to release the gate. (Unblocking a
+                // genuinely stuck tx would require a verifiable cancel/replace/nonce strategy,
+                // which is out of scope here.)
                 if self.past_deadline(status) {
-                    gate.release(ev.challenge_id);
-                    Ok(ChallengeState::Expired)
-                } else {
-                    Ok(ChallengeState::Submitted { tx, attempts, root })
+                    tracing::warn!(
+                        challenge_id = ?ev.challenge_id,
+                        "prove tx still pending past the L2-time deadline; holding the in-flight \
+                         gate and continuing to reconcile (a non-terminal receipt is not treated \
+                         as terminal)"
+                    );
                 }
+                Ok(ChallengeState::Submitted { tx, attempts, root })
             }
             TxStatus::Reverted => {
                 if !status.open {
@@ -472,14 +502,18 @@ impl Handler {
                     }
                 }
                 TxStatus::Pending => {
-                    // Honour the L2-time deadline even while the receipt is unknown, so an expired
-                    // in-flight tx cannot hold the global gate indefinitely.
+                    // Non-terminal receipt for a tx that may have broadcast: keep holding the gate
+                    // and keep reconciling. A reached deadline is recorded but does NOT release the
+                    // gate, because the tx may still be live in the mempool and releasing it would
+                    // risk a second, concurrent broadcast.
                     if self.past_deadline(status) {
-                        gate.release(ev.challenge_id);
-                        Ok(ChallengeState::Expired)
-                    } else {
-                        Ok(ChallengeState::ReconcileUnknown { tx_hash, attempts, root })
+                        tracing::warn!(
+                            challenge_id = ?ev.challenge_id,
+                            "unknown-outcome prove tx still pending past the L2-time deadline; \
+                             holding the in-flight gate and continuing to reconcile"
+                        );
                     }
+                    Ok(ChallengeState::ReconcileUnknown { tx_hash, attempts, root })
                 }
                 TxStatus::Reverted => {
                     if !status.open {
@@ -507,10 +541,12 @@ impl Handler {
     }
 
     /// Handle a confirmed revert (from a receipt or a `ConfirmedRejection`): the reverted tx is no
-    /// longer in flight, so release the gate; then decide a bounded, counted resend. A resend is
-    /// attempted only if within `max_resend` AND the latest root changed (resending the same root
-    /// would revert again). The incremented counter is carried into `RetryableRevert` (in-state),
-    /// so a witness-builder lag on the next tick cannot reset it.
+    /// longer in flight, so release the gate; then, if still within `max_resend`, persist the
+    /// INCREMENTED counter and the reverted root into `RetryableRevert` (in-state). The latest-root
+    /// read and the "root must have changed to resend" decision happen on the NEXT tick (in
+    /// [`Handler::drive`]) from that persisted state, so a transient RootManager/WB failure during
+    /// that read preserves the retry context (no counter reset) and never resends the same root. A
+    /// witness-builder lag after the revert likewise cannot reset the counter.
     async fn on_confirmed_revert(
         &self,
         ev: &ChallengeOpened,
@@ -518,17 +554,18 @@ impl Handler {
         prev_root: B256,
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
+        // The reverted tx is terminal (a confirmed on-chain revert / confirmed rejection), so it is
+        // no longer in flight: release the gate.
         gate.release(ev.challenge_id);
         let next_attempt = attempts + 1;
         if next_attempt > self.max_resend {
             return Ok(ChallengeState::PermanentFailure);
         }
-        let (_checkpoint_height, withdrawal_root) = self.root_manager.latest_root().await?;
-        if withdrawal_root == prev_root {
-            // The bound root did not change; resending the same proof would revert again.
-            return Ok(ChallengeState::PermanentFailure);
-        }
-        Ok(ChallengeState::RetryableRevert { attempts: next_attempt })
+        // Persist the confirmed revert, the incremented attempt count, and the reverted root BEFORE
+        // any fallible RootManager/WB query. The latest root is read next tick from this state; if
+        // that read fails transiently the context is retained (counter not reset, same root not
+        // resent). A resend proceeds only once the latest root has changed.
+        Ok(ChallengeState::RetryableRevert { attempts: next_attempt, prev_root })
     }
 }
 
@@ -881,7 +918,7 @@ mod tests {
             // Confirmed revert + changed root ⇒ RetryableRevert{attempts=i}.
             h.drive(&ev, &mut state, &gate).await.unwrap();
             assert!(
-                matches!(state, ChallengeState::RetryableRevert { attempts } if attempts == i as u32),
+                matches!(state, ChallengeState::RetryableRevert { attempts, .. } if attempts == i as u32),
                 "revert {i} ⇒ RetryableRevert{{attempts={i}}}, got {state:?}"
             );
             // Interpose a WB lag on the resend fetch: it must retain the counter.
@@ -1073,12 +1110,17 @@ mod tests {
         assert_eq!(gate.holder(), None);
     }
 
-    // ── Expired-tx gate release: every non-terminal reconciliation branch must honour the L2-time
-    //    deadline so an expired in-flight tx cannot hold the global gate forever ──
+    // ── Terminal-receipt gate release honours the L2-time deadline; a NON-terminal (Pending)
+    //    receipt does NOT — a pending tx may still be in the mempool, so it keeps holding the gate
+    //    and is kept tracked rather than being treated as terminal on the deadline alone. ──
 
     #[tokio::test]
-    async fn submitted_pending_past_deadline_expires_and_releases_gate() {
-        // chain_ts + safety >= deadline while the receipt is still Pending ⇒ Expired + gate freed.
+    async fn submitted_pending_past_deadline_holds_gate_and_keeps_tracking() {
+        // The receipt is still Pending while chain_ts + safety >= deadline. The tx may still be in
+        // the mempool, so the challenge must STAY Submitted (kept tracked) and KEEP holding the
+        // in-flight gate — it must NOT be treated as Expired / released on the deadline alone
+        // (releasing would let a second, concurrent tx broadcast against the untracked pending
+        // one).
         let (cc, witness, rm, ev, root) = setup_ready(1_000, 999, 20);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -1087,10 +1129,90 @@ mod tests {
             ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
-            matches!(state, ChallengeState::Expired),
-            "pending past deadline ⇒ Expired, got {state:?}"
+            matches!(state, ChallengeState::Submitted { .. }),
+            "pending past deadline stays Submitted (a non-terminal receipt is not terminal), got {state:?}"
         );
-        assert_eq!(gate.holder(), None, "expired tx must not keep holding the gate");
+        assert_eq!(
+            gate.holder(),
+            Some(ev.challenge_id),
+            "the pending tx keeps holding the in-flight gate"
+        );
+        assert!(cc.prove_calls().is_empty(), "no new broadcast while reconciling a pending tx");
+
+        // Once the receipt reaches a terminal state (success + our on-chain resolution), the gate
+        // is released normally — the pending hold is not permanent, it just waits for a
+        // real outcome.
+        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.mark_resolved_in_our_favor(ev.challenge_id);
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Proved(_)),
+            "a terminal receipt resolves the challenge, got {state:?}"
+        );
+        assert_eq!(gate.holder(), None, "gate released on the terminal outcome");
+    }
+
+    #[tokio::test]
+    async fn pending_past_deadline_holds_gate_and_blocks_a_second_broadcast() {
+        // A prove tx still Pending past its deadline must not free the gate, so a DIFFERENT ready
+        // challenge cannot broadcast a second, concurrent tx while the first is still live.
+        let gate = InFlightGate::new();
+
+        // Challenge A: Submitted, receipt Pending, past its L2-time deadline ⇒ stays Submitted and
+        // keeps holding the gate.
+        let (cc_a, wit_a, rm_a, ev_a, root_a) = setup_ready(1_000, 999, 20);
+        let h_a = handler_with(cc_a.clone(), wit_a, rm_a, 3);
+        gate.try_acquire(ev_a.challenge_id);
+        let mut state_a =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root: root_a };
+        h_a.drive(&ev_a, &mut state_a, &gate).await.unwrap();
+        assert!(matches!(state_a, ChallengeState::Submitted { .. }), "A stays Submitted");
+        assert_eq!(
+            gate.holder(),
+            Some(ev_a.challenge_id),
+            "A keeps holding the gate past deadline"
+        );
+
+        // Challenge B: a distinct, fully-ready challenge sharing the same gate. It must NOT
+        // broadcast while A holds the gate ⇒ it stays Ready and issues no tx (no second
+        // concurrent broadcast).
+        let (_r2, proof_b, leaf_b, root_b) = valid_proof(0x55);
+        let cc_b = Arc::new(MockChallengeContract::new());
+        // The ChallengeId derives from (chain_id, contract, tx_hash, log_index) — NOT the leaf — so
+        // B must use a distinct tx_hash (0x03 vs A's 0x02) to be a genuinely different challenge.
+        let ev_b = ChallengeOpened::new(
+            CHAIN_ID,
+            Address::repeat_byte(0x01),
+            B256::repeat_byte(0x03),
+            0,
+            leaf_b,
+            10,
+        );
+        assert_ne!(ev_a.challenge_id, ev_b.challenge_id, "A and B are distinct challenges");
+        cc_b.set_status(
+            ev_b.challenge_id,
+            ChallengeStatus {
+                open: true,
+                deadline: 10_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
+        );
+        let wit_b = Arc::new(MockWitness::ok(proof_b, 10));
+        let rm_b = Arc::new(MockRootManager::new());
+        rm_b.set_latest(20, root_b);
+        let h_b = handler_with(cc_b.clone(), wit_b, rm_b, 3);
+        let mut state_b = ChallengeState::Discovered;
+        h_b.drive(&ev_b, &mut state_b, &gate).await.unwrap();
+        assert!(
+            matches!(state_b, ChallengeState::Ready { .. }),
+            "B blocked behind A's held gate, got {state_b:?}"
+        );
+        assert!(
+            cc_b.prove_calls().is_empty(),
+            "no second concurrent tx while A's pending tx holds the gate"
+        );
+        assert_eq!(gate.holder(), Some(ev_a.challenge_id), "the gate is still A's");
     }
 
     #[tokio::test]
@@ -1113,8 +1235,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_pending_past_deadline_expires_and_releases_gate() {
-        // Unknown broadcast outcome with a tx hash, receipt still Pending, past deadline ⇒ Expired.
+    async fn unknown_pending_past_deadline_holds_gate_and_keeps_reconciling() {
+        // Unknown broadcast outcome with a tx hash whose receipt is still Pending past the
+        // deadline: the tx may still be in the mempool, so the challenge KEEPS reconciling
+        // (stays ReconcileUnknown) and KEEPS holding the gate — it is not treated as
+        // Expired on the deadline alone.
         let (cc, witness, rm, ev, root) = setup_ready(1_000, 999, 20);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -1126,10 +1251,64 @@ mod tests {
         };
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
-            matches!(state, ChallengeState::Expired),
-            "unknown+pending past deadline ⇒ Expired, got {state:?}"
+            matches!(state, ChallengeState::ReconcileUnknown { tx_hash: Some(_), .. }),
+            "unknown+pending past deadline keeps reconciling, got {state:?}"
         );
-        assert_eq!(gate.holder(), None);
+        assert_eq!(
+            gate.holder(),
+            Some(ev.challenge_id),
+            "a pending unknown-outcome tx keeps holding the gate"
+        );
+        assert!(cc.prove_calls().is_empty(), "no broadcast while reconciling a pending unknown tx");
+    }
+
+    // ── Confirmed-rejection resend context survives a transient RootManager failure: the
+    //    incremented counter + reverted root are persisted BEFORE the fallible latest-root query,
+    // so    a transient RPC blip neither resets the counter nor resends the same root ──
+
+    #[tokio::test]
+    async fn confirmed_rejection_transient_root_failure_preserves_resend_context() {
+        let (cc, witness, rm, ev, root0) = setup_ready(100_000, 0, 20);
+        // The submit is confirmed-rejected on-chain.
+        cc.set_sender_error(ev.challenge_id, SenderError::ConfirmedRejection);
+        cc.keep_open(ev.challenge_id);
+        let h = handler_with(cc.clone(), witness, rm.clone(), 3);
+        let gate = InFlightGate::new();
+
+        // Drive 1: Discovered → prepare/submit → ConfirmedRejection. The incremented counter and
+        // the reverted root are persisted into RetryableRevert WITHOUT querying the latest
+        // root.
+        let mut state = ChallengeState::Discovered;
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::RetryableRevert { attempts: 1, prev_root } if prev_root == root0),
+            "confirmed rejection ⇒ RetryableRevert{{attempts:1, prev_root:root0}}, got {state:?}"
+        );
+        assert_eq!(gate.holder(), None, "the reverted tx released the gate");
+        assert!(cc.prove_calls().is_empty(), "a confirmed rejection records no broadcast");
+
+        // Drive 2: the RootManager RPC blips (transient). The drive surfaces the error and LEAVES
+        // THE STATE UNTOUCHED — the retry context survives (attempts stays 1, prev_root stays
+        // root0).
+        rm.fail_latest_once();
+        assert!(
+            h.drive(&ev, &mut state, &gate).await.is_err(),
+            "a transient RootManager failure surfaces as an error"
+        );
+        assert!(
+            matches!(state, ChallengeState::RetryableRevert { attempts: 1, prev_root } if prev_root == root0),
+            "transient failure must NOT reset attempts or lose the reverted root, got {state:?}"
+        );
+
+        // Drive 3: the RootManager recovers but the latest root is UNCHANGED (still root0).
+        // Resending the same root would revert again, so the challenge terminates — it
+        // never resends the same root, and the counter was never reset behind our back.
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::PermanentFailure),
+            "unchanged root after recovery ⇒ no same-root resend, terminal, got {state:?}"
+        );
+        assert!(cc.prove_calls().is_empty(), "the same reverted root is never rebroadcast");
     }
 
     // ── Lock-poison resilience: a panic while a production state lock is held must not turn every

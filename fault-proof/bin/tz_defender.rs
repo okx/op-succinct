@@ -4,9 +4,11 @@
 //! Challenger. It watches the X Layer Withdraw-challenge contract and, before each challenge's
 //! response deadline, answers with a locally-verified inclusion proof.
 //!
-//! Signer policy: production must use a remote/HSM-backed signer (never an in-memory local key).
-//! This binary builds its signer via `SignerLock::from_env`, the same env-driven path the
-//! proposer/challenger use, which enforces that policy.
+//! Signer: no transaction signer is wired in this stage. The challenge/prove ABI and its on-chain
+//! submission path are not yet delivered (the sender is the in-memory mock seam below), so the
+//! binary constructs no signer and makes NO signer-policy guarantee. When the real challenge sender
+//! adapter lands it will construct and validate its own signer; nothing here should be read as a
+//! promise that a remote/HSM signer is already enforced.
 //!
 //! Challenge-contract seam: the real X Layer challenge/prove ABI is not yet finalized, so the
 //! binary wires the in-memory `MockChallengeContract` and logs a prominent warning. When the real
@@ -36,7 +38,6 @@ use fault_proof::tz::{
     withdraw::wb_client::WbClient,
 };
 use op_succinct_host_utils::setup_logger;
-use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
@@ -88,8 +89,11 @@ async fn run() -> Result<()> {
         "tz-defender configuration loaded"
     );
 
-    // Independent signer (remote/HSM-backed, never a local in-memory key — enforced by SignerLock).
-    let _signer = SignerLock::from_env().await.context("failed to build defender signer")?;
+    // No transaction signer is constructed here: this stage sends no real prove transaction (the
+    // challenge sender is the mock seam below), so building an unused signer — which would also
+    // read shared signer env and could fall back to a local key — is deliberately omitted. The
+    // real signer is constructed and validated by the challenge sender adapter when the
+    // on-chain ABI is delivered.
 
     // Witness Builder v2 client + witness-source adapter (record/proof witness data only).
     let wb = Arc::new(WbClient::new(config.wb_endpoint.clone(), config.chain_id)?);

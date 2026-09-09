@@ -1,30 +1,17 @@
 //! Independent Defender configuration (spec §7.5).
 //!
-//! All secrets are read from the environment (KB rule: never hardcode) and redacted in `Debug`
-//! output as `***REDACTED***` (KB rule). The Defender has its OWN config and signer, separate
-//! from the Proposer / L1 Challenger.
+//! The Defender has its OWN config, separate from the Proposer / L1 Challenger. It carries NO
+//! signer secret: this stage wires no transaction signer (the challenge/prove ABI and its on-chain
+//! submission path are not yet delivered — the sender is a mock seam), so there is nothing secret
+//! to read or redact here. The real signer is constructed and validated by the challenge sender
+//! adapter when that lands. Any secret added here later MUST be read from the environment (KB rule:
+//! never hardcode) and redacted in `Debug`.
 
 use std::time::Duration;
 
 use alloy_primitives::Address;
 use anyhow::{bail, Context, Result};
 use reqwest::Url;
-
-/// A secret string that never prints its contents.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Redacted(String);
-
-impl Redacted {
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("***REDACTED***")
-    }
-}
 
 /// Independent Defender configuration.
 #[derive(Clone, Debug)]
@@ -51,8 +38,6 @@ pub struct DefenderConfig {
     pub deadline_safety_margin: Duration,
     /// LRU proof-cache capacity.
     pub cache_capacity: usize,
-    /// Signer secret (KMS resource / key ref). Redacted in Debug.
-    pub signer_secret: Redacted,
 }
 
 impl DefenderConfig {
@@ -116,7 +101,6 @@ impl DefenderConfig {
                 3600,
             )?),
             cache_capacity: opt_u64("DEFENDER_CACHE_CAPACITY", 1024)? as usize,
-            signer_secret: Redacted(req("DEFENDER_SIGNER_SECRET")?),
         };
 
         // When both the challenge response period and a conservative minimum L2 block interval are
@@ -175,7 +159,6 @@ mod tests {
         m.insert("DEFENDER_ROOT_MANAGER", format!("{:#x}", Address::repeat_byte(0x02)));
         m.insert("DEFENDER_WB_ENDPOINT", "http://wb:8545".to_string());
         m.insert("DEFENDER_TZ_CHAIN_ID", "196".to_string());
-        m.insert("DEFENDER_SIGNER_SECRET", "super-secret-kms-ref".to_string());
         m
     }
 
@@ -260,12 +243,18 @@ mod tests {
     }
 
     #[test]
-    fn debug_redacts_signer_secret() {
-        let cfg = DefenderConfig::parse_from(reader(full_env())).unwrap();
-        let dbg = format!("{cfg:?}");
-        assert!(dbg.contains("***REDACTED***"), "debug must redact: {dbg}");
-        assert!(!dbg.contains("super-secret-kms-ref"), "secret leaked: {dbg}");
-        // The value is still usable programmatically.
-        assert_eq!(cfg.signer_secret.expose(), "super-secret-kms-ref");
+    fn signer_secret_is_not_a_config_input() {
+        // The Defender config no longer parses or requires a signer secret: this stage wires no
+        // transaction signer, so a bare `DEFENDER_SIGNER_SECRET` env var is neither required
+        // (config parses without it) nor consumed. This falsifies the prior behavior where
+        // the secret was force-parsed but never used to construct a signer (and
+        // misrepresented as remote/HSM).
+        let mut m = full_env();
+        assert!(!m.contains_key("DEFENDER_SIGNER_SECRET"));
+        // Present-but-ignored: even if an operator sets it, it does not affect parsing.
+        m.insert("DEFENDER_SIGNER_SECRET", "unused".to_string());
+        assert!(DefenderConfig::parse_from(reader(m)).is_ok());
+        // Absent: parsing still succeeds (it is not a required var).
+        assert!(DefenderConfig::parse_from(reader(full_env())).is_ok());
     }
 }
