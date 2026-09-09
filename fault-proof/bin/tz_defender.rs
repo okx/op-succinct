@@ -25,9 +25,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use fault_proof::tz::{
     defender::{
-        challenge_contract::{ChallengeEventSource, MockChallengeContract},
+        challenge_contract::{ChallengeEventSource, MockChallengeContract, ScanWindow},
         config::DefenderConfig,
-        handler::Handler,
+        handler::{Handler, InFlightGate},
         rootmanager_client::RootManagerClient,
         supervisor::Supervisor,
         watcher::Watcher,
@@ -111,37 +111,61 @@ async fn run() -> Result<()> {
     );
     let challenge = Arc::new(MockChallengeContract::new());
 
-    let watcher = Watcher::new(challenge.clone(), config.finality_blocks);
+    // Global single-process in-flight gate (≤ 1 broadcast in flight, D7); does not survive restart.
+    let gate = InFlightGate::new();
+    let watcher = Watcher::new(challenge.clone());
     let handler = Handler::new(
         challenge.clone(),
         challenge.clone(),
         witness,
         root_manager,
+        config.chain_id,
         config.cache_capacity,
         config.deadline_safety_margin.as_secs(),
         config.max_resend,
     );
-    let mut supervisor = Supervisor::new(watcher, handler, challenge.clone());
+    let mut supervisor = Supervisor::new(
+        watcher,
+        handler,
+        challenge.clone(),
+        gate,
+        config.finality_blocks,
+        config.startup_lookback,
+    );
 
-    // Startup recovery: rescan a bounded window and reconcile still-open challenges (status only).
-    match challenge.watch_opened().await {
-        Ok(rediscovered) => {
-            if let Err(e) = supervisor.reconcile_on_startup(&rediscovered).await {
-                tracing::error!(error = %e, "startup reconciliation failed");
+    // Startup recovery: rescan an EXPLICIT bounded window (finality applied once), reconcile
+    // still-open challenges by current on-chain status only. `config.startup_lookback` reaches the
+    // scan path here (the reviewed binary called a parameterless watch()).
+    match l2_watch_tip(&l2_provider).await {
+        Ok(head) => {
+            let actionable_to = head.saturating_sub(config.finality_blocks);
+            let startup_window = ScanWindow {
+                from_block: actionable_to.saturating_sub(config.startup_lookback),
+                to_block: actionable_to,
+            };
+            match challenge.watch_opened(startup_window).await {
+                Ok(rediscovered) => {
+                    if let Err(e) = supervisor.reconcile_on_startup(&rediscovered).await {
+                        tracing::error!(error = %e, "startup reconciliation failed");
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, "startup rescan failed"),
             }
         }
-        Err(e) => tracing::error!(error = %e, "startup rescan failed"),
+        Err(e) => tracing::error!(error = %e, "failed to read X Layer/L2 head for startup rescan"),
     }
 
     tracing::info!("tz-defender started; entering supervisor loop");
     loop {
+        // Pass the RAW L2 latest head; the supervisor computes actionable_to = H - finality_blocks
+        // exactly once (Model A).
         match l2_watch_tip(&l2_provider).await {
-            Ok(l2_tip) => {
-                if let Err(e) = supervisor.tick(l2_tip).await {
+            Ok(l2_head) => {
+                if let Err(e) = supervisor.tick(l2_head).await {
                     tracing::error!(error = %e, "supervisor tick failed");
                 }
             }
-            Err(e) => tracing::error!(error = %e, "failed to read X Layer/L2 tip"),
+            Err(e) => tracing::error!(error = %e, "failed to read X Layer/L2 head"),
         }
         tokio::time::sleep(config.retry_backoff).await;
     }
