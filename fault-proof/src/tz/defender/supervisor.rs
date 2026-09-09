@@ -42,13 +42,23 @@ pub struct Supervisor {
     gate: InFlightGate,
     finality_blocks: u64,
     startup_lookback: u64,
-    /// Reorg-safe steady-state cursor for `from_block`; `None` until the first tick (which uses
-    /// the explicit startup lookback window).
-    cursor: Option<u64>,
+    /// Reorg overlap: how many blocks below the previous finalized frontier to re-scan so a reorg
+    /// that replaced an event there (a new [`ChallengeId`]) is re-observed.
+    reorg_safety_margin: u64,
+    /// Highest finalized `to_block` scanned so far; `None` until the first tick (which uses the
+    /// explicit startup lookback window). Discovery only advances when the frontier grows.
+    frontier: Option<u64>,
+    /// Monotonic discovery counter and per-challenge discovery sequence. Assigned once, at first
+    /// discovery, so equal-deadline challenges break ties by discovery order (a `HashMap` does not
+    /// preserve insertion order). A reorg-overlap re-scan of an already-known challenge does not
+    /// reach the assignment (the watcher dedups by `ChallengeId`), so its sequence stays stable.
+    next_discovery_seq: u64,
+    discovery_seq: HashMap<ChallengeId, u64>,
     pending: HashMap<ChallengeId, (ChallengeOpened, ChallengeState)>,
 }
 
 impl Supervisor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         watcher: Watcher,
         handler: Handler,
@@ -56,6 +66,7 @@ impl Supervisor {
         gate: InFlightGate,
         finality_blocks: u64,
         startup_lookback: u64,
+        reorg_safety_margin: u64,
     ) -> Self {
         Self {
             watcher,
@@ -64,35 +75,69 @@ impl Supervisor {
             gate,
             finality_blocks,
             startup_lookback,
-            cursor: None,
+            reorg_safety_margin,
+            frontier: None,
+            next_discovery_seq: 0,
+            discovery_seq: HashMap::new(),
             pending: HashMap::new(),
         }
     }
 
-    /// The scan window for this tick: startup uses the explicit `[actionable_to - startup_lookback,
-    /// actionable_to]`; steady-state uses the reorg-safe cursor for `from_block`. `to_block` is
-    /// always `actionable_to` (finality applied exactly once by the caller of this helper).
-    fn scan_window(&self, actionable_to: u64) -> ScanWindow {
-        let from_block =
-            self.cursor.unwrap_or_else(|| actionable_to.saturating_sub(self.startup_lookback));
-        ScanWindow { from_block, to_block: actionable_to }
-    }
-
     /// One supervisor iteration. `l2_head` is the L2 latest head `H`; finality is applied here
     /// exactly once as `actionable_to = H - finality_blocks`.
+    ///
+    /// Discovery and pending work are decoupled: discovery runs only when the finalized frontier
+    /// advances (so a static or regressed head never produces a reversed `[from > to]` window), and
+    /// a discovery RPC failure is isolated (logged, cursor left intact) rather than aborting the
+    /// tick — either way every non-terminal pending challenge is still driven so confirmations,
+    /// deadlines, and bounded resends keep progressing.
     pub async fn tick(&mut self, l2_head: u64) -> Result<()> {
         let actionable_to = l2_head.saturating_sub(self.finality_blocks);
-        let window = self.scan_window(actionable_to);
-        for ev in self.watcher.poll(window).await? {
-            self.pending.entry(ev.challenge_id).or_insert((ev, ChallengeState::Discovered));
+
+        // Run discovery only when the finalized frontier has advanced. On a static or regressed
+        // head there is no new finalized block, so discovery is skipped this tick (no reversed
+        // window) while the pending queue below is still driven.
+        let advanced = self.frontier.is_none_or(|f| actionable_to > f);
+        if advanced {
+            // Reorg-safe overlap: re-scan the last `reorg_safety_margin` blocks below the previous
+            // frontier so a reorg replacement (a new ChallengeId) there is re-observed; dedup by
+            // ChallengeId makes the overlap idempotent. The first tick uses the explicit startup
+            // lookback window. `from_block <= actionable_to` holds because the frontier advanced.
+            let from_block = match self.frontier {
+                Some(f) => f.saturating_add(1).saturating_sub(self.reorg_safety_margin),
+                None => actionable_to.saturating_sub(self.startup_lookback),
+            };
+            let window = ScanWindow { from_block, to_block: actionable_to };
+            // Isolate discovery failures: a transient event-source RPC error must not abort the
+            // tick and starve every already-pending challenge of its confirmation / deadline /
+            // resend progress. Log it, leave the frontier unchanged (retry next tick), and fall
+            // through to drive the pending queue.
+            match self.watcher.poll(window).await {
+                Ok(discovered) => {
+                    for ev in discovered {
+                        let id = ev.challenge_id;
+                        if !self.discovery_seq.contains_key(&id) {
+                            self.discovery_seq.insert(id, self.next_discovery_seq);
+                            self.next_discovery_seq += 1;
+                        }
+                        self.pending.entry(id).or_insert((ev, ChallengeState::Discovered));
+                    }
+                    self.frontier = Some(actionable_to);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "challenge event scan failed this tick; isolating the discovery failure \
+                         and still driving pending challenges (frontier unchanged, retry next tick)"
+                    );
+                }
+            }
         }
-        // Advance the reorg-safe cursor so the next tick continues just past this window.
-        self.cursor = Some(actionable_to.saturating_add(1));
 
         // Order pending challenges nearest-deadline-first so the single in-flight gate is granted
-        // to the most urgent challenge. A status-read error while ordering does NOT drop
-        // the challenge: it is ordered last (u64::MAX) and still driven (its own drive
-        // re-reads + handles it).
+        // to the most urgent challenge; equal deadlines break ties by discovery order (never by
+        // opaque ChallengeId bytes). A status-read error while ordering does NOT drop the
+        // challenge: it is ordered last (u64::MAX) and still driven (its own drive re-reads it).
         let mut ids: Vec<ChallengeId> = self.pending.keys().copied().collect();
         let mut deadlines: HashMap<ChallengeId, u64> = HashMap::new();
         for id in &ids {
@@ -105,7 +150,11 @@ impl Supervisor {
                 deadlines.get(a).copied().unwrap_or(u64::MAX),
                 deadlines.get(b).copied().unwrap_or(u64::MAX),
             );
-            da.cmp(&db).then_with(|| a.0.cmp(&b.0))
+            let (sa, sb) = (
+                self.discovery_seq.get(a).copied().unwrap_or(u64::MAX),
+                self.discovery_seq.get(b).copied().unwrap_or(u64::MAX),
+            );
+            da.cmp(&db).then_with(|| sa.cmp(&sb))
         });
 
         for id in ids {
@@ -122,7 +171,10 @@ impl Supervisor {
                         state = before;
                     }
                 }
-                if !state.is_terminal() {
+                if state.is_terminal() {
+                    // Terminal: drop the challenge and its discovery sequence.
+                    self.discovery_seq.remove(&id);
+                } else {
                     self.pending.insert(id, (ev, state));
                 }
             }
@@ -264,7 +316,15 @@ mod tests {
         let ev = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x02), 0, leaf, 100);
         let id = ev.challenge_id;
         cc.inject_opened(ev, 10_000);
-        cc.set_status(id, ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 });
+        cc.set_status(
+            id,
+            ChallengeStatus {
+                open: true,
+                deadline: 10_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
+        );
         let witness = Arc::new(SwitchWitness::not_ready());
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
@@ -276,6 +336,7 @@ mod tests {
             InFlightGate::new(),
             0,
             1_000,
+            16,
         );
 
         // Tick 1: witness not ready ⇒ the challenge stays pending (not dropped).
@@ -348,11 +409,21 @@ mod tests {
         cc.inject_opened(b.clone(), 10_000);
         cc.set_status(
             a.challenge_id,
-            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
+            ChallengeStatus {
+                open: true,
+                deadline: 10_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
         cc.set_status(
             b.challenge_id,
-            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
+            ChallengeStatus {
+                open: true,
+                deadline: 10_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
@@ -365,6 +436,7 @@ mod tests {
             InFlightGate::new(),
             0,
             1_000,
+            16,
         );
 
         // A's status RPC fails this whole tick; B must still be driven, and A must be preserved
@@ -408,6 +480,7 @@ mod tests {
             InFlightGate::new(),
             32,
             1_000,
+            16,
         );
         sup.tick(10_000).await.unwrap();
         let w = cc.last_scan_window().expect("watch_opened received an explicit window");
@@ -435,11 +508,21 @@ mod tests {
         cc.inject_opened(b.clone(), 5_000);
         cc.set_status(
             a.challenge_id,
-            ChallengeStatus { open: true, deadline: 9_000, chain_timestamp: 0 },
+            ChallengeStatus {
+                open: true,
+                deadline: 9_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
         cc.set_status(
             b.challenge_id,
-            ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 0 },
+            ChallengeStatus {
+                open: true,
+                deadline: 5_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
@@ -452,6 +535,7 @@ mod tests {
             InFlightGate::new(),
             0,
             1_000,
+            16,
         );
 
         sup.tick(500).await.unwrap();
@@ -491,7 +575,12 @@ mod tests {
         cc.inject_opened(closed.clone(), 10_000);
         cc.set_status(
             closed.challenge_id,
-            ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
+            ChallengeStatus {
+                open: false,
+                deadline: 10_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
 
         let witness = Arc::new(SwitchWitness::not_ready());
@@ -504,6 +593,7 @@ mod tests {
             InFlightGate::new(),
             0,
             1_000,
+            16,
         );
 
         let rediscovered =
@@ -518,6 +608,259 @@ mod tests {
         assert!(
             !sup.is_pending(closed.challenge_id),
             "closed ⇒ not enqueued (no old-receipt lookup)"
+        );
+    }
+
+    fn open_status() -> ChallengeStatus {
+        ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0, resolved_by_us: false }
+    }
+
+    #[tokio::test]
+    async fn same_head_skips_discovery_but_still_drives_pending() {
+        // finality 0 ⇒ actionable_to == l2_head. C1 is discovered on tick 1; a second challenge is
+        // injected afterwards within the same window. A tick at the SAME head must NOT discover the
+        // newcomer (no new finalized block) yet must still drive C1 to its next state.
+        let (proof, leaf, root) = valid_proof(0x42);
+        let cc = Arc::new(MockChallengeContract::new());
+        let c1 = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x01), 0, leaf, 100);
+        cc.inject_opened(c1.clone(), 10_000);
+        cc.set_status(c1.challenge_id, open_status());
+        let witness = Arc::new(SwitchWitness::not_ready());
+        let rm = Arc::new(MockRootManager::new());
+        rm.set_latest(20, root);
+        let handler = handler_with(cc.clone(), witness.clone(), rm);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+            16,
+        );
+
+        sup.tick(200).await.unwrap();
+        assert!(
+            matches!(
+                sup.pending_state(c1.challenge_id),
+                Some(ChallengeState::WaitingWitness { .. })
+            ),
+            "tick 1 discovers C1 and (witness not ready) leaves it waiting"
+        );
+
+        // A newcomer appears within the window and the witness becomes ready.
+        let c2 = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x02), 0, leaf, 150);
+        cc.inject_opened(c2.clone(), 10_000);
+        cc.set_status(c2.challenge_id, open_status());
+        witness.make_ready(proof);
+        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+
+        sup.tick(200).await.unwrap(); // SAME head ⇒ discovery skipped
+        assert!(
+            !sup.is_pending(c2.challenge_id),
+            "same head ⇒ no new finalized block ⇒ C2 not discovered"
+        );
+        assert!(
+            matches!(sup.pending_state(c1.challenge_id), Some(ChallengeState::Submitted { .. })),
+            "C1 still driven despite skipped discovery: {:?}",
+            sup.pending_state(c1.challenge_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn head_regression_skips_discovery_and_preserves_frontier() {
+        let (proof, leaf, root) = valid_proof(0x42);
+        let cc = Arc::new(MockChallengeContract::new());
+        let c1 = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x01), 0, leaf, 100);
+        cc.inject_opened(c1.clone(), 10_000);
+        cc.set_status(c1.challenge_id, open_status());
+        let witness = Arc::new(SwitchWitness::not_ready());
+        let rm = Arc::new(MockRootManager::new());
+        rm.set_latest(20, root);
+        let handler = handler_with(cc.clone(), witness.clone(), rm);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+            16,
+        );
+
+        sup.tick(500).await.unwrap();
+        assert_eq!(cc.last_scan_window().unwrap().to_block, 500, "tick 1 scans up to head 500");
+        assert!(sup.is_pending(c1.challenge_id));
+
+        // Head regresses; the witness becomes ready. The regressed tick must not produce a reversed
+        // window (no scan), must preserve the frontier, and must still drive C1.
+        witness.make_ready(proof);
+        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        sup.tick(300).await.unwrap();
+        assert_eq!(
+            cc.last_scan_window().unwrap().to_block,
+            500,
+            "regressed head ⇒ discovery skipped (no scan at to_block 300)"
+        );
+        assert!(
+            matches!(sup.pending_state(c1.challenge_id), Some(ChallengeState::Submitted { .. })),
+            "C1 still driven on a regressed head: {:?}",
+            sup.pending_state(c1.challenge_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn reorg_overlap_rediscovers_replacement_below_previous_frontier() {
+        // margin = 16. Tick 1 at head 100 sets frontier = 100. A reorg then introduces a
+        // replacement event (a NEW ChallengeId) at block 95 — below the old frontier but
+        // within the reorg margin. Tick 2 at head 110 must re-scan [100 + 1 - 16 = 85, 110]
+        // and rediscover it; a forward-only scan from 101 would have missed block 95.
+        let (_p, leaf, root) = valid_proof(0x42);
+        let cc = Arc::new(MockChallengeContract::new());
+        let c1 = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x01), 0, leaf, 50);
+        cc.inject_opened(c1.clone(), 10_000);
+        cc.set_status(c1.challenge_id, open_status());
+        let witness = Arc::new(SwitchWitness::not_ready());
+        let rm = Arc::new(MockRootManager::new());
+        rm.set_latest(20, root);
+        let handler = handler_with(cc.clone(), witness, rm);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+            16,
+        );
+
+        sup.tick(100).await.unwrap();
+        assert!(sup.is_pending(c1.challenge_id));
+
+        let replacement = ChallengeOpened::new(
+            CHAIN_ID,
+            contract(),
+            B256::repeat_byte(0x02),
+            0,
+            B256::repeat_byte(0x77),
+            95,
+        );
+        cc.inject_opened(replacement.clone(), 10_000);
+        cc.set_status(replacement.challenge_id, open_status());
+
+        sup.tick(110).await.unwrap();
+        let w = cc.last_scan_window().unwrap();
+        assert_eq!(
+            w.from_block, 85,
+            "reorg overlap re-scans the margin below the previous frontier"
+        );
+        assert_eq!(w.to_block, 110);
+        assert!(
+            sup.is_pending(replacement.challenge_id),
+            "reorg replacement below the old frontier is rediscovered via the overlap"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_scan_failure_is_isolated_and_pending_still_driven() {
+        // A pending challenge must keep progressing even when the event-scan RPC fails this tick,
+        // and a failed scan must not advance the frontier (so recovery re-scans the missed range).
+        let (proof, leaf, root) = valid_proof(0x42);
+        let cc = Arc::new(MockChallengeContract::new());
+        let c1 = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x01), 0, leaf, 100);
+        cc.inject_opened(c1.clone(), 10_000);
+        cc.set_status(c1.challenge_id, open_status());
+        let witness = Arc::new(SwitchWitness::not_ready());
+        let rm = Arc::new(MockRootManager::new());
+        rm.set_latest(20, root);
+        let handler = handler_with(cc.clone(), witness.clone(), rm);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+            16,
+        );
+
+        sup.tick(200).await.unwrap();
+        assert!(matches!(
+            sup.pending_state(c1.challenge_id),
+            Some(ChallengeState::WaitingWitness { .. })
+        ));
+
+        // The event RPC fails while the witness becomes ready; C1 must still advance to Submitted.
+        witness.make_ready(proof);
+        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_watch_failure();
+        sup.tick(300).await.unwrap();
+        assert!(
+            matches!(sup.pending_state(c1.challenge_id), Some(ChallengeState::Submitted { .. })),
+            "pending driven despite the event-scan RPC failure: {:?}",
+            sup.pending_state(c1.challenge_id)
+        );
+
+        // The frontier did not advance during the failure, so a recovered scan still finds new
+        // events (a newcomer sharing C1's leaf so it verifies; it stays Ready behind the gate).
+        cc.clear_watch_failure();
+        let c2 = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x02), 0, leaf, 250);
+        cc.inject_opened(c2.clone(), 10_000);
+        cc.set_status(c2.challenge_id, open_status());
+        sup.tick(300).await.unwrap();
+        assert!(
+            sup.is_pending(c2.challenge_id),
+            "cursor not advanced during the failure ⇒ the recovered scan discovers the newcomer"
+        );
+    }
+
+    #[tokio::test]
+    async fn equal_deadline_breaks_tie_by_discovery_order_not_challenge_id() {
+        // Two challenges share the SAME deadline. The one discovered FIRST must broadcast first
+        // under the single in-flight gate — even when its ChallengeId sorts AFTER the other's by
+        // bytes (the old, incorrect tiebreak). Both are provable under one shared two-leaf tree.
+        let (leaf_a, proof_a, leaf_b, proof_b, root) = two_challenge_tree(0x0A, 0x0B);
+        let e1 =
+            ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x01), 0, leaf_a, 100);
+        let e2 =
+            ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x02), 0, leaf_b, 100);
+        // Discover the LARGER-ChallengeId event first, so a byte-order tiebreak would (wrongly)
+        // pick the other one.
+        let (first, second) =
+            if e1.challenge_id.0 > e2.challenge_id.0 { (e1, e2) } else { (e2, e1) };
+        assert!(first.challenge_id.0 > second.challenge_id.0, "arranged: first has the larger id");
+
+        let cc = Arc::new(MockChallengeContract::new());
+        cc.inject_opened(first.clone(), 5_000);
+        cc.inject_opened(second.clone(), 5_000);
+        let st = ChallengeStatus {
+            open: true,
+            deadline: 5_000,
+            chain_timestamp: 0,
+            resolved_by_us: false,
+        };
+        cc.set_status(first.challenge_id, st);
+        cc.set_status(second.challenge_id, st);
+        let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
+        let rm = Arc::new(MockRootManager::new());
+        rm.set_latest(20, root);
+        let handler = handler_with(cc.clone(), witness, rm);
+        let mut sup = Supervisor::new(
+            Watcher::new(cc.clone()),
+            handler,
+            cc.clone(),
+            InFlightGate::new(),
+            0,
+            1_000,
+            16,
+        );
+
+        sup.tick(500).await.unwrap();
+        let calls = cc.prove_calls();
+        assert_eq!(calls.len(), 1, "single in-flight tx per tick");
+        assert_eq!(
+            calls[0].challenge_id, first.challenge_id,
+            "equal deadline ⇒ the first-discovered challenge broadcasts, not the ChallengeId-byte winner"
         );
     }
 }

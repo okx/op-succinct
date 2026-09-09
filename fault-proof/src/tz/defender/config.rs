@@ -89,6 +89,16 @@ impl DefenderConfig {
             }
         };
 
+        // The resend cap is a u32; reject an out-of-range configuration rather than silently
+        // truncating it (a bare `as u32` maps e.g. 2^32 to 0, disabling all resends).
+        let max_resend_raw = opt_u64("DEFENDER_MAX_RESEND", 3)?;
+        let max_resend = u32::try_from(max_resend_raw).ok().with_context(|| {
+            format!(
+                "DEFENDER_MAX_RESEND ({max_resend_raw}) exceeds the maximum supported value ({})",
+                u32::MAX
+            )
+        })?;
+
         let cfg = Self {
             challenge_contract: parse_addr("DEFENDER_CHALLENGE_CONTRACT")?,
             root_manager: parse_addr("DEFENDER_ROOT_MANAGER")?,
@@ -99,7 +109,7 @@ impl DefenderConfig {
             finality_blocks: opt_u64("DEFENDER_FINALITY_BLOCKS", 32)?,
             reorg_safety_margin: opt_u64("DEFENDER_REORG_SAFETY_MARGIN", 16)?,
             startup_lookback: opt_u64("DEFENDER_STARTUP_LOOKBACK", 10_000)?,
-            max_resend: opt_u64("DEFENDER_MAX_RESEND", 3)? as u32,
+            max_resend,
             retry_backoff: Duration::from_secs(opt_u64("DEFENDER_RETRY_BACKOFF_SECS", 15)?),
             deadline_safety_margin: Duration::from_secs(opt_u64(
                 "DEFENDER_DEADLINE_SAFETY_MARGIN_SECS",
@@ -148,7 +158,9 @@ impl DefenderConfig {
     ) -> u64 {
         let interval = min_l2_block_interval_secs.max(1);
         let period_blocks = max_challenge_response_secs.div_ceil(interval);
-        period_blocks + self.finality_blocks + self.reorg_safety_margin
+        // Saturating: these are block counts summed from independently-configured values, so an
+        // extreme configuration must clamp at the u64 ceiling rather than wrap around.
+        period_blocks.saturating_add(self.finality_blocks).saturating_add(self.reorg_safety_margin)
     }
 }
 
@@ -218,6 +230,33 @@ mod tests {
     fn max_resend_defaults_and_parses() {
         let cfg = DefenderConfig::parse_from(reader(full_env())).unwrap();
         assert_eq!(cfg.max_resend, 3); // default
+    }
+
+    #[test]
+    fn max_resend_above_u32_range_is_rejected_not_truncated() {
+        // 2^32 would silently become 0 under a bare `as u32`, disabling every resend. It must be
+        // rejected with a clear error instead.
+        let mut m = full_env();
+        m.insert("DEFENDER_MAX_RESEND", (u32::MAX as u64 + 1).to_string());
+        let err = DefenderConfig::parse_from(reader(m)).unwrap_err();
+        assert!(err.to_string().contains("DEFENDER_MAX_RESEND"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn max_resend_at_u32_ceiling_is_accepted() {
+        let mut m = full_env();
+        m.insert("DEFENDER_MAX_RESEND", u32::MAX.to_string());
+        assert_eq!(DefenderConfig::parse_from(reader(m)).unwrap().max_resend, u32::MAX);
+    }
+
+    #[test]
+    fn startup_lookback_blocks_saturates_instead_of_overflowing() {
+        // With finality_blocks at the u64 ceiling, summing the block-count terms must saturate at
+        // u64::MAX rather than wrap around (a debug-build overflow panic / release wraparound).
+        let mut m = full_env();
+        m.insert("DEFENDER_FINALITY_BLOCKS", u64::MAX.to_string());
+        let cfg = DefenderConfig::parse_from(reader(m)).unwrap();
+        assert_eq!(cfg.startup_lookback_blocks(10, 1), u64::MAX);
     }
 
     #[test]

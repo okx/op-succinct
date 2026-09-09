@@ -230,7 +230,7 @@ impl WbClient {
             "WithdrawalNotFound" => Some(CODE_WITHDRAWAL_NOT_FOUND),
             "RecordNotInCheckpoint" => Some(CODE_RECORD_NOT_IN_CHECKPOINT),
             "NotReady" => Some(CODE_NOT_READY),
-            "StoreCorrupt" => Some(CODE_STORE_CORRUPT),
+            "WitnessStoreCorrupt" => Some(CODE_STORE_CORRUPT),
             "RootNotFound" => Some(CODE_ROOT_NOT_FOUND),
             _ => None,
         }
@@ -871,7 +871,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/chain/witness/withdrawal-proof"))
             .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!(
-                {"code": 11008, "message": "StoreCorrupt: dag", "data": null})))
+                {"code": 11008, "message": "WitnessStoreCorrupt: dag", "data": null})))
             .mount(&s)
             .await;
         let e = client(&s, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
@@ -885,6 +885,61 @@ mod tests {
             .mount(&s2)
             .await;
         assert!(client(&s2, 196).get_inclusion_proof(leaf, root).await.unwrap_err().is_retryable());
+    }
+
+    /// The store-corruption message prefix must be the value the witness builder actually
+    /// serializes (`WitnessStoreCorrupt: …`), so that a store-corruption message carried by an
+    /// unrelated numeric code is detected as a prefix↔code conflict and fails closed rather than
+    /// slipping through as a benign wait. Fixtures use the exact wire tokens observed at the pinned
+    /// witness-builder revision.
+    #[tokio::test]
+    async fn store_corrupt_prefix_matches_wire_and_conflicts_fail_closed() {
+        let leaf = B256::repeat_byte(0x01);
+        let root = B256::repeat_byte(0x33);
+
+        // (1) The real wire tuple `(proof, 500, 11008, "WitnessStoreCorrupt: …")` classifies as a
+        //     permanent store corruption (body parsed before status; prefix agrees with the code).
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!(
+                {"code": 11008, "message": "WitnessStoreCorrupt: bad node", "data": null})))
+            .mount(&s)
+            .await;
+        let e = client(&s, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(matches!(e, WbError::WitnessStoreCorrupt));
+        assert!(!e.is_retryable());
+
+        // (2) A store-corruption message carried by the root-not-found code (a prefix↔code
+        // conflict)     must fail closed as Protocol — it must NOT be downgraded to a
+        // RootNotFound wait. This     is the case a mislabelled prefix token would silently
+        // let slip through.
+        let s2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!(
+                {"code": 11009, "message": "WitnessStoreCorrupt: masquerading", "data": null})))
+            .mount(&s2)
+            .await;
+        let e2 = client(&s2, 196).get_inclusion_proof(leaf, root).await.unwrap_err();
+        assert!(
+            matches!(e2, WbError::Protocol),
+            "prefix↔code conflict must fail closed, got {e2:?}"
+        );
+        assert!(!e2.is_retryable());
+
+        // (3) A store-corruption code carrying the ROOT-not-found prefix is likewise a conflict.
+        let s3 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/withdrawal-proof"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!(
+                {"code": 11008, "message": "RootNotFound: 0x33", "data": null})))
+            .mount(&s3)
+            .await;
+        assert!(matches!(
+            client(&s3, 196).get_inclusion_proof(leaf, root).await.unwrap_err(),
+            WbError::Protocol
+        ));
     }
 
     /// The record endpoint has its own allowed set: 11004 ⇒ WithdrawalNotFound, but a proof-only

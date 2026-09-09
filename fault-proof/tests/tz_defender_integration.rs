@@ -171,7 +171,10 @@ fn inject(
     let ev = opened(tx_seed, leaf, block);
     let id = ev.challenge_id;
     cc.inject_opened(ev, deadline);
-    cc.set_status(id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
+    cc.set_status(
+        id,
+        ChallengeStatus { open: true, deadline, chain_timestamp: 0, resolved_by_us: false },
+    );
     id
 }
 
@@ -418,8 +421,15 @@ async fn supervisor_single_finality_scan_and_redrive() {
     cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
     let h = handler(&server, rm, cc.clone());
     // finality_blocks = 32, startup_lookback = 1000.
-    let mut sup =
-        Supervisor::new(Watcher::new(cc.clone()), h, cc.clone(), InFlightGate::new(), 32, 1_000);
+    let mut sup = Supervisor::new(
+        Watcher::new(cc.clone()),
+        h,
+        cc.clone(),
+        InFlightGate::new(),
+        32,
+        1_000,
+        16,
+    );
 
     // Head 120 ⇒ actionable_to = 88 (< block 100) ⇒ not yet actionable, nothing dispatched.
     sup.tick(120).await.unwrap();
@@ -442,7 +452,7 @@ async fn no_event_is_a_noop() {
     let cc = Arc::new(MockChallengeContract::new());
     let h = handler(&server, rm, cc.clone());
     let mut sup =
-        Supervisor::new(Watcher::new(cc.clone()), h, cc.clone(), InFlightGate::new(), 0, 1_000);
+        Supervisor::new(Watcher::new(cc.clone()), h, cc.clone(), InFlightGate::new(), 0, 1_000, 16);
     sup.tick(1_000).await.unwrap();
     assert_eq!(sup.pending_len(), 0);
     assert!(cc.prove_calls().is_empty());
@@ -474,11 +484,19 @@ async fn restart_rescan_reconciles_status_only() {
     let cc = Arc::new(MockChallengeContract::new());
     let open_id = inject(&cc, 0x10, leaf, 100, 10_000);
     let closed_id = inject(&cc, 0x11, leaf, 100, 10_000);
-    cc.set_status(closed_id, ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 });
+    cc.set_status(
+        closed_id,
+        ChallengeStatus {
+            open: false,
+            deadline: 10_000,
+            chain_timestamp: 0,
+            resolved_by_us: false,
+        },
+    );
 
     let h = handler(&server, rm, cc.clone());
     let mut sup =
-        Supervisor::new(Watcher::new(cc.clone()), h, cc.clone(), InFlightGate::new(), 0, 1_000);
+        Supervisor::new(Watcher::new(cc.clone()), h, cc.clone(), InFlightGate::new(), 0, 1_000, 16);
     let rediscovered =
         ChallengeEventSource::watch_opened(&*cc, ScanWindow { from_block: 0, to_block: 10_000 })
             .await

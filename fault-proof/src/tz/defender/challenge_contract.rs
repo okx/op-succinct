@@ -82,6 +82,15 @@ pub struct ChallengeStatus {
     pub deadline: u64,
     /// The L2 chain timestamp observed in the same read, used for deadline decisions.
     pub chain_timestamp: u64,
+    /// Resolution ownership, meaningful only once the challenge is no longer `open`: `true` iff
+    /// the on-chain state attributes the resolution to THIS defender's response, `false` if it
+    /// was resolved/closed by another responder (or otherwise). It lets the handler
+    /// distinguish "our prove resolved it" (→ `Proved`) from "someone else closed it" (→
+    /// `Closed`) instead of assuming any `open == false` after a successful receipt is our
+    /// win. The real challenge ABI is not yet delivered; this field fixes the seam semantics
+    /// and the mock models it (a future adapter maps the delivered resolver/result field onto
+    /// it — no ABI is assumed here).
+    pub resolved_by_us: bool,
 }
 
 /// A finality-bounded L2 block scan window `[from_block, to_block]`. Finality is applied exactly
@@ -192,6 +201,9 @@ struct MockState {
     /// Challenge ids whose `get_challenge` returns a (transient) error until cleared — used to
     /// exercise per-challenge failure isolation in the supervisor.
     fail_status: std::collections::HashSet<ChallengeId>,
+    /// When set, `watch_opened` returns a (transient) error until cleared — used to exercise the
+    /// supervisor isolating an event-scan RPC failure from driving the pending queue.
+    fail_watch: bool,
     /// The most recent [`ScanWindow`] passed to `watch_opened` (observability for tests).
     last_window: Option<ScanWindow>,
 }
@@ -212,6 +224,7 @@ impl MockChallengeContract {
                 tx_status: std::collections::HashMap::new(),
                 sender_errors: std::collections::HashMap::new(),
                 fail_status: std::collections::HashSet::new(),
+                fail_watch: false,
                 last_window: None,
             }),
         }
@@ -220,8 +233,10 @@ impl MockChallengeContract {
     /// Inject an already-built opened challenge and default its status to open (by its id).
     pub fn inject_opened(&self, ev: ChallengeOpened, deadline: u64) {
         let mut s = self.inner.lock().unwrap();
-        s.status
-            .insert(ev.challenge_id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
+        s.status.insert(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline, chain_timestamp: 0, resolved_by_us: false },
+        );
         s.opened.push(ev);
     }
 
@@ -265,10 +280,21 @@ impl MockChallengeContract {
         self.inner.lock().unwrap().tx_status.insert(tx, status);
     }
 
-    /// Mark a challenge resolved (no longer open) — used to model our prove resolving it.
+    /// Mark a challenge resolved in OUR favor (no longer open, attributed to our response) — used
+    /// to model our prove transaction resolving it.
     pub fn mark_resolved_in_our_favor(&self, id: ChallengeId) {
         if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
             st.open = false;
+            st.resolved_by_us = true;
+        }
+    }
+
+    /// Mark a challenge closed by ANOTHER responder (no longer open, NOT attributed to us) — used
+    /// to model a challenge that was resolved/closed by someone else while our tx was in flight.
+    pub fn mark_closed_by_other(&self, id: ChallengeId) {
+        if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
+            st.open = false;
+            st.resolved_by_us = false;
         }
     }
 
@@ -295,6 +321,17 @@ impl MockChallengeContract {
         self.inner.lock().unwrap().fail_status.remove(&id);
     }
 
+    /// Make `watch_opened` return a transient error until cleared — used to test the supervisor
+    /// isolating an event-scan RPC failure from driving the pending queue.
+    pub fn set_watch_failure(&self) {
+        self.inner.lock().unwrap().fail_watch = true;
+    }
+
+    /// Clear a scripted `watch_opened` failure so subsequent scans succeed.
+    pub fn clear_watch_failure(&self) {
+        self.inner.lock().unwrap().fail_watch = false;
+    }
+
     /// The most recent scan window passed to `watch_opened` (test observability).
     pub fn last_scan_window(&self) -> Option<ScanWindow> {
         self.inner.lock().unwrap().last_window
@@ -306,6 +343,9 @@ impl ChallengeEventSource for MockChallengeContract {
     async fn watch_opened(&self, window: ScanWindow) -> Result<Vec<ChallengeOpened>> {
         let mut s = self.inner.lock().unwrap();
         s.last_window = Some(window);
+        if s.fail_watch {
+            anyhow::bail!("mock watch_opened transient failure (scripted until cleared)");
+        }
         Ok(s.opened
             .iter()
             .filter(|ev| ev.block_number >= window.from_block && ev.block_number <= window.to_block)
@@ -325,6 +365,7 @@ impl ChallengeReader for MockChallengeContract {
             open: false,
             deadline: 0,
             chain_timestamp: 0,
+            resolved_by_us: false,
         }))
     }
 }
@@ -463,7 +504,12 @@ mod tests {
         );
         mock.set_status(
             id,
-            ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 4_200 },
+            ChallengeStatus {
+                open: true,
+                deadline: 5_000,
+                chain_timestamp: 4_200,
+                resolved_by_us: false,
+            },
         );
         assert_eq!(mock.get_challenge(id).await.unwrap().chain_timestamp, 4_200);
     }

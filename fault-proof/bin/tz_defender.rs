@@ -131,6 +131,7 @@ async fn run() -> Result<()> {
         gate,
         config.finality_blocks,
         config.startup_lookback,
+        config.reorg_safety_margin,
     );
 
     // Startup recovery: rescan an EXPLICIT bounded window (finality applied once), reconcile
