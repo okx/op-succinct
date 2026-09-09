@@ -104,5 +104,4 @@ pnpm-debug.log*
 *mnemonic*
 .claude/
 
-# Oli Superpowers design context — local-only working files, never committed (XLOP-1197 MR-review directive).
 docs/superpowers/
