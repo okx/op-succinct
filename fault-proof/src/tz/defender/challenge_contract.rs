@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use alloy_primitives::{keccak256, Address, TxHash, B256};
 use anyhow::Result;
 use async_trait::async_trait;
+use thiserror::Error;
 
 /// Opaque, adapter-owned challenge identity. A leaf may be challenged more than once, so the leaf
 /// hash cannot identify a challenge; the adapter derives a stable id from the event coordinates.
@@ -83,11 +84,22 @@ pub struct ChallengeStatus {
     pub chain_timestamp: u64,
 }
 
-/// Source of `ChallengeOpened` events; owns a reorg-safe from-block cursor internally.
+/// A finality-bounded L2 block scan window `[from_block, to_block]`. Finality is applied exactly
+/// once by the supervisor: `to_block == actionable_to = H - finality_blocks` (Model A). Startup
+/// passes an explicit `[actionable_to - startup_lookback, actionable_to]`; a reorg-safe cursor may
+/// supply `from_block` for steady-state, but never replaces the explicit startup window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanWindow {
+    pub from_block: u64,
+    pub to_block: u64,
+}
+
+/// Source of `ChallengeOpened` events over an explicit finality-bounded [`ScanWindow`]. The source
+/// does NOT apply `finality_blocks` again — the window's `to_block` already encodes it.
 #[async_trait]
 pub trait ChallengeEventSource: Send + Sync {
-    /// Return challenges opened since the last scan (the watcher applies finality + dedup).
-    async fn watch_opened(&self) -> Result<Vec<ChallengeOpened>>;
+    /// Return challenges opened within `window` (the watcher dedups by [`ChallengeId`]).
+    async fn watch_opened(&self, window: ScanWindow) -> Result<Vec<ChallengeOpened>>;
 }
 
 /// Reader of a challenge's current on-chain status, keyed by [`ChallengeId`].
@@ -106,10 +118,39 @@ pub enum TxStatus {
     Pending,
 }
 
+/// The outcome of an accepted broadcast. A broadcast tx is only ever `Submitted` (never `Proved`
+/// here — proving requires a later receipt + status confirmation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitOutcome {
+    /// The transaction was accepted for broadcast with this hash.
+    Submitted(TxHash),
+}
+
+/// A typed submission failure. Distinguishing these is required so the handler never blind-resends
+/// or blanket-fails: only `SafeToRetryPreBroadcast` is a confirmed-safe retry, and
+/// `UnknownBroadcastOutcome` must hold the in-flight gate and reconcile (never infer not-broadcast).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum SenderError {
+    /// The submission was confirmed rejected on-chain (e.g. a reverted call). Handled via the
+    /// confirmed-revert path.
+    #[error("challenge submission was confirmed rejected")]
+    ConfirmedRejection,
+    /// The submission provably never broadcast (safe to retry before broadcast next tick). The
+    /// ONLY confirmed-safe retry class.
+    #[error("challenge submission is safe to retry (never broadcast)")]
+    SafeToRetryPreBroadcast,
+    /// The broadcast outcome is unknown; `tx_hash` is present iff a hash was observed. The handler
+    /// must hold the in-flight gate and reconcile via status/receipt — never blind-resend.
+    #[error("challenge submission broadcast outcome is unknown")]
+    UnknownBroadcastOutcome { tx_hash: Option<TxHash> },
+}
+
 /// Sender of a proof for a challenge, keyed by [`ChallengeId`].
 #[async_trait]
 pub trait ChallengeSender: Send + Sync {
     /// Submit a proof for a challenge. The Withdraw tag is fixed in the contract, not passed here.
+    /// Returns a typed [`SubmitOutcome`] / [`SenderError`] so the handler can distinguish a
+    /// confirmed rejection, a confirmed-safe retry, and an unknown broadcast outcome.
     async fn prove_challenge(
         &self,
         id: ChallengeId,
@@ -117,7 +158,7 @@ pub trait ChallengeSender: Send + Sync {
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
-    ) -> Result<TxHash>;
+    ) -> Result<SubmitOutcome, SenderError>;
 
     /// Confirm a previously-broadcast transaction via its receipt.
     async fn confirm(&self, tx: TxHash) -> Result<TxStatus>;
@@ -144,8 +185,14 @@ struct MockState {
     prove_calls: Vec<ProveCall>,
     /// Scripted transaction receipt statuses, keyed by tx hash.
     tx_status: std::collections::HashMap<TxHash, TxStatus>,
-    /// When set, `prove_challenge` fails to simulate a lost race / revert.
-    fail_prove: bool,
+    /// Scripted typed sender errors, keyed by challenge id. When present, the next
+    /// `prove_challenge` for that id returns the error instead of `Submitted`.
+    sender_errors: std::collections::HashMap<ChallengeId, SenderError>,
+    /// Challenge ids whose `get_challenge` returns a (transient) error until cleared — used to
+    /// exercise per-challenge failure isolation in the supervisor.
+    fail_status: std::collections::HashSet<ChallengeId>,
+    /// The most recent [`ScanWindow`] passed to `watch_opened` (observability for tests).
+    last_window: Option<ScanWindow>,
 }
 
 impl Default for MockChallengeContract {
@@ -162,7 +209,9 @@ impl MockChallengeContract {
                 status: std::collections::HashMap::new(),
                 prove_calls: Vec::new(),
                 tx_status: std::collections::HashMap::new(),
-                fail_prove: false,
+                sender_errors: std::collections::HashMap::new(),
+                fail_status: std::collections::HashSet::new(),
+                last_window: None,
             }),
         }
     }
@@ -200,9 +249,15 @@ impl MockChallengeContract {
         self.inner.lock().unwrap().status.insert(id, status);
     }
 
-    /// Make the next `prove_challenge` calls fail (simulate revert / lost race at submit time).
-    pub fn set_fail_prove(&self, fail: bool) {
-        self.inner.lock().unwrap().fail_prove = fail;
+    /// Script a typed sender error for a challenge id: the next `prove_challenge` for that id
+    /// returns this error instead of `Submitted`.
+    pub fn set_sender_error(&self, id: ChallengeId, err: SenderError) {
+        self.inner.lock().unwrap().sender_errors.insert(id, err);
+    }
+
+    /// Clear any scripted sender error for a challenge id (subsequent `prove_challenge` succeeds).
+    pub fn clear_sender_error(&self, id: ChallengeId) {
+        self.inner.lock().unwrap().sender_errors.remove(&id);
     }
 
     /// Script the receipt status returned by `confirm` for a transaction hash.
@@ -228,23 +283,45 @@ impl MockChallengeContract {
     pub fn prove_calls(&self) -> Vec<ProveCall> {
         self.inner.lock().unwrap().prove_calls.clone()
     }
+
+    /// Make `get_challenge` for `id` return a transient error until cleared. Used to test
+    /// per-challenge failure isolation across a tick.
+    pub fn set_status_failure(&self, id: ChallengeId) {
+        self.inner.lock().unwrap().fail_status.insert(id);
+    }
+
+    /// Clear a scripted status failure so subsequent `get_challenge` calls for `id` succeed.
+    pub fn clear_status_failure(&self, id: ChallengeId) {
+        self.inner.lock().unwrap().fail_status.remove(&id);
+    }
+
+    /// The most recent scan window passed to `watch_opened` (test observability).
+    pub fn last_scan_window(&self) -> Option<ScanWindow> {
+        self.inner.lock().unwrap().last_window
+    }
 }
 
 #[async_trait]
 impl ChallengeEventSource for MockChallengeContract {
-    async fn watch_opened(&self) -> Result<Vec<ChallengeOpened>> {
-        Ok(self.inner.lock().unwrap().opened.clone())
+    async fn watch_opened(&self, window: ScanWindow) -> Result<Vec<ChallengeOpened>> {
+        let mut s = self.inner.lock().unwrap();
+        s.last_window = Some(window);
+        Ok(s.opened
+            .iter()
+            .filter(|ev| ev.block_number >= window.from_block && ev.block_number <= window.to_block)
+            .cloned()
+            .collect())
     }
 }
 
 #[async_trait]
 impl ChallengeReader for MockChallengeContract {
     async fn get_challenge(&self, id: ChallengeId) -> Result<ChallengeStatus> {
-        Ok(self
-            .inner
-            .lock()
-            .unwrap()
-            .status
+        let s = self.inner.lock().unwrap();
+        if s.fail_status.contains(&id) {
+            anyhow::bail!("mock get_challenge transient failure (scripted until cleared)");
+        }
+        Ok(s.status
             .get(&id)
             .copied()
             .unwrap_or(ChallengeStatus { open: false, deadline: 0, chain_timestamp: 0 }))
@@ -260,10 +337,10 @@ impl ChallengeSender for MockChallengeContract {
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
-    ) -> Result<TxHash> {
+    ) -> Result<SubmitOutcome, SenderError> {
         let mut s = self.inner.lock().unwrap();
-        if s.fail_prove {
-            anyhow::bail!("mock prove_challenge failed (simulated revert)");
+        if let Some(err) = s.sender_errors.get(&id).copied() {
+            return Err(err);
         }
         s.prove_calls.push(ProveCall {
             challenge_id: id,
@@ -272,7 +349,7 @@ impl ChallengeSender for MockChallengeContract {
             count,
             siblings,
         });
-        Ok(TxHash::repeat_byte(0x99))
+        Ok(SubmitOutcome::Submitted(TxHash::repeat_byte(0x99)))
     }
 
     async fn confirm(&self, tx: TxHash) -> Result<TxStatus> {
@@ -309,10 +386,42 @@ mod tests {
             5_000,
         );
         assert_ne!(a, b, "same leaf, different event coords ⇒ distinct ChallengeId");
-        let evs = mock.watch_opened().await.unwrap();
+        let evs = mock.watch_opened(ScanWindow { from_block: 0, to_block: 1_000 }).await.unwrap();
         assert_eq!(evs.len(), 2);
         assert!(mock.get_challenge(a).await.unwrap().open);
         assert!(mock.get_challenge(b).await.unwrap().open);
+    }
+
+    #[tokio::test]
+    async fn scan_window_filters_and_ids_are_distinct() {
+        let m = MockChallengeContract::new();
+        let leaf = B256::repeat_byte(0xAB);
+        // Two opens for the same leaf at different blocks ⇒ distinct ids; window filters by block.
+        let a = m.inject_opened_from(196, Address::repeat_byte(1), B256::repeat_byte(0x10), 0, leaf, 100, 5_000);
+        let b = m.inject_opened_from(196, Address::repeat_byte(1), B256::repeat_byte(0x11), 0, leaf, 250, 5_000);
+        assert_ne!(a, b);
+        let got = m.watch_opened(ScanWindow { from_block: 0, to_block: 200 }).await.unwrap();
+        assert_eq!(got.len(), 1, "only block 100 is within [0,200]");
+        assert_eq!(got[0].block_number, 100);
+        // The upper bound is inclusive and the lower bound excludes earlier blocks.
+        let got2 = m.watch_opened(ScanWindow { from_block: 100, to_block: 250 }).await.unwrap();
+        assert_eq!(got2.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sender_outcomes_are_typed() {
+        let m = MockChallengeContract::new();
+        let id = m.inject_opened_from(196, Address::repeat_byte(1), B256::repeat_byte(0x10), 0, B256::repeat_byte(0xAB), 10, 5_000);
+        m.set_sender_error(id, SenderError::SafeToRetryPreBroadcast);
+        assert!(matches!(
+            m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
+            Err(SenderError::SafeToRetryPreBroadcast)
+        ));
+        m.clear_sender_error(id);
+        assert!(matches!(
+            m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
+            Ok(SubmitOutcome::Submitted(_))
+        ));
     }
 
     #[tokio::test]
