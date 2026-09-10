@@ -2590,7 +2590,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672b945a3e4f4f40bfd4cd5ee07df9e796a42254ce7cd6d2599ad969244c44a"
 dependencies = [
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -6129,7 +6129,7 @@ dependencies = [
  "revm 34.0.0",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6171,7 +6171,7 @@ dependencies = [
  "kona-protocol",
  "op-alloy-consensus 0.23.1",
  "op-alloy-rpc-types-engine 0.23.1",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6363,7 +6363,7 @@ dependencies = [
  "op-revm 15.0.0",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6396,7 +6396,7 @@ dependencies = [
  "revm 34.0.0",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6425,7 +6425,7 @@ dependencies = [
  "op-alloy-rpc-types",
  "op-alloy-rpc-types-engine 0.23.1",
  "serde",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber 0.3.22",
@@ -7637,7 +7637,7 @@ dependencies = [
  "kona-proof",
  "kona-protocol",
  "op-succinct-client-utils",
- "spin 0.10.0",
+ "spin 0.10.1",
  "tracing",
 ]
 
@@ -7697,7 +7697,7 @@ dependencies = [
  "kona-preimage",
  "kona-proof",
  "op-succinct-client-utils",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -7758,7 +7758,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "spin 0.10.0",
+ "spin 0.10.1",
  "tracing",
 ]
 
@@ -7779,7 +7779,7 @@ dependencies = [
  "kona-proof",
  "op-succinct-client-utils",
  "serde_cbor",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -7832,7 +7832,7 @@ dependencies = [
  "kona-preimage",
  "kona-proof",
  "op-succinct-client-utils",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -13316,9 +13316,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 dependencies = [
  "lock_api",
 ]
