@@ -1626,7 +1626,8 @@ where
         // tz: cache miss — own games skip rootClaim validation; foreign games still enter
         // state.games to preserve canonical head tracking in multi-proposer deployments.
         // This impl is for tz only can fetch latest stateHash
-        // If tz update and can fetch historical stateHash, we can remove this special handling and unify with xlayer impl.
+        // If tz update and can fetch historical stateHash, we can remove this special handling and
+        // unify with xlayer impl.
         #[cfg(feature = "tz")]
         let maybe_output_root: Option<FixedBytes<32>> = {
             use crate::tz::chain_client::TzCacheMissError;

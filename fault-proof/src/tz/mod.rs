@@ -6,8 +6,8 @@
 //! Module layout:
 //! - `chain_client`: REST + cache + eviction client for tz `/chain/confirmed_block_info`.
 //! - `config`: Environment-based `TzConfig`.
-//! - `l2_provider`: `TzL2Provider` implementing `L2ProviderTrait` against the REST cache,
-//!   and the `compute_tz_root_claim` formula.
+//! - `l2_provider`: `TzL2Provider` implementing `L2ProviderTrait` against the REST cache, and the
+//!   `compute_tz_root_claim` formula.
 //!
 //! Upstream sync: this module is a downstream addition. Upstream files touched are
 //! `Cargo.toml` (feature flag + optional deps), `src/lib.rs` (`pub mod tz` + trait

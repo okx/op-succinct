@@ -44,11 +44,8 @@ impl TzConfig {
         let raw = read("L2_RPC").ok_or_else(|| {
             anyhow!("L2_RPC must be set for tz services (comma-separated endpoint list)")
         })?;
-        let rpc_urls: Vec<String> = raw
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let rpc_urls: Vec<String> =
+            raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         if rpc_urls.is_empty() {
             bail!("L2_RPC must contain at least one non-empty URL");
         }

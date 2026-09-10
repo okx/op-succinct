@@ -47,11 +47,11 @@ mod imp {
                     tracing::info!("KMS client initialized");
                     Ok(client)
                 }
-                Err(KmsError::Disabled) => Err(
-                    "ENABLE_KMS=true but the underlying ok-kms-rust SDK reported Disabled — \
+                Err(KmsError::Disabled) => {
+                    Err("ENABLE_KMS=true but the underlying ok-kms-rust SDK reported Disabled — \
                      check its own activation env vars or that KMS is reachable"
-                        .to_string(),
-                ),
+                        .to_string())
+                }
                 Err(e) => Err(format!("KMS init failed: {e}")),
             })
             .as_ref()

@@ -8,9 +8,7 @@ use fault_proof::{
     config::ChallengerConfig,
     contract::{AnchorStateRegistry, DisputeGameFactory},
     prometheus::ChallengerGauge,
-    tz::chain_client::TzChainClient,
-    tz::config::TzConfig,
-    tz::l2_provider::TzL2Provider,
+    tz::{chain_client::TzChainClient, config::TzConfig, l2_provider::TzL2Provider},
     L2ProviderTrait,
 };
 use op_succinct_host_utils::{
@@ -71,15 +69,13 @@ async fn run(tz_config: TzConfig) -> Result<()> {
         Arc::new(TzL2Provider { tz_client: Arc::clone(&tz_client) });
 
     let challenger_signer = SignerLock::from_env().await?;
-    let l1_provider = ProviderBuilder::default()
-        .connect_http(challenger_config.l1_rpc.clone());
+    let l1_provider = ProviderBuilder::default().connect_http(challenger_config.l1_rpc.clone());
 
     let anchor_state_registry = AnchorStateRegistry::new(
         challenger_config.anchor_state_registry_address,
         l1_provider.clone(),
     );
-    let factory =
-        DisputeGameFactory::new(challenger_config.factory_address, l1_provider.clone());
+    let factory = DisputeGameFactory::new(challenger_config.factory_address, l1_provider.clone());
 
     let mut challenger = OPSuccinctChallenger::new_with_l2_provider(
         challenger_config,
