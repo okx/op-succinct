@@ -538,7 +538,7 @@ dependencies = [
  "proptest",
  "rand 0.9.2",
  "rapidhash",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "ruint",
  "rustc-hash 2.1.1",
  "secp256k1 0.31.1",
@@ -4031,7 +4031,7 @@ dependencies = [
  "alloy-rlp",
  "anyhow",
  "canoe-bindings",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -5173,7 +5173,7 @@ dependencies = [
  "eigenda-cert",
  "kona-derive",
  "kona-protocol",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "thiserror 2.0.18",
  "tracing",
@@ -5221,7 +5221,7 @@ dependencies = [
  "hokulea-eigenda",
  "kona-preimage",
  "kona-proof",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "rust-kzg-bn254-primitives",
  "rust-kzg-bn254-verifier",
  "serde",
@@ -6327,7 +6327,7 @@ dependencies = [
  "alloy-primitives",
  "async-channel",
  "async-trait",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "thiserror 2.0.18",
  "tracing",
@@ -6514,7 +6514,7 @@ checksum = "ee8b4f55c3dedcfaa8668de1dfc8469e7a32d441c28edf225ed1f566fb32977d"
 dependencies = [
  "ff 0.13.1",
  "hex",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "serde_arrays",
  "sha2 0.10.9",
@@ -7657,7 +7657,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-host-utils",
  "reqwest 0.12.28",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "sp1-sdk",
  "tokio",
@@ -7721,7 +7721,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-host-utils",
  "reqwest 0.11.27",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "serde_json",
  "sp1-sdk",
@@ -7754,7 +7754,7 @@ dependencies = [
  "op-revm 15.0.0",
  "revm 34.0.0",
  "revm-precompile 32.1.0",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7804,7 +7804,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-eigenda-client-utils",
  "op-succinct-host-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde_cbor",
  "sp1-core-executor",
  "sp1-hypercube",
@@ -7850,7 +7850,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-ethereum-client-utils",
  "op-succinct-host-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "sp1-sdk",
 ]
 
@@ -7950,7 +7950,7 @@ dependencies = [
  "opentelemetry-stdout",
  "opentelemetry_sdk 0.23.0",
  "reqwest 0.12.28",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde",
  "serde_cbor",
  "serde_json",
@@ -8031,7 +8031,7 @@ dependencies = [
  "anyhow",
  "kona-proof",
  "op-succinct-client-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "sp1-zkvm",
  "tracing",
  "tracing-subscriber 0.3.22",
@@ -9598,7 +9598,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-ethereum-client-utils",
  "op-succinct-range-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "sp1-zkvm",
  "tracing-subscriber 0.3.22",
 ]
@@ -9611,7 +9611,7 @@ dependencies = [
  "op-succinct-altda-client-utils",
  "op-succinct-client-utils",
  "op-succinct-range-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "sp1-zkvm",
  "tracing-subscriber 0.3.22",
 ]
@@ -9624,7 +9624,7 @@ dependencies = [
  "op-succinct-celestia-client-utils",
  "op-succinct-client-utils",
  "op-succinct-range-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "sp1-zkvm",
  "tracing-subscriber 0.3.22",
 ]
@@ -9641,7 +9641,7 @@ dependencies = [
  "op-succinct-client-utils",
  "op-succinct-eigenda-client-utils",
  "op-succinct-range-utils",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "serde_cbor",
  "sp1-zkvm",
  "tracing-subscriber 0.3.22",
@@ -10912,20 +10912,20 @@ dependencies = [
 
 [[package]]
 name = "rkyv"
-version = "0.8.15"
+version = "0.8.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a30e631b7f4a03dee9056b8ef6982e8ba371dd5bedb74d3ec86df4499132c70"
+checksum = "73389e0c99e664f919275ab5b5b0471391fe9a8de61e1dff9b1eaf56a90f16e3"
 dependencies = [
  "bytecheck 0.8.2",
  "bytes",
  "hashbrown 0.15.5",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "indexmap 2.13.0",
  "munge",
  "ptr_meta 0.3.1",
  "rancor",
  "rend 0.5.3",
- "rkyv_derive 0.8.15",
+ "rkyv_derive 0.8.16",
  "tinyvec",
  "uuid",
 ]
@@ -10943,9 +10943,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv_derive"
-version = "0.8.15"
+version = "0.8.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8100bb34c0a1d0f907143db3149e6b4eea3c33b9ee8b189720168e818303986f"
+checksum = "5d2ed0b54125315fb36bd021e82d314d1c126548f871634b483f46b31d13cac6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11208,7 +11208,7 @@ dependencies = [
  "proptest",
  "rand 0.8.5",
  "rand 0.9.2",
- "rkyv 0.8.15",
+ "rkyv 0.8.16",
  "rlp",
  "ruint-macro",
  "serde_core",
