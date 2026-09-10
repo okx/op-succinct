@@ -382,7 +382,7 @@ impl XLayerRemoteClient {
     /// Used by asset-management callbacks to vouch for a transfer
     /// initiated by the remote signer.
     pub async fn has_ref_order_id(&self, id: &str) -> bool {
-        let mut cache = self.ref_order_cache.lock().await;
+        let cache = self.ref_order_cache.lock().await;
         cache.contains(id)
     }
 
@@ -426,7 +426,7 @@ impl XLayerRemoteClient {
 
         let operate_amount = transaction_request
             .value
-            .map(|v| Self::convert_value_to_operate_amount(v))
+            .map(Self::convert_value_to_operate_amount)
             .unwrap_or_else(|| "0".to_string());
 
         let sign_request = XLayerSignRequest {
@@ -463,7 +463,7 @@ impl XLayerRemoteClient {
                 sleep(RETRY_DELAY).await;
             }
 
-            match self.post_sign_request_and_wait_result(&sign_request, &transaction_request).await {
+            match self.post_sign_request_and_wait_result(&sign_request, transaction_request).await {
                 Ok(signed_tx_bytes) => {
                     if attempt > 0 {
                         tracing::info!("Remote signing succeeded after retry: attempt={}", attempt);
@@ -596,7 +596,7 @@ impl XLayerRemoteClient {
         let hex_data = result.data.trim_start_matches("0x");
         let signed_tx_bytes = hex::decode(hex_data)
             .context("Failed to decode signed transaction hex")?;
-        self.verify_signed_transaction(&transaction_request, &signed_tx_bytes)?;
+        self.verify_signed_transaction(transaction_request, &signed_tx_bytes)?;
 
         Ok(Bytes::from(signed_tx_bytes))
     }
@@ -791,6 +791,11 @@ impl XLayerRemoteClient {
 
     /// Encrypts data using AES-ECB with PKCS5 padding. Accepts 16/24/32-byte
     /// keys (AES-128/192/256).
+    // The AES `GenericArray` key/block API is marked deprecated by the vendored
+    // generic-array pulled in behind the patched hash crates. Migrating to
+    // generic-array 1.x is intentionally out of scope here, so the denied
+    // `deprecated` lint is silenced at this self-contained call site only.
+    #[allow(deprecated)]
     fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
         use aes::cipher::generic_array::GenericArray;
         use aes::cipher::{BlockEncrypt, KeyInit};
