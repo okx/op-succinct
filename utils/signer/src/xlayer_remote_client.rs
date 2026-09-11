@@ -1068,6 +1068,10 @@ impl XLayerRemoteClient {
 }
 
 #[cfg(test)]
+// Test fixtures build TransactionRequest/XLayerConfig step-by-step from `default()`
+// for readability; the newer CI nightly denies clippy::field_reassign_with_default.
+// Scope the allow to the test module — no production code is affected.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use alloy_primitives::{address, Bytes, U256};
