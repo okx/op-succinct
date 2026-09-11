@@ -12652,7 +12652,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-artifact"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#a9fc7dbda37e2628abeaa9b5c24ac840e07397d5"
+source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#43861409452f092dad649981ed9e7096e055b3cb"
 dependencies = [
  "anyhow",
  "async-scoped",
@@ -12678,7 +12678,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-common"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#a9fc7dbda37e2628abeaa9b5c24ac840e07397d5"
+source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#43861409452f092dad649981ed9e7096e055b3cb"
 dependencies = [
  "backoff",
  "chrono",
@@ -12706,7 +12706,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-utils"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#a9fc7dbda37e2628abeaa9b5c24ac840e07397d5"
+source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#43861409452f092dad649981ed9e7096e055b3cb"
 dependencies = [
  "eyre",
  "sp1-cluster-artifact",
