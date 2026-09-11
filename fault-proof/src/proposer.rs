@@ -26,8 +26,10 @@ use op_succinct_host_utils::{
     host::OPSuccinctHost,
     metrics::MetricsGauge,
     network::{determine_network_mode, get_network_signer},
-    witness_generation::WitnessGenerator,
 };
+// `WitnessGenerator` is only used by range_proof_stdin (stock, `not(tz)`).
+#[cfg(not(feature = "tz"))]
+use op_succinct_host_utils::witness_generation::WitnessGenerator;
 // Only the stock (`not(tz)`) agg-proof path calls this; gate to match.
 #[cfg(not(feature = "tz"))]
 use op_succinct_host_utils::get_agg_proof_stdin;
@@ -330,12 +332,13 @@ where
     init_bond: OnceLock<U256>,
     pub safe_db_fallback: bool,
     prover: ProofProvider,
-    // Read only by the stock (`not(tz)`) proving path (range_proof_stdin / prove_game); the tz
-    // path drives proving through the cluster and never reads them. Gate to match so they are
-    // not flagged dead under `--all-features` (tz on).
-    #[cfg(not(feature = "tz"))]
+    // Read only by the stock (`not(tz)`) proving path (range_proof_stdin); the tz path drives
+    // proving through the cluster and never reads them. `host: Arc<H>` also anchors the generic
+    // `H`, so both fields must exist in every cfg — gating `host` out under `--all-features`
+    // (tz on) would leave `H` unused (E0392). Keep them and silence the dead-code lint under tz.
+    #[cfg_attr(feature = "tz", allow(dead_code))]
     fetcher: Arc<OPSuccinctDataFetcher>,
-    #[cfg(not(feature = "tz"))]
+    #[cfg_attr(feature = "tz", allow(dead_code))]
     host: Arc<H>,
     tasks: Arc<Mutex<TaskMap>>,
     next_task_id: Arc<AtomicU64>,
@@ -446,12 +449,6 @@ where
 
         let initial_state = ProposerState::default();
 
-        // Callers construct the proposer with `fetcher`/`host` in both build configs, but the tz
-        // path stores neither (the fields are gated `not(tz)`); consume them here so they are not
-        // reported as unused parameters under `--all-features`.
-        #[cfg(feature = "tz")]
-        let _ = (&fetcher, &host);
-
         Ok(Self {
             config: config.clone(),
             contract_params: OnceLock::new(),
@@ -463,9 +460,7 @@ where
             init_bond: OnceLock::new(),
             safe_db_fallback: config.safe_db_fallback,
             prover,
-            #[cfg(not(feature = "tz"))]
             fetcher: fetcher.clone(),
-            #[cfg(not(feature = "tz"))]
             host,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             next_task_id: Arc::new(AtomicU64::new(1)),
