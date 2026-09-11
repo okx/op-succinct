@@ -1,3 +1,8 @@
+// `handle_proving_requests()` overflows rustc's default query depth when computing its
+// future layout with the sp1-cluster proving types under the newer CI nightly. Raise the
+// crate recursion limit as rustc suggests; build-config only, no behavioral change.
+#![recursion_limit = "256"]
+
 mod config;
 mod contract;
 mod db;

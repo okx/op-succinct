@@ -1,7 +1,6 @@
 // Test fixtures build the TransactionRequest step-by-step from `default()` for
 // readability; the newer CI nightly denies clippy::field_reassign_with_default.
 #![allow(clippy::field_reassign_with_default)]
-
 // Integration tests for the XLayer remote signer.
 // Each test exercises the full sign + poll round-trip against a real remote
 // service, so all are #[ignore]'d. The default endpoint is the asset-onchain
@@ -17,7 +16,6 @@
 //
 // Note: auth is skipped entirely when XLAYER_ACCESS_KEY or XLAYER_SECRET_KEY
 // is empty (matches Go's addAuth behavior).
-
 #![cfg(test)]
 
 use alloy_primitives::{address, Bytes, U256};
