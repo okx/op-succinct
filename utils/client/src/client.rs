@@ -48,6 +48,12 @@ where
 /// - `Ok((l2_safe_head, output_root))` - A tuple containing the [L2BlockInfo] of the produced block
 ///   and the output root.
 /// - `Err(e)` - An error if the block could not be produced.
+// The `Err` variant (`kona_driver::DriverError`) crosses clippy's 128-byte
+// `result_large_err` threshold after the tradezone/sp1 dependency re-pin shifted
+// shared transitive crate sizes. Boxing it would alter this fn's public
+// `DriverResult` return type and its sole caller (`witness::executor::run`), so a
+// local allow is scoped here instead; no behavioral change.
+#[allow(clippy::result_large_err)]
 pub async fn advance_to_target<E, DP, P>(
     driver: &mut Driver<E, DP, P>,
     cfg: &RollupConfig,
