@@ -115,7 +115,7 @@ where
         .map(|r| r.unwrap())
         .collect::<Vec<_>>();
 
-    let execution_inputs = stdins.into_iter().zip(block_data.into_iter()).collect::<Vec<_>>();
+    let execution_inputs = stdins.into_iter().zip(block_data).collect::<Vec<_>>();
 
     // Execute the program for each block range in parallel.
     // CpuProver creates its own tokio runtime, so run it outside the async context.
