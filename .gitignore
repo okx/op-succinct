@@ -103,3 +103,5 @@ pnpm-debug.log*
 *.keystore
 *mnemonic*
 .claude/
+
+docs/superpowers/
