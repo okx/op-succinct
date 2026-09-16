@@ -94,9 +94,10 @@ pub fn main() {
             });
             // [N1] Capture the BlockResult so extracted withdrawals can be appended. verify_pool =
             // None: zkVM has no parallel runtime.
-            let block_result = process_block(&mut state, block, None).unwrap_or_else(|e| {
-                panic!("process_block failed at height {}: {}", block.header.height, e)
-            });
+            let (block_result, _block_statistics) = process_block(&mut state, block, None)
+                .unwrap_or_else(|e| {
+                    panic!("process_block failed at height {}: {}", block.header.height, e)
+                });
             // The guest self-derives leaves from the canonical replay (never trusts the host).
             let withdrawals = extract_withdrawals(tz_chain_id, &block_result).unwrap_or_else(|e| {
                 panic!("extract_withdrawals failed at height {}: {}", block.header.height, e)
