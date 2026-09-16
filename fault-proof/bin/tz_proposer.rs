@@ -10,9 +10,7 @@ use fault_proof::{
     contract::{AnchorStateRegistry, DisputeGameFactory},
     prometheus::ProposerGauge,
     proposer::OPSuccinctProposer,
-    tz::chain_client::TzChainClient,
-    tz::config::TzConfig,
-    tz::l2_provider::TzL2Provider,
+    tz::{chain_client::TzChainClient, config::TzConfig, l2_provider::TzL2Provider},
     L2ProviderTrait,
 };
 use op_succinct_host_utils::{
@@ -26,7 +24,6 @@ use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
 static ALLOCATOR: Jemalloc = Jemalloc;
-
 
 #[derive(Parser)]
 #[command(name = "tz-proposer")]
@@ -72,8 +69,7 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     proposer_config.log();
 
     let tz_client = Arc::new(TzChainClient::new(tz_config.rpc_urls));
-    let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> =
-        Arc::new(TzL2Provider { tz_client });
+    let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(TzL2Provider { tz_client });
 
     let proposer_signer = SignerLock::from_env().await?;
     let l1_provider = ProviderBuilder::new().connect_http(proposer_config.l1_rpc.clone());

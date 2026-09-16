@@ -1,5 +1,7 @@
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use alloy_primitives::B256;
 use anyhow::{anyhow, Result};
@@ -21,9 +23,9 @@ pub struct TzChainClient {
     client: reqwest::Client,
 }
 
-/// Total deadline for `get_dex_state_snapshot` — covers query + (potentially long) replay + download
-/// across all endpoint retries. Sized to comfortably exceed any realistic replay workload while
-/// still bounding stuck loops.
+/// Total deadline for `get_dex_state_snapshot` — covers query + (potentially long) replay +
+/// download across all endpoint retries. Sized to comfortably exceed any realistic replay workload
+/// while still bounding stuck loops.
 const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(7200); // 2h
 
 fn snapshot_poll_interval() -> Duration {
@@ -70,7 +72,10 @@ impl TzChainClient {
             let url = format!("{}/chain/confirmed_block_info", endpoint);
             let resp = match self.client.get(&url).send().await {
                 Ok(r) => r,
-                Err(e) => { last_err = e.into(); continue; }
+                Err(e) => {
+                    last_err = e.into();
+                    continue;
+                }
             };
             if !resp.status().is_success() {
                 last_err = anyhow!("HTTP {}", resp.status());
@@ -78,7 +83,10 @@ impl TzChainClient {
             }
             let api: ApiResponse = match resp.json().await {
                 Ok(a) => a,
-                Err(e) => { last_err = e.into(); continue; }
+                Err(e) => {
+                    last_err = e.into();
+                    continue;
+                }
             };
             if api.code != 0 {
                 last_err = anyhow!("API code {}", api.code);
@@ -113,9 +121,9 @@ impl TzChainClient {
     ///
     /// Drives the server's async snapshot-replay protocol end-to-end:
     /// 1. `GET /chain/dex_state_snapshot?height=H` — query availability
-    /// 2. If `state_available=false`, server has spawned (or reused) a background replay task.
-    ///    Poll the same URL every `TZ_SNAPSHOT_POLL_INTERVAL_SECS` (default 5s) until the
-    ///    flag flips, the task fails / is cancelled, or the overall 2h deadline is hit.
+    /// 2. If `state_available=false`, server has spawned (or reused) a background replay task. Poll
+    ///    the same URL every `TZ_SNAPSHOT_POLL_INTERVAL_SECS` (default 5s) until the flag flips,
+    ///    the task fails / is cancelled, or the overall 2h deadline is hit.
     /// 3. `GET /chain/dex_state_snapshot/download?height=H` — fetch raw msgpack bytes.
     ///
     /// Returns the msgpack bytes for `tz_dex::order_preserving_serde::from_msgpack`.
@@ -128,7 +136,9 @@ impl TzChainClient {
         let mut last_err = anyhow!("no endpoints configured");
         for endpoint in &self.endpoints {
             if Instant::now() >= deadline {
-                anyhow::bail!("tz snapshot fetch exhausted overall deadline ({SNAPSHOT_DEADLINE:?})");
+                anyhow::bail!(
+                    "tz snapshot fetch exhausted overall deadline ({SNAPSHOT_DEADLINE:?})"
+                );
             }
             match self.snapshot_flow(endpoint, height, deadline, poll_interval).await {
                 Ok(bytes) => return Ok(bytes),
@@ -167,8 +177,11 @@ impl TzChainClient {
             }
             let envelope: ApiEnvelope<DexStateSnapshotResponse> = resp.json().await?;
             let data = envelope.data.ok_or_else(|| {
-                anyhow!("snapshot query missing data field: code={} message={}",
-                    envelope.code, envelope.message)
+                anyhow!(
+                    "snapshot query missing data field: code={} message={}",
+                    envelope.code,
+                    envelope.message
+                )
             })?;
 
             if data.state_available {
@@ -284,7 +297,10 @@ impl TzChainClient {
             let started_at = Instant::now();
             let resp = match self.client.get(&url).send().await {
                 Ok(r) => r,
-                Err(e) => { last_err = e.into(); continue; }
+                Err(e) => {
+                    last_err = e.into();
+                    continue;
+                }
             };
             if !resp.status().is_success() {
                 last_err = anyhow!("HTTP {} from {}", resp.status(), url);
@@ -382,10 +398,8 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
-    const HASH_A: &str =
-        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const HASH_B: &str =
-        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_A: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     #[tokio::test]
     async fn get_confirmed_block_info_parses_ok_response() {

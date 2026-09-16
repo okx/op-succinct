@@ -6,10 +6,10 @@
 #[cfg(target_os = "zkvm")]
 sp1_zkvm::entrypoint!(main);
 
-use alloy_primitives::{B256, keccak256};
+use alloy_primitives::{keccak256, B256};
 use alloy_sol_types::SolValue;
 use op_succinct_client_utils::boot::BootInfoStruct;
-use tz_block_processor::{Block, compute_app_hash, process_block, verify_next_block};
+use tz_block_processor::{compute_app_hash, process_block, verify_next_block, Block};
 use tz_dex::DexState;
 
 pub fn main() {
@@ -75,10 +75,7 @@ fn keccak_join(b1: B256, b2: B256) -> B256 {
 /// sequencer uses for PublishedAppHash) so the guest's state hashes
 /// byte-match the sequencer's ground truth.
 fn blake3_hash_state(state: &DexState) -> [u8; 32] {
-    compute_app_hash(state)
-        .expect("compute_app_hash: rmp_serde must serialize DexState")
-        .app_hash
-        .0
+    compute_app_hash(state).expect("compute_app_hash: rmp_serde must serialize DexState").app_hash.0
 }
 
 #[cfg(test)]
