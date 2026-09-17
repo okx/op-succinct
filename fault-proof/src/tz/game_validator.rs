@@ -438,6 +438,30 @@ mod tests {
         })
     }
 
+    fn valid_ready_data(height: u64) -> (serde_json::Value, B256) {
+        let components = RootComponents {
+            block_hash: B256::repeat_byte(0x11),
+            app_hash: B256::repeat_byte(0x22),
+            withdrawal_root: B256::repeat_byte(0x33),
+            force_root: B256::repeat_byte(0x44),
+        };
+        let claim_root = compute_v3_claim_root(&components);
+        let data = serde_json::json!({
+            "stateAvailable": true,
+            "baseSnapshotHeight": 0,
+            "height": height,
+            "status": "ready",
+            "schemaVersion": 2,
+            "chainId": TEST_CHAIN_ID,
+            "canonicalBlockHash": components.block_hash,
+            "appHash": components.app_hash,
+            "withdrawalRoot": components.withdrawal_root,
+            "forceRoot": components.force_root,
+            "claimRoot": claim_root,
+        });
+        (data, claim_root)
+    }
+
     fn tradezone_status_data(
         status: &str,
         local_tip: Option<u64>,
@@ -486,19 +510,9 @@ mod tests {
             asr,
             TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap(),
         );
-        let anchor_root = B256::repeat_byte(0xaa);
+        let (data, anchor_root) = valid_ready_data(77);
         asserter.push_success(&(anchor_root, U256::from(77)).abi_encode());
-        mount_response_at_height(
-            &server,
-            77,
-            serde_json::json!({
-                "height": 77,
-                "status": "ready",
-                "canonicalBlockHash": B256::repeat_byte(0x11),
-                "claimRoot": anchor_root
-            }),
-        )
-        .await;
+        mount_response_at_height(&server, 77, data).await;
 
         validator.validate_startup().await.unwrap();
         assert!(asserter.read_q().is_empty());
@@ -573,13 +587,19 @@ mod tests {
     #[tokio::test]
     async fn ready_root_is_compared_with_claim() {
         let server = MockServer::start().await;
-        mount_response(&server, ready_data(B256::repeat_byte(0xaa))).await;
-        assert_eq!(validator(&server).validate(&request(0, 10_000)).await, GameValidation::Valid);
+        let (data, claim_root) = valid_ready_data(123);
+        mount_response(&server, data).await;
+        let mut matching = request(0, 10_000);
+        matching.output_root = claim_root;
+        assert_eq!(validator(&server).validate(&matching).await, GameValidation::Valid);
 
         server.reset().await;
-        mount_response(&server, ready_data(B256::repeat_byte(0xbb))).await;
+        let (data, _) = valid_ready_data(123);
+        mount_response(&server, data).await;
+        let mut mismatched = request(0, 10_000);
+        mismatched.output_root = B256::repeat_byte(0xbb);
         assert_eq!(
-            validator(&server).validate(&request(0, 10_000)).await,
+            validator(&server).validate(&mismatched).await,
             GameValidation::Invalid(InvalidReason::OutputRootMismatch)
         );
     }
@@ -589,11 +609,9 @@ mod tests {
         let server = MockServer::start().await;
         let client = TzRootClient::new(server.uri().parse().unwrap(), TEST_CHAIN_ID).unwrap();
 
-        mount_response(&server, ready_data(B256::repeat_byte(0xaa))).await;
-        assert_eq!(
-            client.query(123).await.unwrap(),
-            RootQuery::Ready { claim_root: B256::repeat_byte(0xaa) }
-        );
+        let (data, claim_root) = valid_ready_data(123);
+        mount_response(&server, data).await;
+        assert_eq!(client.query(123).await.unwrap(), RootQuery::Ready { claim_root });
 
         server.reset().await;
         mount_response(&server, tradezone_status_data("running", None, None)).await;
@@ -710,8 +728,11 @@ mod tests {
         ));
 
         server.reset().await;
-        mount_response(&server, ready_data(B256::repeat_byte(0xaa))).await;
-        assert_eq!(validator.validate(&request(6_400, 10_000)).await, GameValidation::Valid);
+        let (data, claim_root) = valid_ready_data(123);
+        mount_response(&server, data).await;
+        let mut matching = request(6_400, 10_000);
+        matching.output_root = claim_root;
+        assert_eq!(validator.validate(&matching).await, GameValidation::Valid);
     }
 
     #[tokio::test]
@@ -845,18 +866,11 @@ mod tests {
     #[tokio::test]
     async fn matching_chain_id_is_accepted() {
         let server = MockServer::start().await;
-        mount_response(
-            &server,
-            serde_json::json!({
-                "height": 123,
-                "chainId": TEST_CHAIN_ID,
-                "status": "ready",
-                "canonicalBlockHash": B256::repeat_byte(0x11),
-                "claimRoot": B256::repeat_byte(0xaa)
-            }),
-        )
-        .await;
-        assert_eq!(validator(&server).validate(&request(0, 10_000)).await, GameValidation::Valid);
+        let (data, claim_root) = valid_ready_data(123);
+        mount_response(&server, data).await;
+        let mut matching = request(0, 10_000);
+        matching.output_root = claim_root;
+        assert_eq!(validator(&server).validate(&matching).await, GameValidation::Valid);
     }
 
     #[tokio::test]
