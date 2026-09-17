@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use op_alloy_rpc_types::Transaction;
 
 use super::{
-    chain_client::TzChainClient,
+    chain_client::{TzCacheMissError, TzChainClient},
     withdraw::{
         claim::claim_root,
         types::{GameCheckpointPreimage, TreeBoundaryWitness},
@@ -92,7 +92,13 @@ impl L2ProviderTrait for TzL2Provider {
         l2_block_number: U256,
     ) -> Result<GameCheckpointPreimage> {
         let height = l2_block_number.to::<u64>();
-        let info = self.tz_client.get_confirmed_block_info_at_height(height)?;
+        let cached_info = match self.tz_client.get_confirmed_block_info_at_height(height) {
+            Ok(info) => Some(info),
+            Err(err) if self.wb.is_some() && err.downcast_ref::<TzCacheMissError>().is_some() => {
+                None
+            }
+            Err(err) => return Err(err),
+        };
         // Four-field claim: blockHash/appHash come from the confirmed block info; withdrawalRoot/
         // forceRoot come from the WB CheckpointV2. Cross-check the shared fields for consistency.
         let Some(wb) = self.wb.as_ref() else {
@@ -108,19 +114,27 @@ impl L2ProviderTrait for TzL2Provider {
         // R2 #3: chainId is guarded inside `get_checkpoint_v2` against the client's configured
         // chain and carried on the envelope, never inside the checkpoint body.
         let cp = &env.checkpoint;
-        if cp.block_hash != info.block_hash || cp.app_hash != info.state_hash {
+        if cp.block_height != height {
             bail!(
-                "tz: checkpoint components at {height} disagree with confirmed block info \
-                 (blockHash/appHash mismatch)"
+                "tz: witness-builder checkpoint height mismatch: requested {height}, got {}",
+                cp.block_height
             );
+        }
+        if let Some(info) = cached_info {
+            if cp.block_hash != info.block_hash || cp.app_hash != info.state_hash {
+                bail!(
+                    "tz: checkpoint components at {height} disagree with confirmed block info \
+                     (blockHash/appHash mismatch)"
+                );
+            }
         }
         Ok(GameCheckpointPreimage {
             checkpoint_block_height: height,
             // Unset sentinel — `handle_game_creation` overwrites with the real parent game index
             // before encoding extraData (spec §R3.3).
             parent_index: u32::MAX,
-            block_hash: info.block_hash,
-            app_hash: info.state_hash,
+            block_hash: cp.block_hash,
+            app_hash: cp.app_hash,
             withdrawal_root: cp.withdrawal_root,
             force_root: cp.force_root,
         })
@@ -244,8 +258,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compute_output_root_builds_four_field_claim_via_wb() {
-        // Cached block info supplies blockHash/appHash; the WB supplies withdrawalRoot/forceRoot.
+    async fn compute_output_root_builds_from_wb_without_confirmed_cache() {
+        // The historical WB checkpoint is sufficient even when latest-only block info is absent.
         let claim = super::super::withdraw::claim::claim_root(hash_a(), hash_b(), wr(), fr());
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -253,22 +267,41 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0, "message": "ok", "data": {
                     "schemaVersion": 2, "chainId": 196, "height": 100, "status": "ready",
-                    "claimRoot": claim,
-                    "components": { "blockHash": hash_a(), "appHash": hash_b(),
-                        "withdrawalRoot": wr(), "forceRoot": fr() }
+                    "claimRoot": claim, "canonicalBlockHash": hash_a(),
+                    "appHash": hash_b(), "withdrawalRoot": wr(),
+                    "forceRoot": fr()
                 }
             })))
             .mount(&server)
             .await;
         let client = Arc::new(TzChainClient::new(vec!["http://unused".to_string()]));
-        {
-            let mut h = client.history.lock().unwrap();
-            h.insert(100, TzBlockInfo { height: 100, block_hash: hash_a(), state_hash: hash_b() });
-        }
         let wb = Arc::new(WbClient::new(server.uri().parse().unwrap(), 196).unwrap());
         let provider = TzL2Provider { tz_client: client, wb: Some(wb) };
         let result = provider.compute_output_root_at_block(U256::from(100u64)).await.unwrap();
         assert_eq!(result, claim);
+    }
+
+    #[tokio::test]
+    async fn compute_output_root_rejects_wrong_height_wb_checkpoint_without_cache() {
+        let claim = super::super::withdraw::claim::claim_root(hash_a(), hash_b(), wr(), fr());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/dex_state_snapshot"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "message": "ok", "data": {
+                    "schemaVersion": 2, "chainId": 196, "height": 101, "status": "ready",
+                    "claimRoot": claim, "canonicalBlockHash": hash_a(),
+                    "appHash": hash_b(), "withdrawalRoot": wr(),
+                    "forceRoot": fr()
+                }
+            })))
+            .mount(&server)
+            .await;
+        let client = Arc::new(TzChainClient::new(vec!["http://unused".to_string()]));
+        let wb = Arc::new(WbClient::new(server.uri().parse().unwrap(), 196).unwrap());
+        let provider = TzL2Provider { tz_client: client, wb: Some(wb) };
+        let err = provider.compute_output_root_at_block(U256::from(100u64)).await.unwrap_err();
+        assert!(err.to_string().contains("height"));
     }
 
     #[tokio::test]
