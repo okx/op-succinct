@@ -69,6 +69,7 @@ fn build_config() -> XLayerConfig {
         secret_key,
         timeout: TIMEOUT,
         role: ComponentRole::Proposer,
+        verify_addr: String::new(),
     }
 }
 

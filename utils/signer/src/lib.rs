@@ -82,6 +82,14 @@ impl Signer {
     }
 
     pub async fn from_env() -> Result<Self> {
+        Self::from_env_with_role(ComponentRole::Proposer).await
+    }
+
+    /// Like [`Signer::from_env`], but tags the signer with a component role,
+    /// which drives the refOrderID prefix for the XLayer remote signer. All
+    /// non-XLayer branches are role-independent, so existing callers of
+    /// `from_env` keep today's Proposer-defaulting behaviour byte-for-byte.
+    pub async fn from_env_with_role(role: ComponentRole) -> Result<Self> {
         // Check for XLayer remote signer first (highest priority for production)
         if let Ok(enabled) = std::env::var("XLAYER_SIGNER_ENABLED") {
             if enabled.to_lowercase() == "true" {
@@ -126,7 +134,8 @@ impl Signer {
                             .parse()
                             .context("Failed to parse XLAYER_TIMEOUT")?
                     ),
-                    role: ComponentRole::Proposer,
+                    role,
+                    verify_addr: std::env::var("XLAYER_SIGNER_VERIFY_ADDR").unwrap_or_default(),
                 };
 
                 tracing::info!(
@@ -178,6 +187,30 @@ impl Signer {
                 - For Web3Signer: SIGNER_URL and SIGNER_ADDRESS\n\
                 - For Local: PRIVATE_KEY"
             )
+        }
+    }
+
+    /// If this is an XLayer signer with a non-empty, parseable verify address,
+    /// returns the socket address and the client handle to serve. Otherwise
+    /// `None` (non-XLayer signer, unset address, or unparseable address).
+    pub fn xlayer_verify_target(&self) -> Option<(std::net::SocketAddr, Arc<XLayerRemoteClient>)> {
+        match self {
+            Signer::XLayerRemoteSigner(client, _) => {
+                let addr = client.verify_addr();
+                if addr.is_empty() {
+                    return None;
+                }
+                match addr.parse::<std::net::SocketAddr>() {
+                    Ok(sock) => Some((sock, client.clone())),
+                    Err(e) => {
+                        tracing::warn!(
+                            "invalid XLAYER_SIGNER_VERIFY_ADDR '{addr}': {e}; verify server disabled"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
         }
     }
 
@@ -339,6 +372,27 @@ impl SignerLock {
         Ok(SignerLock::new(Signer::from_env().await?))
     }
 
+    /// Creates a SignerLock from environment variables, tagged with the
+    /// component role (drives the refOrderID prefix for the XLayer signer).
+    pub async fn from_env_with_role(role: ComponentRole) -> Result<Self> {
+        Ok(SignerLock::new(Signer::from_env_with_role(role).await?))
+    }
+
+    /// Best-effort: if the wrapped signer is an XLayer signer with a configured
+    /// verify address, spawn the verify server. A bind/serve failure is logged
+    /// and the caller continues (mirrors the metrics-server startup pattern).
+    /// No-op for any other signer or when no verify address is configured.
+    pub async fn maybe_spawn_xlayer_verify_server(&self) {
+        let target = { self.inner.lock().await.xlayer_verify_target() };
+        if let Some((addr, client)) = target {
+            tokio::spawn(async move {
+                if let Err(e) = crate::xlayer_verify_server::serve(addr, client).await {
+                    tracing::warn!("XLayer verify server exited: {e}. Continuing without it.");
+                }
+            });
+        }
+    }
+
     /// Returns the address of the signer without acquiring a lock.
     pub fn address(&self) -> Address {
         self.cached_address
@@ -378,6 +432,30 @@ mod tests {
     use op_succinct_host_utils::OPSuccinctL2OutputOracle::OPSuccinctL2OutputOracleInstance as OPSuccinctL2OOContract;
 
     use super::*;
+
+    #[test]
+    fn test_xlayer_verify_target_none_for_non_xlayer() {
+        let signer = Signer::new_local_signer(
+            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+        )
+        .unwrap();
+        assert!(signer.xlayer_verify_target().is_none());
+    }
+
+    #[test]
+    fn test_xlayer_verify_target_none_when_addr_empty() {
+        let cfg = XLayerConfig::default(); // verify_addr == ""
+        let signer = Signer::new_xlayer_remote_signer(cfg);
+        assert!(signer.xlayer_verify_target().is_none());
+    }
+
+    #[test]
+    fn test_xlayer_verify_target_some_when_addr_set() {
+        let mut cfg = XLayerConfig::default();
+        cfg.verify_addr = "127.0.0.1:0".to_string();
+        let signer = Signer::new_xlayer_remote_signer(cfg);
+        assert!(signer.xlayer_verify_target().is_some());
+    }
 
     #[tokio::test]
     #[ignore]

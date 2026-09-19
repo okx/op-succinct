@@ -324,6 +324,8 @@ pub struct XLayerConfig {
     pub timeout: Duration,
     /// Component role driving the refOrderID prefix. Not sensitive.
     pub role: ComponentRole,
+    /// Verify-server listen address; empty ⇒ the verify server is disabled. Not sensitive.
+    pub verify_addr: String,
 }
 
 impl std::fmt::Debug for XLayerConfig {
@@ -343,6 +345,7 @@ impl std::fmt::Debug for XLayerConfig {
             .field("secret_key", &"***REDACTED***")
             .field("timeout", &self.timeout)
             .field("role", &self.role)
+            .field("verify_addr", &self.verify_addr)
             .finish()
     }
 }
@@ -364,6 +367,7 @@ impl Default for XLayerConfig {
             secret_key: String::new(),
             timeout: Duration::from_secs(30),
             role: ComponentRole::Proposer,
+            verify_addr: String::new(),
         }
     }
 }
@@ -418,6 +422,16 @@ impl XLayerRemoteClient {
     pub async fn remember_ref_order_id(&self, id: &str) {
         let mut cache = self.ref_order_cache.lock().await;
         cache.put(id.to_string(), ());
+    }
+
+    /// The component role this client issues refOrderIDs for.
+    pub fn role(&self) -> ComponentRole {
+        self.config.role
+    }
+
+    /// The verify-server listen address (empty ⇒ verify server disabled).
+    pub fn verify_addr(&self) -> &str {
+        &self.config.verify_addr
     }
 
     /// Signs `transaction_request` via the XLayer remote signer.
@@ -1384,6 +1398,7 @@ mod tests {
             secret_key: "super-secret-key".to_string(),
             timeout: Duration::from_secs(30),
             role: ComponentRole::Proposer,
+            verify_addr: String::new(),
         };
 
         let debug_str = format!("{:?}", config);
@@ -1398,6 +1413,23 @@ mod tests {
 
         // Should contain redacted markers
         assert!(debug_str.contains("***REDACTED***"));
+    }
+
+    /// The verify listen address defaults to empty (feature dormant by default).
+    #[test]
+    fn test_config_verify_addr_defaults_empty() {
+        assert_eq!(XLayerConfig::default().verify_addr, "");
+    }
+
+    /// The client exposes its role and verify address for the startup wiring.
+    #[tokio::test]
+    async fn test_client_exposes_role_and_verify_addr() {
+        let mut cfg = XLayerConfig::default();
+        cfg.role = ComponentRole::Challenger;
+        cfg.verify_addr = "127.0.0.1:18081".to_string();
+        let client = XLayerRemoteClient::new(cfg);
+        assert_eq!(client.role(), ComponentRole::Challenger);
+        assert_eq!(client.verify_addr(), "127.0.0.1:18081");
     }
 
     /// Builds a tx with the given calldata that the dispute-game contracts
