@@ -412,6 +412,14 @@ impl XLayerRemoteClient {
         cache.contains(id)
     }
 
+    /// Records `id` as issued by this client. Additive helper for callers
+    /// that need to register an ID outside the sign path (e.g. tests); the
+    /// production sign flow records IDs itself in `sign_transaction`.
+    pub async fn remember_ref_order_id(&self, id: &str) {
+        let mut cache = self.ref_order_cache.lock().await;
+        cache.put(id.to_string(), ());
+    }
+
     /// Signs `transaction_request` via the XLayer remote signer.
     /// Concurrent calls are serialized internally.
     pub async fn sign_transaction(

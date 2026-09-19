@@ -46,9 +46,13 @@ aes.workspace = true
 base64.workspace = true
 lru.workspace = true
 
+# verify server for asset-management refOrderId callbacks
+axum = "0.8"
+
 [features]
 kms = ["dep:ok-kms-rust"]
 
 [dev-dependencies]
 dotenv.workspace = true
 op-succinct-host-utils.workspace = true
+tower = { version = "0.5", features = ["util"] }

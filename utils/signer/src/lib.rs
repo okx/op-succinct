@@ -18,7 +18,9 @@ use tokio::{sync::Mutex, time::Duration};
 
 pub mod kms;
 pub mod xlayer_remote_client;
+pub mod xlayer_verify_server;
 pub use xlayer_remote_client::{ComponentRole, XLayerConfig, XLayerRemoteClient};
+pub use xlayer_verify_server::{serve as serve_xlayer_verify, VerifyResponseResult};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
