@@ -18,7 +18,9 @@
 
 use alloy_primitives::{address, Bytes, U256};
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-use op_succinct_signer_utils::xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
+use op_succinct_signer_utils::xlayer_remote_client::{
+    ComponentRole, XLayerConfig, XLayerRemoteClient,
+};
 use std::time::Duration;
 
 const DEFAULT_ENDPOINT: &str = "http://asset-onchain.forked-contract-risk.svc.test2.local:7001";
@@ -66,6 +68,7 @@ fn build_config() -> XLayerConfig {
         access_key,
         secret_key,
         timeout: TIMEOUT,
+        role: ComponentRole::Proposer,
     }
 }
 

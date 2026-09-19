@@ -18,7 +18,7 @@ use tokio::{sync::Mutex, time::Duration};
 
 pub mod kms;
 pub mod xlayer_remote_client;
-pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
+pub use xlayer_remote_client::{ComponentRole, XLayerConfig, XLayerRemoteClient};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
@@ -124,6 +124,7 @@ impl Signer {
                             .parse()
                             .context("Failed to parse XLAYER_TIMEOUT")?
                     ),
+                    role: ComponentRole::Proposer,
                 };
 
                 tracing::info!(

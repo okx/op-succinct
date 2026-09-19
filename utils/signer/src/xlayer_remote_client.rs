@@ -58,18 +58,40 @@ const HTTP_STATUS_SUCCESS: u16 = 200;
 /// so a companion verify-server can answer asset-management callbacks.
 const REF_ORDER_CACHE_CAPACITY: usize = 1000;
 
-const REF_ORDER_ID_PREFIX: &str = "PROPOSER_TZ_";
+/// Which component this signer serves. Set once at process start.
+/// There is no reachable "unknown" role: this is a closed two-variant set
+/// fixed at startup, so an unrecognised role is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentRole {
+    Proposer,
+    Challenger,
+}
 
-/// Builds a refOrderID of the form `PROPOSER_TZ_{op}_{unix_ms}_{rand8hex}`.
-/// The 32 bits of randomness come from a v4 UUID to avoid pulling in a
-/// separate `rand` dependency.
-fn generate_ref_order_id(op: OperateType) -> String {
+impl Default for ComponentRole {
+    fn default() -> Self {
+        ComponentRole::Proposer
+    }
+}
+
+/// refOrderID prefix for a component role.
+fn ref_order_id_prefix(role: ComponentRole) -> &'static str {
+    match role {
+        ComponentRole::Proposer => "PROPOSER_TZ_",
+        ComponentRole::Challenger => "CHALLENGER_TZ_",
+    }
+}
+
+/// Builds a refOrderID of the form `{prefix}{op}_{unix_ms}_{rand8hex}`.
+/// The prefix is role-dependent (`PROPOSER_TZ_` / `CHALLENGER_TZ_`); the 32
+/// bits of randomness come from a v4 UUID to avoid pulling in a separate
+/// `rand` dependency.
+fn generate_ref_order_id(role: ComponentRole, op: OperateType) -> String {
     let ts_ms = chrono::Utc::now().timestamp_millis();
     let uuid = uuid::Uuid::new_v4();
     let rand_bytes = &uuid.as_bytes()[..4];
     format!(
         "{prefix}{op}_{ts}_{rand}",
-        prefix = REF_ORDER_ID_PREFIX,
+        prefix = ref_order_id_prefix(role),
         op = op as i32,
         ts = ts_ms,
         rand = hex::encode(rand_bytes),
@@ -300,6 +322,8 @@ pub struct XLayerConfig {
     pub access_key: String,
     pub secret_key: String,
     pub timeout: Duration,
+    /// Component role driving the refOrderID prefix. Not sensitive.
+    pub role: ComponentRole,
 }
 
 impl std::fmt::Debug for XLayerConfig {
@@ -318,6 +342,7 @@ impl std::fmt::Debug for XLayerConfig {
             .field("access_key", &"***REDACTED***")
             .field("secret_key", &"***REDACTED***")
             .field("timeout", &self.timeout)
+            .field("role", &self.role)
             .finish()
     }
 }
@@ -338,6 +363,7 @@ impl Default for XLayerConfig {
             access_key: String::new(),
             secret_key: String::new(),
             timeout: Duration::from_secs(30),
+            role: ComponentRole::Proposer,
         }
     }
 }
@@ -410,7 +436,7 @@ impl XLayerRemoteClient {
         // Register the refOrderID before sending so the verify-server can
         // answer asset-management callbacks even if the response is delayed
         // or lost.
-        let ref_order_id = generate_ref_order_id(operate_type);
+        let ref_order_id = generate_ref_order_id(self.config.role, operate_type);
         {
             let mut cache = self.ref_order_cache.lock().await;
             cache.put(ref_order_id.clone(), ());
@@ -1349,6 +1375,7 @@ mod tests {
             access_key: "secret-access-key".to_string(),
             secret_key: "super-secret-key".to_string(),
             timeout: Duration::from_secs(30),
+            role: ComponentRole::Proposer,
         };
 
         let debug_str = format!("{:?}", config);
@@ -1527,10 +1554,31 @@ mod tests {
         assert_eq!(recovered_req.from, Some(expected_from));
     }
 
+    /// Prefix is role-driven: Proposer -> PROPOSER_TZ_, Challenger -> CHALLENGER_TZ_.
+    #[test]
+    fn test_ref_order_id_prefix_by_role() {
+        assert_eq!(ref_order_id_prefix(ComponentRole::Proposer), "PROPOSER_TZ_");
+        assert_eq!(ref_order_id_prefix(ComponentRole::Challenger), "CHALLENGER_TZ_");
+    }
+
+    /// A Challenger emits CHALLENGER_TZ_, keeping the {prefix}{op}_{ts}_{8hex} shape.
+    #[test]
+    fn test_generate_ref_order_id_challenger_prefix() {
+        let id = generate_ref_order_id(ComponentRole::Challenger, OperateType::Challenge);
+        assert!(id.starts_with("CHALLENGER_TZ_"), "expected CHALLENGER_TZ_ prefix, got: {id}");
+        let tail = id.trim_start_matches("CHALLENGER_TZ_");
+        let parts: Vec<&str> = tail.split('_').collect();
+        assert_eq!(parts.len(), 3, "expected op_ts_rand, got: {id}");
+        assert_eq!(parts[0], "28"); // OperateType::Challenge == 28
+        assert!(parts[1].parse::<i64>().is_ok(), "timestamp not numeric: {id}");
+        assert_eq!(parts[2].len(), 8, "rand must be 8 hex chars: {id}");
+        assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
     /// refOrderID shape: `PROPOSER_TZ_{operateType}_{ms}_{8 hex}`.
     #[test]
     fn test_generate_ref_order_id_shape() {
-        let id = generate_ref_order_id(OperateType::Create);
+        let id = generate_ref_order_id(ComponentRole::Proposer, OperateType::Create);
         // Prefix
         assert!(
             id.starts_with("PROPOSER_TZ_"),
@@ -1551,8 +1599,8 @@ mod tests {
     /// the same millisecond — the random suffix is what saves us.
     #[test]
     fn test_generate_ref_order_id_unique() {
-        let a = generate_ref_order_id(OperateType::Resolve);
-        let b = generate_ref_order_id(OperateType::Resolve);
+        let a = generate_ref_order_id(ComponentRole::Proposer, OperateType::Resolve);
+        let b = generate_ref_order_id(ComponentRole::Proposer, OperateType::Resolve);
         assert_ne!(a, b);
     }
 
@@ -1563,7 +1611,7 @@ mod tests {
     async fn test_has_ref_order_id_roundtrip() {
         let client = XLayerRemoteClient::new(XLayerConfig::default());
 
-        let id = generate_ref_order_id(OperateType::Create);
+        let id = generate_ref_order_id(ComponentRole::Proposer, OperateType::Create);
         assert!(!client.has_ref_order_id(&id).await);
 
         {
