@@ -61,16 +61,11 @@ const REF_ORDER_CACHE_CAPACITY: usize = 1000;
 /// Which component this signer serves. Set once at process start.
 /// There is no reachable "unknown" role: this is a closed two-variant set
 /// fixed at startup, so an unrecognised role is unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ComponentRole {
+    #[default]
     Proposer,
     Challenger,
-}
-
-impl Default for ComponentRole {
-    fn default() -> Self {
-        ComponentRole::Proposer
-    }
 }
 
 /// refOrderID prefix for a component role.
