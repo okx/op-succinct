@@ -200,7 +200,9 @@ where
         Ok(())
     }
 
-    pub(super) async fn should_create_game(&self) -> Result<(bool, U256, u32)> {
+    // `pub` (not `pub(super)`): the integration test `fault-proof/tests/sync.rs` — a separate
+    // crate — calls this, which requires public visibility (E0624 otherwise). No behavior change.
+    pub async fn should_create_game(&self) -> Result<(bool, U256, u32)> {
         if self.config.fast_finality_mode {
             anyhow::bail!("tz: fast_finality_mode is not supported");
         }
