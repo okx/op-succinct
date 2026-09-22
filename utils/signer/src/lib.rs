@@ -459,8 +459,7 @@ mod tests {
 
     #[test]
     fn test_xlayer_verify_target_some_when_addr_set() {
-        let mut cfg = XLayerConfig::default();
-        cfg.verify_addr = "127.0.0.1:0".to_string();
+        let cfg = XLayerConfig { verify_addr: "127.0.0.1:0".to_string(), ..Default::default() };
         let signer = Signer::new_xlayer_remote_signer(cfg);
         assert!(signer.xlayer_verify_target().is_some());
     }
