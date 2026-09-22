@@ -1138,7 +1138,7 @@ mod tests {
                 parentIndex: u32::MAX,
                 counteredBy: Address::ZERO,
                 prover: Address::ZERO,
-                claim: B256::ZERO.into(),
+                claim: B256::ZERO,
                 status: ProposalStatus::Unchallenged,
                 deadline,
             }
