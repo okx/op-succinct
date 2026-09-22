@@ -19,7 +19,7 @@ use tokio::{sync::Mutex, time::Duration};
 pub mod kms;
 pub mod xlayer_remote_client;
 pub mod xlayer_verify_server;
-pub use xlayer_remote_client::{ComponentRole, XLayerConfig, XLayerRemoteClient};
+pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
 pub use xlayer_verify_server::{serve as serve_xlayer_verify, VerifyResponseResult};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
@@ -81,18 +81,24 @@ impl Signer {
         Signer::XLayerRemoteSigner(Arc::new(client), address)
     }
 
+    /// Creates a signer from environment variables. For the XLayer remote
+    /// signer, `XLAYER_SIGNER_REF_ORDER_PREFIX` supplies the refOrderID
+    /// prefix directly — this function does not know or care whether it is
+    /// running inside a proposer, a challenger, or any future service.
     pub async fn from_env() -> Result<Self> {
-        Self::from_env_with_role(ComponentRole::Proposer).await
-    }
-
-    /// Like [`Signer::from_env`], but tags the signer with a component role,
-    /// which drives the refOrderID prefix for the XLayer remote signer. All
-    /// non-XLayer branches are role-independent, so existing callers of
-    /// `from_env` keep today's Proposer-defaulting behaviour byte-for-byte.
-    pub async fn from_env_with_role(role: ComponentRole) -> Result<Self> {
         // Check for XLayer remote signer first (highest priority for production)
         if let Ok(enabled) = std::env::var("XLAYER_SIGNER_ENABLED") {
             if enabled.to_lowercase() == "true" {
+                // The refOrderID prefix is ops-owned deployment identity, not a role
+                // this crate senses or hardcodes: the same binary run as a proposer,
+                // a challenger, or any future service is told what to embed in every
+                // refOrderID purely via this variable. Validated eagerly so a typo
+                // fails startup instead of silently producing an unattributable ID.
+                let ref_order_prefix = std::env::var("XLAYER_SIGNER_REF_ORDER_PREFIX").context(
+                    "XLAYER_SIGNER_REF_ORDER_PREFIX is required when XLAYER_SIGNER_ENABLED=true",
+                )?;
+                xlayer_remote_client::validate_ref_order_prefix(&ref_order_prefix)?;
+
                 let config = XLayerConfig {
                     endpoint: std::env::var("XLAYER_SIGNER_ENDPOINT").context(
                         "XLAYER_SIGNER_ENDPOINT is required when XLAYER_SIGNER_ENABLED=true",
@@ -138,7 +144,7 @@ impl Signer {
                             .parse()
                             .context("Failed to parse XLAYER_TIMEOUT")?,
                     ),
-                    role,
+                    ref_order_prefix,
                     verify_addr: std::env::var("XLAYER_SIGNER_VERIFY_ADDR").unwrap_or_default(),
                 };
 
@@ -375,15 +381,12 @@ impl SignerLock {
         SignerLock { inner: Arc::new(Mutex::new(signer)), cached_address }
     }
 
-    /// Creates a SignerLock from environment variables.
+    /// Creates a SignerLock from environment variables. For the XLayer remote
+    /// signer, the refOrderID prefix embedded in every issued ID comes from
+    /// `XLAYER_SIGNER_REF_ORDER_PREFIX` — this crate has no notion of which
+    /// component (proposer, challenger, or a future service) is calling it.
     pub async fn from_env() -> Result<Self> {
         Ok(SignerLock::new(Signer::from_env().await?))
-    }
-
-    /// Creates a SignerLock from environment variables, tagged with the
-    /// component role (drives the refOrderID prefix for the XLayer signer).
-    pub async fn from_env_with_role(role: ComponentRole) -> Result<Self> {
-        Ok(SignerLock::new(Signer::from_env_with_role(role).await?))
     }
 
     /// Best-effort: if the wrapped signer is an XLayer signer with a configured
