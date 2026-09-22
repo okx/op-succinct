@@ -355,6 +355,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::field_reassign_with_default)]
     async fn output_root_uses_header_withdrawals_root_post_isthmus() {
         let asserter = Asserter::new();
         let provider = mock_l2_provider(asserter.clone());
@@ -375,6 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::field_reassign_with_default)]
     async fn output_root_fetches_proof_when_withdrawals_root_is_unavailable() {
         for withdrawals_root in [None, Some(alloy_trie::EMPTY_ROOT_HASH)] {
             let asserter = Asserter::new();

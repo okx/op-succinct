@@ -19,7 +19,7 @@ use op_succinct_host_utils::{
     setup_logger,
 };
 use op_succinct_proof_utils::initialize_host;
-use op_succinct_signer_utils::SignerLock;
+use op_succinct_signer_utils::{ComponentRole, SignerLock};
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
@@ -89,7 +89,9 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> =
         Arc::new(TzL2Provider { tz_client, wb });
 
-    let proposer_signer = SignerLock::from_env().await?;
+    let proposer_signer = SignerLock::from_env_with_role(ComponentRole::Proposer).await?;
+    // Best-effort: start the asset-management verify server if XLAYER_SIGNER_VERIFY_ADDR is set.
+    proposer_signer.maybe_spawn_xlayer_verify_server().await;
     let l1_provider = ProviderBuilder::new().connect_http(proposer_config.l1_rpc.clone());
 
     let anchor_state_registry = AnchorStateRegistry::new(

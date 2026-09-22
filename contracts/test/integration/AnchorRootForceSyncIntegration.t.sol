@@ -247,17 +247,13 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         (ok,) = address(rootManager).call(data);
     }
 
-    function _assertCheckpointRoots(uint256 height, bytes32 expectedW, bytes32 expectedF) internal view {
-        (bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getRoots(height);
-        assertEq(withdrawalRoot, expectedW, "checkpoint withdrawal root");
-        assertEq(forceTxRoot, expectedF, "checkpoint force root");
-    }
-
     function _assertLatestRoots(uint256 expectedHeight, bytes32 expectedW, bytes32 expectedF) internal view {
         (uint256 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getLatestRoots();
         assertEq(height, expectedHeight, "latest checkpoint height");
         assertEq(withdrawalRoot, expectedW, "latest withdrawal root");
         assertEq(forceTxRoot, expectedF, "latest force root");
+        assertEq(rootManager.latestWithdrawalRoot(), expectedW, "public latest withdrawal root");
+        assertEq(rootManager.latestForceTxRoot(), expectedF, "public latest force root");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -331,8 +327,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         emit RootsRecorded(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
         assertTrue(_deliverCapturedDeposit(), "record delivery");
 
-        // The exact-height and latest queries both mirror the anchor game's committed tuple.
-        _assertCheckpointRoots(SEQ_1, game.withdrawalRoot(), game.forceRoot());
+        // The latest query mirrors the anchor game's committed tuple.
         _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
 
         // Credit remains claimable and pays exactly the bond; no value is stranded.
@@ -370,10 +365,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         );
         assertTrue(_deliverCapturedDeposit(), "record #2");
 
-        // Checkpoints may be sparse: latest advances, while exact-height history remains intact.
-        _assertCheckpointRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
-        _assertCheckpointRoots(SEQ_1 + 1, bytes32(0), bytes32(0));
-        _assertCheckpointRoots(SEQ_2, w2, f2);
+        // Only the latest checkpoint tuple is exposed.
         _assertLatestRoots(SEQ_2, w2, f2);
     }
 
@@ -559,7 +551,6 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         vm.prank(aliasedForwarder);
         rootManager.record(WITHDRAWAL_ROOT, bytes32(0), SEQ_1);
 
-        _assertCheckpointRoots(SEQ_1, bytes32(0), bytes32(0));
         _assertLatestRoots(0, bytes32(0), bytes32(0));
     }
 
@@ -583,7 +574,6 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1 - 1);
 
         // Neither rejected delivery changes state.
-        _assertCheckpointRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
         _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 
@@ -600,7 +590,6 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         vm.prank(aliasedForwarder);
         rootManager.record(correctedW, correctedF, SEQ_1);
 
-        _assertCheckpointRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
         _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
     }
 

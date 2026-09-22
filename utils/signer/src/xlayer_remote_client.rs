@@ -3,12 +3,10 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::num::NonZeroUsize;
-use std::time::Duration;
 use lru::LruCache;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use serde::{Deserialize, Serialize};
+use std::{num::NonZeroUsize, time::Duration};
+use tokio::{sync::Mutex, time::sleep};
 
 /// Custom error types for XLayer remote signer
 #[derive(Debug, thiserror::Error)]
@@ -17,11 +15,7 @@ pub enum XLayerSignerError {
     HttpError { status: u16, body: String },
 
     #[error("Signing request failed: status={status}, msg={msg}, detail={detail}")]
-    SigningFailed {
-        status: i32,
-        msg: String,
-        detail: String,
-    },
+    SigningFailed { status: i32, msg: String, detail: String },
 
     #[error("Transaction verification failed: {0}")]
     VerificationError(String),
@@ -58,18 +52,35 @@ const HTTP_STATUS_SUCCESS: u16 = 200;
 /// so a companion verify-server can answer asset-management callbacks.
 const REF_ORDER_CACHE_CAPACITY: usize = 1000;
 
-const REF_ORDER_ID_PREFIX: &str = "PROPOSER_TZ_";
+/// Which component this signer serves. Set once at process start.
+/// There is no reachable "unknown" role: this is a closed two-variant set
+/// fixed at startup, so an unrecognised role is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComponentRole {
+    #[default]
+    Proposer,
+    Challenger,
+}
 
-/// Builds a refOrderID of the form `PROPOSER_TZ_{op}_{unix_ms}_{rand8hex}`.
-/// The 32 bits of randomness come from a v4 UUID to avoid pulling in a
-/// separate `rand` dependency.
-fn generate_ref_order_id(op: OperateType) -> String {
+/// refOrderID prefix for a component role.
+fn ref_order_id_prefix(role: ComponentRole) -> &'static str {
+    match role {
+        ComponentRole::Proposer => "PROPOSER_TZ_",
+        ComponentRole::Challenger => "CHALLENGER_TZ_",
+    }
+}
+
+/// Builds a refOrderID of the form `{prefix}{op}_{unix_ms}_{rand8hex}`.
+/// The prefix is role-dependent (`PROPOSER_TZ_` / `CHALLENGER_TZ_`); the 32
+/// bits of randomness come from a v4 UUID to avoid pulling in a separate
+/// `rand` dependency.
+fn generate_ref_order_id(role: ComponentRole, op: OperateType) -> String {
     let ts_ms = chrono::Utc::now().timestamp_millis();
     let uuid = uuid::Uuid::new_v4();
     let rand_bytes = &uuid.as_bytes()[..4];
     format!(
         "{prefix}{op}_{ts}_{rand}",
-        prefix = REF_ORDER_ID_PREFIX,
+        prefix = ref_order_id_prefix(role),
         op = op as i32,
         ts = ts_ms,
         rand = hex::encode(rand_bytes),
@@ -147,11 +158,7 @@ struct XLayerQueryRequest {
 enum MethodOverlay {
     /// `DisputeGameFactory.create(uint32, bytes32, bytes)`
     #[serde(rename_all = "camelCase")]
-    Create {
-        game_type: u32,
-        root_claim: String,
-        extra_data: String,
-    },
+    Create { game_type: u32, root_claim: String, extra_data: String },
     /// `OPSuccinctFaultDisputeGame.claimCredit(address)`
     ClaimCredit { recipient: String },
     /// `OPSuccinctFaultDisputeGame.prove(bytes)`
@@ -214,8 +221,7 @@ fn decode_create(args: &[u8]) -> Result<MethodOverlay> {
     let game_type = u32_from_word(&args[0..32]);
     let root_claim = hex_0x(&args[32..64]);
     let extra_data_offset = u64_from_word(&args[64..96]) as usize;
-    let extra_data = decode_dyn_bytes(args, extra_data_offset)
-        .unwrap_or_else(|| "0x".to_string());
+    let extra_data = decode_dyn_bytes(args, extra_data_offset).unwrap_or_else(|| "0x".to_string());
 
     tracing::info!(
         game_type,
@@ -252,9 +258,7 @@ fn decode_prove(args: &[u8]) -> Result<MethodOverlay> {
         );
     }
     tracing::info!(proof_bytes_len = length, "Parsed prove() params");
-    Ok(MethodOverlay::Prove {
-        proof_bytes: hex_0x(&args[64..64 + length]),
-    })
+    Ok(MethodOverlay::Prove { proof_bytes: hex_0x(&args[64..64 + length]) })
 }
 
 /// Decodes an ABI dynamic `bytes` value at `offset` inside `args`. The
@@ -300,6 +304,10 @@ pub struct XLayerConfig {
     pub access_key: String,
     pub secret_key: String,
     pub timeout: Duration,
+    /// Component role driving the refOrderID prefix. Not sensitive.
+    pub role: ComponentRole,
+    /// Verify-server listen address; empty ⇒ the verify server is disabled. Not sensitive.
+    pub verify_addr: String,
 }
 
 impl std::fmt::Debug for XLayerConfig {
@@ -318,6 +326,8 @@ impl std::fmt::Debug for XLayerConfig {
             .field("access_key", &"***REDACTED***")
             .field("secret_key", &"***REDACTED***")
             .field("timeout", &self.timeout)
+            .field("role", &self.role)
+            .field("verify_addr", &self.verify_addr)
             .finish()
     }
 }
@@ -338,6 +348,8 @@ impl Default for XLayerConfig {
             access_key: String::new(),
             secret_key: String::new(),
             timeout: Duration::from_secs(30),
+            role: ComponentRole::Proposer,
+            verify_addr: String::new(),
         }
     }
 }
@@ -370,20 +382,33 @@ impl XLayerRemoteClient {
                 .expect("REF_ORDER_CACHE_CAPACITY must be > 0"),
         );
 
-        Self {
-            config,
-            client,
-            signing_lock: Mutex::new(()),
-            ref_order_cache: Mutex::new(cache),
-        }
+        Self { config, client, signing_lock: Mutex::new(()), ref_order_cache: Mutex::new(cache) }
     }
 
     /// Reports whether this client has issued the given `refOrderID`.
     /// Used by asset-management callbacks to vouch for a transfer
     /// initiated by the remote signer.
     pub async fn has_ref_order_id(&self, id: &str) -> bool {
-        let mut cache = self.ref_order_cache.lock().await;
+        let cache = self.ref_order_cache.lock().await;
         cache.contains(id)
+    }
+
+    /// Records `id` as issued by this client. Additive helper for callers
+    /// that need to register an ID outside the sign path (e.g. tests); the
+    /// production sign flow records IDs itself in `sign_transaction`.
+    pub async fn remember_ref_order_id(&self, id: &str) {
+        let mut cache = self.ref_order_cache.lock().await;
+        cache.put(id.to_string(), ());
+    }
+
+    /// The component role this client issues refOrderIDs for.
+    pub fn role(&self) -> ComponentRole {
+        self.config.role
+    }
+
+    /// The verify-server listen address (empty ⇒ verify server disabled).
+    pub fn verify_addr(&self) -> &str {
+        &self.config.verify_addr
     }
 
     /// Signs `transaction_request` via the XLayer remote signer.
@@ -410,7 +435,7 @@ impl XLayerRemoteClient {
         // Register the refOrderID before sending so the verify-server can
         // answer asset-management callbacks even if the response is delayed
         // or lost.
-        let ref_order_id = generate_ref_order_id(operate_type);
+        let ref_order_id = generate_ref_order_id(self.config.role, operate_type);
         {
             let mut cache = self.ref_order_cache.lock().await;
             cache.put(ref_order_id.clone(), ());
@@ -426,7 +451,7 @@ impl XLayerRemoteClient {
 
         let operate_amount = transaction_request
             .value
-            .map(|v| Self::convert_value_to_operate_amount(v))
+            .map(Self::convert_value_to_operate_amount)
             .unwrap_or_else(|| "0".to_string());
 
         let sign_request = XLayerSignRequest {
@@ -463,7 +488,7 @@ impl XLayerRemoteClient {
                 sleep(RETRY_DELAY).await;
             }
 
-            match self.post_sign_request_and_wait_result(&sign_request, &transaction_request).await {
+            match self.post_sign_request_and_wait_result(&sign_request, transaction_request).await {
                 Ok(signed_tx_bytes) => {
                     if attempt > 0 {
                         tracing::info!("Remote signing succeeded after retry: attempt={}", attempt);
@@ -473,10 +498,10 @@ impl XLayerRemoteClient {
                 Err(e) => {
                     let err_str = e.to_string();
                     // The remote can return either the Chinese or English wording.
-                    let is_pending_tx_error = err_str.contains("未完成交易")
-                        || err_str.contains("pending transaction")
-                        || err_str.contains("相同地址有未完成交易")
-                        || err_str.contains("has pending transactions");
+                    let is_pending_tx_error = err_str.contains("未完成交易") ||
+                        err_str.contains("pending transaction") ||
+                        err_str.contains("相同地址有未完成交易") ||
+                        err_str.contains("has pending transactions");
 
                     if !is_pending_tx_error {
                         tracing::error!("Remote signing failed with non-retryable error: {}", e);
@@ -510,10 +535,7 @@ impl XLayerRemoteClient {
 
     /// Maps the calldata selector to the wire-level `OperateType` the
     /// remote signer expects.
-    fn detect_operate_type(
-        &self,
-        tx: &TransactionRequest,
-    ) -> Result<OperateType> {
+    fn detect_operate_type(&self, tx: &TransactionRequest) -> Result<OperateType> {
         let empty_bytes = Bytes::new();
         let data = tx.input.input().unwrap_or(&empty_bytes);
         if data.len() < 4 {
@@ -594,9 +616,9 @@ impl XLayerRemoteClient {
         }
 
         let hex_data = result.data.trim_start_matches("0x");
-        let signed_tx_bytes = hex::decode(hex_data)
-            .context("Failed to decode signed transaction hex")?;
-        self.verify_signed_transaction(&transaction_request, &signed_tx_bytes)?;
+        let signed_tx_bytes =
+            hex::decode(hex_data).context("Failed to decode signed transaction hex")?;
+        self.verify_signed_transaction(transaction_request, &signed_tx_bytes)?;
 
         Ok(Bytes::from(signed_tx_bytes))
     }
@@ -627,11 +649,7 @@ impl XLayerRemoteClient {
         eprintln!("[xlayer] <<< {status} {resp_body}");
 
         if status != HTTP_STATUS_SUCCESS {
-            return Err(XLayerSignerError::HttpError {
-                status,
-                body: resp_body,
-            }
-            .into());
+            return Err(XLayerSignerError::HttpError { status, body: resp_body }.into());
         }
 
         let sign_response: XLayerSignResponse = serde_json::from_str(&resp_body)
@@ -692,10 +710,7 @@ impl XLayerRemoteClient {
                 .context("Failed to send query request")?;
 
             let status = response.status().as_u16();
-            let body = response
-                .text()
-                .await
-                .context("Failed to read query response body")?;
+            let body = response.text().await.context("Failed to read query response body")?;
             eprintln!("[xlayer] <<< {status} {body}");
 
             if status != HTTP_STATUS_SUCCESS {
@@ -791,10 +806,16 @@ impl XLayerRemoteClient {
 
     /// Encrypts data using AES-ECB with PKCS5 padding. Accepts 16/24/32-byte
     /// keys (AES-128/192/256).
+    // The AES `GenericArray` key/block API is marked deprecated by the vendored
+    // generic-array pulled in behind the patched hash crates. Migrating to
+    // generic-array 1.x is intentionally out of scope here, so the denied
+    // `deprecated` lint is silenced at this self-contained call site only.
+    #[allow(deprecated)]
     fn encrypt_aes_ecb(&self, plaintext: &str) -> Result<Vec<u8>> {
-        use aes::cipher::generic_array::GenericArray;
-        use aes::cipher::{BlockEncrypt, KeyInit};
-        use aes::{Aes128, Aes192, Aes256};
+        use aes::{
+            cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit},
+            Aes128, Aes192, Aes256,
+        };
 
         let key_bytes = self.config.secret_key.as_bytes();
         let padded = self.pkcs5_padding(plaintext.as_bytes(), 16);
@@ -1090,6 +1111,10 @@ impl XLayerRemoteClient {
 }
 
 #[cfg(test)]
+// Test fixtures build TransactionRequest/XLayerConfig step-by-step from `default()`
+// for readability; the newer CI nightly denies clippy::field_reassign_with_default.
+// Scope the allow to the test module — no production code is affected.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use alloy_primitives::{address, Bytes, U256};
@@ -1225,10 +1250,7 @@ mod tests {
 
         let result = client.detect_operate_type(&tx);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown method signature"));
+        assert!(result.unwrap_err().to_string().contains("Unknown method signature"));
     }
 
     /// Test transaction data too short
@@ -1247,21 +1269,15 @@ mod tests {
 
         let result = client.detect_operate_type(&tx);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Transaction data too short"));
+        assert!(result.unwrap_err().to_string().contains("Transaction data too short"));
     }
 
-/// `operateAmount` must be an exact 18-decimal ETH string with trailing
+    /// `operateAmount` must be an exact 18-decimal ETH string with trailing
     /// zeros and any trailing dot trimmed.
     #[test]
     fn test_convert_value_to_operate_amount() {
         // 0 wei
-        assert_eq!(
-            XLayerRemoteClient::convert_value_to_operate_amount(U256::ZERO),
-            "0"
-        );
+        assert_eq!(XLayerRemoteClient::convert_value_to_operate_amount(U256::ZERO), "0");
 
         // 1 ETH = 10^18 wei -> "1"
         assert_eq!(
@@ -1349,6 +1365,8 @@ mod tests {
             access_key: "secret-access-key".to_string(),
             secret_key: "super-secret-key".to_string(),
             timeout: Duration::from_secs(30),
+            role: ComponentRole::Proposer,
+            verify_addr: String::new(),
         };
 
         let debug_str = format!("{:?}", config);
@@ -1363,6 +1381,23 @@ mod tests {
 
         // Should contain redacted markers
         assert!(debug_str.contains("***REDACTED***"));
+    }
+
+    /// The verify listen address defaults to empty (feature dormant by default).
+    #[test]
+    fn test_config_verify_addr_defaults_empty() {
+        assert_eq!(XLayerConfig::default().verify_addr, "");
+    }
+
+    /// The client exposes its role and verify address for the startup wiring.
+    #[tokio::test]
+    async fn test_client_exposes_role_and_verify_addr() {
+        let mut cfg = XLayerConfig::default();
+        cfg.role = ComponentRole::Challenger;
+        cfg.verify_addr = "127.0.0.1:18081".to_string();
+        let client = XLayerRemoteClient::new(cfg);
+        assert_eq!(client.role(), ComponentRole::Challenger);
+        assert_eq!(client.verify_addr(), "127.0.0.1:18081");
     }
 
     /// Builds a tx with the given calldata that the dispute-game contracts
@@ -1423,9 +1458,8 @@ mod tests {
 
         let mut calldata = hex::decode("60e27464").unwrap();
         calldata.extend_from_slice(&[0u8; 12]);
-        calldata.extend_from_slice(
-            &hex::decode("1234567890123456789012345678901234567890").unwrap(),
-        );
+        calldata
+            .extend_from_slice(&hex::decode("1234567890123456789012345678901234567890").unwrap());
 
         let json = build_other_info_for(&client, calldata);
         assert_eq!(
@@ -1474,11 +1508,8 @@ mod tests {
         config.secret_key = "12doxpwjkengkjna".to_string(); // 16-byte AES-128 key
         let client = XLayerRemoteClient::new(config);
 
-        let params: [(&str, &str); 3] = [
-            ("0", "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"),
-            ("1", "127"),
-            ("2", "true"),
-        ];
+        let params: [(&str, &str); 3] =
+            [("0", "0x07f67d4195bc9940f07eb901ef18f1e9e4af12d7"), ("1", "127"), ("2", "true")];
         let body = "{\"testBOdy\":45251}";
 
         let signature = client.generate_signature(&params, body).unwrap();
@@ -1527,15 +1558,33 @@ mod tests {
         assert_eq!(recovered_req.from, Some(expected_from));
     }
 
+    /// Prefix is role-driven: Proposer -> PROPOSER_TZ_, Challenger -> CHALLENGER_TZ_.
+    #[test]
+    fn test_ref_order_id_prefix_by_role() {
+        assert_eq!(ref_order_id_prefix(ComponentRole::Proposer), "PROPOSER_TZ_");
+        assert_eq!(ref_order_id_prefix(ComponentRole::Challenger), "CHALLENGER_TZ_");
+    }
+
+    /// A Challenger emits CHALLENGER_TZ_, keeping the {prefix}{op}_{ts}_{8hex} shape.
+    #[test]
+    fn test_generate_ref_order_id_challenger_prefix() {
+        let id = generate_ref_order_id(ComponentRole::Challenger, OperateType::Challenge);
+        assert!(id.starts_with("CHALLENGER_TZ_"), "expected CHALLENGER_TZ_ prefix, got: {id}");
+        let tail = id.trim_start_matches("CHALLENGER_TZ_");
+        let parts: Vec<&str> = tail.split('_').collect();
+        assert_eq!(parts.len(), 3, "expected op_ts_rand, got: {id}");
+        assert_eq!(parts[0], "28"); // OperateType::Challenge == 28
+        assert!(parts[1].parse::<i64>().is_ok(), "timestamp not numeric: {id}");
+        assert_eq!(parts[2].len(), 8, "rand must be 8 hex chars: {id}");
+        assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
     /// refOrderID shape: `PROPOSER_TZ_{operateType}_{ms}_{8 hex}`.
     #[test]
     fn test_generate_ref_order_id_shape() {
-        let id = generate_ref_order_id(OperateType::Create);
+        let id = generate_ref_order_id(ComponentRole::Proposer, OperateType::Create);
         // Prefix
-        assert!(
-            id.starts_with("PROPOSER_TZ_"),
-            "expected PROPOSER_TZ_ prefix, got: {id}"
-        );
+        assert!(id.starts_with("PROPOSER_TZ_"), "expected PROPOSER_TZ_ prefix, got: {id}");
         // Three underscore-separated chunks after the prefix:
         //   operateType, timestamp, random
         let tail = id.trim_start_matches("PROPOSER_TZ_");
@@ -1551,8 +1600,8 @@ mod tests {
     /// the same millisecond — the random suffix is what saves us.
     #[test]
     fn test_generate_ref_order_id_unique() {
-        let a = generate_ref_order_id(OperateType::Resolve);
-        let b = generate_ref_order_id(OperateType::Resolve);
+        let a = generate_ref_order_id(ComponentRole::Proposer, OperateType::Resolve);
+        let b = generate_ref_order_id(ComponentRole::Proposer, OperateType::Resolve);
         assert_ne!(a, b);
     }
 
@@ -1563,7 +1612,7 @@ mod tests {
     async fn test_has_ref_order_id_roundtrip() {
         let client = XLayerRemoteClient::new(XLayerConfig::default());
 
-        let id = generate_ref_order_id(OperateType::Create);
+        let id = generate_ref_order_id(ComponentRole::Proposer, OperateType::Create);
         assert!(!client.has_ref_order_id(&id).await);
 
         {
@@ -1574,5 +1623,4 @@ mod tests {
         assert!(client.has_ref_order_id(&id).await);
         assert!(!client.has_ref_order_id("totally-unrelated-id").await);
     }
-
 }

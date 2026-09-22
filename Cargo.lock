@@ -2133,10 +2133,13 @@ checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core 0.5.6",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
  "itoa",
  "matchit 0.8.4",
  "memchr",
@@ -2144,10 +2147,15 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper 1.0.2",
+ "tokio",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2204,6 +2212,7 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2590,7 +2599,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672b945a3e4f4f40bfd4cd5ee07df9e796a42254ce7cd6d2599ad969244c44a"
 dependencies = [
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -3630,7 +3639,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -6129,7 +6138,7 @@ dependencies = [
  "revm 34.0.0",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6171,7 +6180,7 @@ dependencies = [
  "kona-protocol",
  "op-alloy-consensus 0.23.1",
  "op-alloy-rpc-types-engine 0.23.1",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6363,7 +6372,7 @@ dependencies = [
  "op-revm 15.0.0",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6396,7 +6405,7 @@ dependencies = [
  "revm 34.0.0",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -6425,7 +6434,7 @@ dependencies = [
  "op-alloy-rpc-types",
  "op-alloy-rpc-types-engine 0.23.1",
  "serde",
- "spin 0.10.0",
+ "spin 0.10.1",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber 0.3.22",
@@ -7449,12 +7458,7 @@ dependencies = [
 
 [[package]]
 name = "ok-kms-rust"
-version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git?tag=v1.0.0#dda1c2b207877a605163fd3d80b406c0dce8b35b"
-dependencies = [
- "libloading",
- "thiserror 1.0.69",
-]
+version = "1.0.0"
 
 [[package]]
 name = "once_cell"
@@ -7642,7 +7646,7 @@ dependencies = [
  "kona-proof",
  "kona-protocol",
  "op-succinct-client-utils",
- "spin 0.10.0",
+ "spin 0.10.1",
  "tracing",
 ]
 
@@ -7702,7 +7706,7 @@ dependencies = [
  "kona-preimage",
  "kona-proof",
  "op-succinct-client-utils",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -7763,7 +7767,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "spin 0.10.0",
+ "spin 0.10.1",
  "tracing",
 ]
 
@@ -7784,7 +7788,7 @@ dependencies = [
  "kona-proof",
  "op-succinct-client-utils",
  "serde_cbor",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -7837,7 +7841,7 @@ dependencies = [
  "kona-preimage",
  "kona-proof",
  "op-succinct-client-utils",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -8093,6 +8097,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-transport-http",
  "anyhow",
+ "axum 0.8.8",
  "base64 0.22.1",
  "chrono",
  "dotenv",
@@ -8109,6 +8114,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
+ "tower 0.5.3",
  "tracing",
  "uuid",
 ]
@@ -9033,7 +9039,7 @@ dependencies = [
  "anyhow",
  "postgresql_archive",
  "postgresql_commands",
- "rand 0.10.0",
+ "rand 0.10.1",
  "semver 1.0.27",
  "sqlx",
  "target-triple",
@@ -9546,9 +9552,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc266eb313df6c5c09c1c7b1fbe2510961e5bcd3add930c1e31f7ed9da0feff8"
+checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
 dependencies = [
  "chacha20",
  "getrandom 0.4.2",
@@ -12115,7 +12121,7 @@ dependencies = [
 [[package]]
 name = "slop-air"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-air",
 ]
@@ -12123,7 +12129,7 @@ dependencies = [
 [[package]]
 name = "slop-algebra"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "itertools 0.14.0",
  "p3-field",
@@ -12133,7 +12139,7 @@ dependencies = [
 [[package]]
 name = "slop-alloc"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "serde",
  "slop-algebra",
@@ -12143,7 +12149,7 @@ dependencies = [
 [[package]]
 name = "slop-baby-bear"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "lazy_static",
  "p3-baby-bear",
@@ -12157,7 +12163,7 @@ dependencies = [
 [[package]]
 name = "slop-basefold"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "itertools 0.14.0",
@@ -12179,7 +12185,7 @@ dependencies = [
 [[package]]
 name = "slop-basefold-prover"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "itertools 0.14.0",
@@ -12205,7 +12211,7 @@ dependencies = [
 [[package]]
 name = "slop-bn254"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "ff 0.13.1",
  "p3-bn254-fr",
@@ -12220,7 +12226,7 @@ dependencies = [
 [[package]]
 name = "slop-challenger"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "futures",
  "p3-challenger",
@@ -12232,7 +12238,7 @@ dependencies = [
 [[package]]
 name = "slop-commit"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-commit",
  "serde",
@@ -12242,7 +12248,7 @@ dependencies = [
 [[package]]
 name = "slop-dft"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-dft",
  "serde",
@@ -12255,7 +12261,7 @@ dependencies = [
 [[package]]
 name = "slop-fri"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-fri",
 ]
@@ -12263,7 +12269,7 @@ dependencies = [
 [[package]]
 name = "slop-futures"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "crossbeam",
  "futures",
@@ -12277,7 +12283,7 @@ dependencies = [
 [[package]]
 name = "slop-jagged"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "futures",
@@ -12310,7 +12316,7 @@ dependencies = [
 [[package]]
 name = "slop-keccak-air"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-keccak-air",
 ]
@@ -12318,7 +12324,7 @@ dependencies = [
 [[package]]
 name = "slop-koala-bear"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "lazy_static",
  "p3-koala-bear",
@@ -12332,7 +12338,7 @@ dependencies = [
 [[package]]
 name = "slop-matrix"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-matrix",
 ]
@@ -12340,7 +12346,7 @@ dependencies = [
 [[package]]
 name = "slop-maybe-rayon"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-maybe-rayon",
 ]
@@ -12348,7 +12354,7 @@ dependencies = [
 [[package]]
 name = "slop-merkle-tree"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "ff 0.13.1",
@@ -12375,7 +12381,7 @@ dependencies = [
 [[package]]
 name = "slop-multilinear"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "futures",
@@ -12395,7 +12401,7 @@ dependencies = [
 [[package]]
 name = "slop-poseidon2"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-poseidon2",
 ]
@@ -12403,7 +12409,7 @@ dependencies = [
 [[package]]
 name = "slop-primitives"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "slop-algebra",
 ]
@@ -12411,7 +12417,7 @@ dependencies = [
 [[package]]
 name = "slop-stacked"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "futures",
@@ -12433,7 +12439,7 @@ dependencies = [
 [[package]]
 name = "slop-sumcheck"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "futures",
  "itertools 0.14.0",
@@ -12450,7 +12456,7 @@ dependencies = [
 [[package]]
 name = "slop-symmetric"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-symmetric",
 ]
@@ -12458,7 +12464,7 @@ dependencies = [
 [[package]]
 name = "slop-tensor"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "arrayvec",
  "derive-where",
@@ -12477,7 +12483,7 @@ dependencies = [
 [[package]]
 name = "slop-uni-stark"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-uni-stark",
 ]
@@ -12485,7 +12491,7 @@ dependencies = [
 [[package]]
 name = "slop-utils"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "p3-util",
  "tracing-forest",
@@ -12495,7 +12501,7 @@ dependencies = [
 [[package]]
 name = "slop-whir"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "derive-where",
  "futures",
@@ -12597,7 +12603,7 @@ dependencies = [
 [[package]]
 name = "sp1-build"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -12680,7 +12686,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-artifact"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#a9fc7dbda37e2628abeaa9b5c24ac840e07397d5"
+source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#43861409452f092dad649981ed9e7096e055b3cb"
 dependencies = [
  "anyhow",
  "async-scoped",
@@ -12706,7 +12712,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-common"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#a9fc7dbda37e2628abeaa9b5c24ac840e07397d5"
+source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#43861409452f092dad649981ed9e7096e055b3cb"
 dependencies = [
  "backoff",
  "chrono",
@@ -12734,7 +12740,7 @@ dependencies = [
 [[package]]
 name = "sp1-cluster-utils"
 version = "2.1.2"
-source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#a9fc7dbda37e2628abeaa9b5c24ac840e07397d5"
+source = "git+https://github.com/okx/sp1-cluster.git?branch=xl%2Fv2.1.2-chunk-size-env#43861409452f092dad649981ed9e7096e055b3cb"
 dependencies = [
  "eyre",
  "sp1-cluster-artifact",
@@ -12748,7 +12754,7 @@ dependencies = [
 [[package]]
 name = "sp1-core-executor"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -12790,7 +12796,7 @@ dependencies = [
 [[package]]
 name = "sp1-core-executor-runner"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -12811,7 +12817,7 @@ dependencies = [
 [[package]]
 name = "sp1-core-executor-runner-binary"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "bincode",
  "crash-handler",
@@ -12825,7 +12831,7 @@ dependencies = [
 [[package]]
 name = "sp1-core-machine"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "bincode",
  "cfg-if",
@@ -12872,7 +12878,7 @@ dependencies = [
 [[package]]
 name = "sp1-curves"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "cfg-if",
  "dashu",
@@ -12892,7 +12898,7 @@ dependencies = [
 [[package]]
 name = "sp1-derive"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12902,7 +12908,7 @@ dependencies = [
 [[package]]
 name = "sp1-hypercube"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "arrayref",
  "deepsize2",
@@ -12949,7 +12955,7 @@ dependencies = [
 [[package]]
 name = "sp1-jit"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "dynasmrt",
  "hashbrown 0.14.5",
@@ -12976,7 +12982,7 @@ dependencies = [
 [[package]]
 name = "sp1-primitives"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "bincode",
  "blake3",
@@ -12999,7 +13005,7 @@ dependencies = [
 [[package]]
 name = "sp1-prover"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "anyhow",
  "bincode",
@@ -13062,7 +13068,7 @@ dependencies = [
 [[package]]
 name = "sp1-prover-types"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "anyhow",
  "async-scoped",
@@ -13097,7 +13103,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-circuit"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "bincode",
  "itertools 0.14.0",
@@ -13136,7 +13142,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-compiler"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "backtrace",
  "cfg-if",
@@ -13156,7 +13162,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-executor"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "backtrace",
  "cfg-if",
@@ -13179,7 +13185,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-gnark-ffi"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "anyhow",
  "bincode",
@@ -13203,7 +13209,7 @@ dependencies = [
 [[package]]
 name = "sp1-recursion-machine"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "itertools 0.14.0",
  "rand 0.8.5",
@@ -13225,7 +13231,7 @@ dependencies = [
 [[package]]
 name = "sp1-sdk"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "alloy-primitives",
  "alloy-signer",
@@ -13276,7 +13282,7 @@ dependencies = [
 [[package]]
 name = "sp1-verifier"
 version = "6.1.0"
-source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#dab85639bb828aafa2971ae38fda8eeb56c4b1f5"
+source = "git+https://github.com/okx/sp1?branch=feat%2Fgateway-proxy-v6.1.0#69930287fcbfa778fc4a15e827944e14836b5a36"
 dependencies = [
  "bincode",
  "blake3",
@@ -13345,9 +13351,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 dependencies = [
  "lock_api",
 ]
@@ -13908,7 +13914,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82a72c767771b47409d2345987fda8628641887d5466101319899796367354a0"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -14716,7 +14722,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "tz-block-processor"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14737,7 +14743,7 @@ dependencies = [
 [[package]]
 name = "tz-dex"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14764,7 +14770,7 @@ dependencies = [
 [[package]]
 name = "tz-macros"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14774,7 +14780,7 @@ dependencies = [
 [[package]]
 name = "tz-primitives"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14798,7 +14804,7 @@ dependencies = [
 [[package]]
 name = "tz-witness"
 version = "0.1.0"
-source = "git+https://gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
 dependencies = [
  "thiserror 2.0.18",
  "tz-primitives",

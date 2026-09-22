@@ -62,7 +62,7 @@ mod tests {
     // FR-10 / DM-10.1 — L2_RPC unset.
     #[test]
     fn from_env_missing_l2_rpc_errors() {
-        let err = TzConfig::parse_from(|_| None).err().expect("must error");
+        let err = TzConfig::parse_from(|_| None).expect_err("must error");
         assert!(err.to_string().contains("L2_RPC must be set"));
     }
 
@@ -73,8 +73,7 @@ mod tests {
             "L2_RPC" => Some(",".to_string()),
             _ => None,
         })
-        .err()
-        .expect("must error");
+        .expect_err("must error");
         assert!(err.to_string().contains("non-empty URL"));
     }
 
