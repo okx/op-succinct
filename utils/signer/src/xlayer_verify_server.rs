@@ -5,9 +5,7 @@
 //! by THIS node. Read-only: it only reads the client's issued-ID record via
 //! `has_ref_order_id`.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
     extract::{Query, State},
@@ -94,8 +92,10 @@ pub async fn serve(addr: SocketAddr, client: Arc<XLayerRemoteClient>) -> anyhow:
 mod tests {
     use super::*;
     use crate::xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
     use std::sync::Arc;
     use tower::ServiceExt; // for `oneshot`
 
@@ -117,7 +117,9 @@ mod tests {
         let id = "PROPOSER_TZ_20_1699999999999_a1b2c3d4";
         let app = app(seeded_client(Some(id)).await);
         let resp = app
-            .oneshot(Request::get(format!("/signer/get?refOrderId={id}")).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get(format!("/signer/get?refOrderId={id}")).body(Body::empty()).unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -137,7 +139,9 @@ mod tests {
     async fn test_verify_not_found_returns_code_1() {
         let app = app(seeded_client(None).await);
         let resp = app
-            .oneshot(Request::get("/signer/get?refOrderId=never-issued").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/signer/get?refOrderId=never-issued").body(Body::empty()).unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -151,10 +155,8 @@ mod tests {
     #[tokio::test]
     async fn test_verify_missing_param_returns_400() {
         let app = app(seeded_client(None).await);
-        let resp = app
-            .oneshot(Request::get("/signer/get").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let resp =
+            app.oneshot(Request::get("/signer/get").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = body_json(resp).await;
         assert_eq!(json["code"], 1);
