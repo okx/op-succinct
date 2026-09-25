@@ -49,6 +49,7 @@ enum WbEndpoint {
     Boundary,
     Record,
     Proof,
+    WithdrawByTx,
 }
 
 /// The witness-builder's unified error envelope. Only `code` and `message` are needed to classify;
@@ -70,6 +71,11 @@ const ROUTE_CHECKPOINT: &str = "chain/dex_state_snapshot";
 const ROUTE_BOUNDARY: &str = "chain/witness/tree-boundary";
 const ROUTE_RECORD_PREFIX: &str = "chain/witness/withdrawals/"; // + {recordHash}
 const ROUTE_PROOF: &str = "chain/witness/withdrawal-proof";
+// Reverse-lookup a withdrawal leaf/record identity by its L2 transaction hash. Symmetric with the
+// path-param record route above; `{tzTxHash}` is a 0x-prefixed 32-byte hex path param. This route
+// does NOT exist in the witness builder yet (see `get_withdrawal_by_tx`); the client + its wiremock
+// tests are written against the documented contract only.
+const ROUTE_WITHDRAW_BY_TX_PREFIX: &str = "chain/witness/withdrawals/by-tx/"; // + {tzTxHash}
 
 /// Host-side Witness Builder v2 client.
 pub struct WbClient {
@@ -189,6 +195,14 @@ impl WbClient {
                 CODE_STORE_CORRUPT,
             ],
             WbEndpoint::Record => &[
+                CODE_INVALID_REQUEST,
+                CODE_WITHDRAWAL_NOT_FOUND,
+                CODE_NOT_READY,
+                CODE_STORE_CORRUPT,
+            ],
+            // Reverse-lookup shares the record endpoint's business-error surface: a bad request, an
+            // unknown tx, a not-yet-indexed result, or store corruption.
+            WbEndpoint::WithdrawByTx => &[
                 CODE_INVALID_REQUEST,
                 CODE_WITHDRAWAL_NOT_FOUND,
                 CODE_NOT_READY,
@@ -395,6 +409,44 @@ impl WbClient {
             siblings,
         })
     }
+
+    /// Reverse-lookup the withdrawal leaf/record identity for an L2 transaction hash
+    /// (`tzTxHash -> leafHash`). One `tz_tx_hash` maps to a single withdrawal leaf, matching the
+    /// bridge's 1:1 `getWithdraw(tzTxHash) -> WithdrawData`. The returned `leaf_hash` is used only
+    /// for the Defender's own local verification/logging — it never enters prove calldata, because
+    /// the contract recomputes the leaf itself from the on-chain withdrawal data.
+    ///
+    /// IMPORTANT: this route is not yet served by the witness builder; it is implemented against a
+    /// documented contract and covered by wiremock only. Real end-to-end verification is blocked
+    /// until the upstream endpoint exists.
+    pub async fn get_withdrawal_by_tx(&self, tz_tx_hash: B256) -> Result<WithdrawalByTx, WbError> {
+        let route = format!("{ROUTE_WITHDRAW_BY_TX_PREFIX}{tz_tx_hash:#x}");
+        let d: WithdrawalByTxDto = self.get(WbEndpoint::WithdrawByTx, &route, &[]).await?;
+        Ok(WithdrawalByTx {
+            record_hash: d.record_hash,
+            leaf_hash: d.leaf_hash,
+            canonical_block_height: d.canonical_block_height,
+        })
+    }
+}
+
+/// Reverse-lookup result mapping an L2 transaction hash to its withdrawal leaf/record identity.
+/// `leaf_hash == record_hash` for V1 records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WithdrawalByTx {
+    pub record_hash: B256,
+    pub leaf_hash: B256,
+    pub canonical_block_height: u64,
+}
+
+/// Wire shape of the reverse-lookup response `data` (camelCase; `leafHash == recordHash` for V1).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WithdrawalByTxDto {
+    record_hash: B256,
+    leaf_hash: B256,
+    #[serde(default)]
+    canonical_block_height: u64,
 }
 
 #[derive(Deserialize)]
@@ -1073,6 +1125,93 @@ mod tests {
         assert!(matches!(
             client(&s_record, 196).get_canonical_record(B256::repeat_byte(0x01)).await.unwrap_err(),
             WbError::Protocol
+        ));
+    }
+
+    // ── Reverse-lookup (tzTxHash -> leafHash) — written against the documented endpoint contract;
+    //    the route does not exist upstream yet, so these are wiremock-only (AC#5). Errors are
+    //    classified by the same joint (endpoint, status, code, message-prefix) validation, so the
+    //    fixtures use the exact wire tokens (e.g. `WithdrawalNotFound:`), not free-form prose. ──
+
+    #[tokio::test]
+    async fn withdrawal_by_tx_success_maps_fields() {
+        let server = MockServer::start().await;
+        let tx = B256::repeat_byte(0x5c);
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/by-tx/{tx:#x}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                "recordHash": format!("{:#x}", B256::repeat_byte(0xAA)),
+                "leafHash":   format!("{:#x}", B256::repeat_byte(0xAA)),
+                "canonicalBlockHeight": 4_242u64,
+            }))))
+            .mount(&server)
+            .await;
+        let got = client(&server, 196).get_withdrawal_by_tx(tx).await.unwrap();
+        assert_eq!(got.record_hash, B256::repeat_byte(0xAA));
+        assert_eq!(got.leaf_hash, B256::repeat_byte(0xAA));
+        assert_eq!(got.canonical_block_height, 4_242);
+    }
+
+    #[tokio::test]
+    async fn withdrawal_by_tx_404_11004_is_withdrawal_not_found() {
+        let server = MockServer::start().await;
+        let tx = B256::repeat_byte(0x01);
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/by-tx/{tx:#x}")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "code": 11004, "message": "WithdrawalNotFound: 0x01", "data": serde_json::Value::Null })))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            client(&server, 196).get_withdrawal_by_tx(tx).await,
+            Err(WbError::WithdrawalNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn withdrawal_by_tx_5xx_without_envelope_is_retryable_transport() {
+        let server = MockServer::start().await;
+        let tx = B256::repeat_byte(0x02);
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/by-tx/{tx:#x}")))
+            .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+            .mount(&server)
+            .await;
+        let err = client(&server, 196).get_withdrawal_by_tx(tx).await.unwrap_err();
+        assert!(err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn withdrawal_by_tx_200_code0_null_data_is_protocol() {
+        let server = MockServer::start().await;
+        let tx = B256::repeat_byte(0x03);
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/by-tx/{tx:#x}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0, "message": "ok", "data": serde_json::Value::Null })))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            client(&server, 196).get_withdrawal_by_tx(tx).await,
+            Err(WbError::Protocol)
+        ));
+    }
+
+    /// A joint-tuple violation: a proof-only code (11009) on the reverse-lookup endpoint is not in
+    /// its allowed set and must fail closed as `Protocol`, never a wait.
+    #[tokio::test]
+    async fn withdrawal_by_tx_out_of_set_code_fails_closed() {
+        let server = MockServer::start().await;
+        let tx = B256::repeat_byte(0x04);
+        Mock::given(method("GET"))
+            .and(path(format!("/chain/witness/withdrawals/by-tx/{tx:#x}")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "code": 11009, "message": "RootNotFound: x", "data": serde_json::Value::Null })))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            client(&server, 196).get_withdrawal_by_tx(tx).await,
+            Err(WbError::Protocol)
         ));
     }
 }
