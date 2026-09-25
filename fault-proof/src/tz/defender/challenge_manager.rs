@@ -22,7 +22,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 
 use super::challenge_contract::{
-    ChallengeEventSource, ChallengeId, ChallengeOpened, ScanWindow,
+    ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeStatus, ScanWindow,
 };
 use super::leaf_locator::LeafLocator;
 
@@ -124,6 +124,8 @@ struct AdapterState {
     deadlines: HashMap<U256, u64>,
     /// Pre-decoded events for the scripted (test) path; `None` on the live path.
     scripted_events: Option<Vec<RawChallengeEvent>>,
+    /// Scripted per-challenge status for the test path.
+    scripted_status: HashMap<ChallengeId, ChallengeStatus>,
 }
 
 /// Real ChallengeManager adapter implementing the three Defender seams. It is generic ONLY over the
@@ -252,6 +254,23 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
     pub fn onchain_id_for(&self, id: ChallengeId) -> Option<U256> {
         self.state.lock().unwrap().id_map.get(&id).copied()
     }
+
+    /// Test seam: script the status returned by `get_challenge` for a (discovered) challenge id.
+    #[cfg(test)]
+    pub fn script_status(
+        &self,
+        id: ChallengeId,
+        open: bool,
+        deadline: u64,
+        chain_timestamp: u64,
+        resolved_by_us: bool,
+    ) {
+        self.state
+            .lock()
+            .unwrap()
+            .scripted_status
+            .insert(id, ChallengeStatus { open, deadline, chain_timestamp, resolved_by_us });
+    }
 }
 
 #[async_trait]
@@ -259,6 +278,37 @@ impl<L: LeafLocator> ChallengeEventSource for ChallengeManagerContract<L> {
     async fn watch_opened(&self, window: ScanWindow) -> anyhow::Result<Vec<ChallengeOpened>> {
         let raws = self.collect_raw_events(window).await?;
         Ok(self.process_raw_events(raws).await)
+    }
+}
+
+#[async_trait]
+impl<L: LeafLocator> ChallengeReader for ChallengeManagerContract<L> {
+    async fn get_challenge(&self, id: ChallengeId) -> anyhow::Result<ChallengeStatus> {
+        // Recover the on-chain id; an id this adapter never decoded (e.g. after a restart with an
+        // empty map) is a typed error routed to a safe retry — never an unwrap panic.
+        let onchain_id = self
+            .state
+            .lock()
+            .unwrap()
+            .id_map
+            .get(&id)
+            .copied()
+            .with_context(|| format!("get_challenge for an unknown challenge id {id:?}"))?;
+        // Scripted (test) status when present.
+        if let Some(status) = self.state.lock().unwrap().scripted_status.get(&id).copied() {
+            return Ok(status);
+        }
+        // Live path: reading the on-chain challenge status needs the verified ChallengeManager
+        // status-view ABI, which is not yet available. Fail closed with a clear message rather than
+        // fabricating a call.
+        if self.provider.is_some() {
+            anyhow::bail!(
+                "live challenge status read is not yet wired (blocked on the verified \
+                 ChallengeManager status-view ABI); on-chain challengeId {onchain_id}"
+            );
+        }
+        // A scripted adapter with no status for a known id defaults to closed (mirrors the mock).
+        Ok(ChallengeStatus { open: false, deadline: 0, chain_timestamp: 0, resolved_by_us: false })
     }
 }
 
@@ -393,5 +443,21 @@ mod tests {
         assert_eq!(or[0].leaf_hash, leaf, "Reverse resolves the same leaf via the WB");
         // Same event coordinates ⇒ identical opaque ChallengeId regardless of the locator.
         assert_eq!(od[0].challenge_id, or[0].challenge_id);
+    }
+
+    #[tokio::test]
+    async fn get_challenge_maps_status_and_errors_on_unknown_id() {
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        adapter.script_status(opened[0].challenge_id, true, 1_700, 1_000, false);
+        let st = adapter.get_challenge(opened[0].challenge_id).await.unwrap();
+        assert!(st.open && st.deadline == 1_700 && st.chain_timestamp == 1_000);
+        // An id the adapter never decoded returns a typed error (routed to a safe retry), not a panic.
+        assert!(adapter.get_challenge(ChallengeId([0xEE; 32])).await.is_err());
     }
 }
