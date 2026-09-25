@@ -559,16 +559,31 @@ async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
         Address::repeat_byte(CONTRACT),
     ));
 
-    let opened =
-        ChallengeEventSource::watch_opened(&*adapter, ScanWindow { from_block: 0, to_block: 10_000 })
-            .await
-            .unwrap();
-    assert_eq!(opened.len(), 1, "only the WithdrawNotInRoot challenge is emitted from the mixed batch");
+    let opened = ChallengeEventSource::watch_opened(
+        &*adapter,
+        ScanWindow { from_block: 0, to_block: 10_000 },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        opened.len(),
+        1,
+        "only the WithdrawNotInRoot challenge is emitted from the mixed batch"
+    );
     let ev = opened[0].clone();
     adapter.script_status(ev.challenge_id, true, 10_000, 0, false);
 
     let witness = witness_for(&server);
-    let h = Handler::new(adapter.clone(), adapter.clone(), witness, rm, CHAIN_ID, 16, SAFETY, MAX_RESEND);
+    let h = Handler::new(
+        adapter.clone(),
+        adapter.clone(),
+        witness,
+        rm,
+        CHAIN_ID,
+        16,
+        SAFETY,
+        MAX_RESEND,
+    );
     let gate = InFlightGate::new();
     let mut state = ChallengeState::Discovered;
     h.drive(&ev, &mut state, &gate).await.unwrap();

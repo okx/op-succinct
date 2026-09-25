@@ -381,8 +381,8 @@ impl Handler {
                 return Ok(ChallengeState::Expired);
             }
             // Re-bind to the new root: re-fetch + re-verify; never send a proof bound to a stale
-            // root. A witness lag here is a wait, a mis-bound proof is a permanent failure — exactly
-            // as on the initial bind.
+            // root. A witness lag here is a wait, a mis-bound proof is a permanent failure —
+            // exactly as on the initial bind.
             let re = match self.fetch_proof(ev.leaf_hash, root_now).await {
                 Ok(p) => p,
                 Err(e) => return Ok(Self::classify_witness_wait(e, attempts, Some(root_now))),
@@ -395,8 +395,8 @@ impl Handler {
             proof = re;
         }
         // Exhausted the bound without a stable root: do NOT send a stale-bound proof — wait a tick
-        // and retry, rather than broadcasting against a root that is still moving or escalating to a
-        // permanent failure.
+        // and retry, rather than broadcasting against a root that is still moving or escalating to
+        // a permanent failure.
         {
             let (_h, root_final) = self.root_manager.latest_root().await?;
             if root_final != withdrawal_root {
@@ -725,7 +725,8 @@ mod tests {
         err_once: StdMutex<Option<WbError>>,
         proof_calls: StdMutex<u32>,
         /// Per-root proofs consulted (by the requested root) before the single `proof`, so a test
-        /// can return a distinct, correctly-bound proof for each root the pre-send recheck fetches.
+        /// can return a distinct, correctly-bound proof for each root the pre-send recheck
+        /// fetches.
         root_proofs: StdMutex<std::collections::HashMap<B256, HistoricalInclusionProof>>,
     }
     impl MockWitness {
@@ -1529,7 +1530,12 @@ mod tests {
         let ev = ev_for(leaf);
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus { open: true, deadline: 100_000, chain_timestamp: 0, resolved_by_us: false },
+            ChallengeStatus {
+                open: true,
+                deadline: 100_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
         (cc, ev, leaf)
     }
@@ -1563,8 +1569,9 @@ mod tests {
 
     #[tokio::test]
     async fn business_errors_bypass_pre_send_loop_and_use_post_send_paths() {
-        // Stable root ⇒ the pre-send loop is a no-op; the sender's business errors must flow through
-        // the existing POST-send paths and never be observed by the pre-send recheck.
+        // Stable root ⇒ the pre-send loop is a no-op; the sender's business errors must flow
+        // through the existing POST-send paths and never be observed by the pre-send
+        // recheck.
         let (cc, witness, rm, ev, root) = setup_ready(100_000, 0, 20);
         cc.keep_open(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, 3);
@@ -1578,7 +1585,10 @@ mod tests {
         );
         assert_eq!(gate.holder(), None, "the reverted tx released the gate");
 
-        cc.set_sender_error(ev.challenge_id, SenderError::UnknownBroadcastOutcome { tx_hash: None });
+        cc.set_sender_error(
+            ev.challenge_id,
+            SenderError::UnknownBroadcastOutcome { tx_hash: None },
+        );
         let state2 = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
         assert!(
             matches!(state2, ChallengeState::ReconcileUnknownNoTx { .. }),
@@ -1635,7 +1645,12 @@ mod tests {
         // Closed status: the loop's liveness recheck short-circuits before any re-fetch.
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus { open: false, deadline: 100_000, chain_timestamp: 0, resolved_by_us: false },
+            ChallengeStatus {
+                open: false,
+                deadline: 100_000,
+                chain_timestamp: 0,
+                resolved_by_us: false,
+            },
         );
         let (proof_a, root_a) = proof_for(&record, leaf, 0xD0);
         let (_proof_b, root_b) = proof_for(&record, leaf, 0xD1);
@@ -1663,7 +1678,12 @@ mod tests {
         // Open but past the L2-time deadline (chain_ts + SAFETY >= deadline).
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus { open: true, deadline: 1_000, chain_timestamp: 999, resolved_by_us: false },
+            ChallengeStatus {
+                open: true,
+                deadline: 1_000,
+                chain_timestamp: 999,
+                resolved_by_us: false,
+            },
         );
         let (proof_a, root_a) = proof_for(&record, leaf, 0xE0);
         let (_proof_b, root_b) = proof_for(&record, leaf, 0xE1);
@@ -1677,7 +1697,10 @@ mod tests {
         let gate = InFlightGate::new();
 
         let state = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
-        assert!(matches!(state, ChallengeState::Expired), "expired mid-loop ⇒ Expired, got {state:?}");
+        assert!(
+            matches!(state, ChallengeState::Expired),
+            "expired mid-loop ⇒ Expired, got {state:?}"
+        );
         assert!(cc.prove_calls().is_empty());
     }
 }

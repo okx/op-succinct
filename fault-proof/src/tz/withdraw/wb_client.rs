@@ -585,7 +585,8 @@ pub(crate) mod test_doubles {
     use async_trait::async_trait;
     use std::collections::HashMap;
 
-    /// A unique `tzTxHash -> recordHash` map. Absent keys resolve to [`WbError::WithdrawalNotFound`].
+    /// A unique `tzTxHash -> recordHash` map. Absent keys resolve to
+    /// [`WbError::WithdrawalNotFound`].
     pub struct MockTzTxToLeaf(pub HashMap<B256, B256>);
 
     #[async_trait]
@@ -1185,8 +1186,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/chain/witness/tz-tx-record"))
             .and(query_param("tzTxHash", format!("{tz:#x}")))
-            .respond_with(ResponseTemplate::new(200)
-                .set_body_json(ok_body(serde_json::json!({ "recordHashes": [B256::repeat_byte(0x99)] }))))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(
+                serde_json::json!({ "recordHashes": [B256::repeat_byte(0x99)] }),
+            )))
             .mount(&s1)
             .await;
         assert_eq!(
@@ -1198,8 +1200,10 @@ mod tests {
         let s2 = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/chain/witness/tz-tx-record"))
-            .respond_with(ResponseTemplate::new(200)
-                .set_body_json(ok_body(serde_json::json!({ "recordHashes": [] }))))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(ok_body(serde_json::json!({ "recordHashes": [] }))),
+            )
             .mount(&s2)
             .await;
         assert!(matches!(

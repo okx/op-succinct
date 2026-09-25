@@ -11,8 +11,7 @@
 //! - submits `submitWithdrawProof(challengeId, leafIndex, leafCount, proof)` with the four fields
 //!   passed through verbatim.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use alloy_primitives::{Address, TxHash, B256, U256};
 use alloy_provider::{DynProvider, Provider};
@@ -21,20 +20,24 @@ use alloy_sol_types::{sol, SolEvent};
 use anyhow::Context;
 use async_trait::async_trait;
 
-use super::challenge_contract::{
-    ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
-    ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
+use super::{
+    challenge_contract::{
+        ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
+        ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
+    },
+    leaf_locator::LeafLocator,
 };
-use super::leaf_locator::LeafLocator;
 
-/// The kind of challenge carried by a `ChallengeCreated` event. Only [`ChallengeType::WithdrawNotInRoot`]
-/// is acted upon; every other on-chain discriminant is represented as [`ChallengeType::Other`] so an
-/// unknown type is always representable and never panics.
+/// The kind of challenge carried by a `ChallengeCreated` event. Only
+/// [`ChallengeType::WithdrawNotInRoot`] is acted upon; every other on-chain discriminant is
+/// represented as [`ChallengeType::Other`] so an unknown type is always representable and never
+/// panics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChallengeType {
     /// The withdraw-not-in-root challenge the Defender answers.
     WithdrawNotInRoot,
-    /// Any other on-chain challenge type, kept as its raw discriminant so it can be logged/ignored.
+    /// Any other on-chain challenge type, kept as its raw discriminant so it can be
+    /// logged/ignored.
     Other(u8),
 }
 
@@ -73,9 +76,9 @@ sol! {
     );
 }
 
-/// A decoded-but-unfiltered `ChallengeCreated` event. `identifier` is the event's transaction-scoped
-/// withdraw identifier (a `bytes32`); resolving it to a Witness-Builder leaf key is the job of a
-/// [`LeafLocator`], never of the state machine.
+/// A decoded-but-unfiltered `ChallengeCreated` event. `identifier` is the event's
+/// transaction-scoped withdraw identifier (a `bytes32`); resolving it to a Witness-Builder leaf key
+/// is the job of a [`LeafLocator`], never of the state machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawChallengeEvent {
     pub onchain_challenge_id: U256,
@@ -89,9 +92,9 @@ pub struct RawChallengeEvent {
     pub log_index: u64,
 }
 
-/// Decode a `ChallengeCreated` log into a [`RawChallengeEvent`]. Pure and chain-free: the event data
-/// comes from the log topics/data and the event coordinates from the log envelope, so it is unit
-/// testable without a live provider. Fails closed if the log is missing block/tx/log-index
+/// Decode a `ChallengeCreated` log into a [`RawChallengeEvent`]. Pure and chain-free: the event
+/// data comes from the log topics/data and the event coordinates from the log envelope, so it is
+/// unit testable without a live provider. Fails closed if the log is missing block/tx/log-index
 /// coordinates or does not decode as `ChallengeCreated`.
 pub fn decode_challenge_created(
     log: &alloy_rpc_types_eth::Log,
@@ -198,23 +201,32 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
         }
     }
 
-    /// Gather the decoded-but-unfiltered events in `window`: the scripted batch when present, else a
-    /// live `get_logs` scan for the `ChallengeCreated` topic decoded via [`decode_challenge_created`].
-    async fn collect_raw_events(&self, window: ScanWindow) -> anyhow::Result<Vec<RawChallengeEvent>> {
+    /// Gather the decoded-but-unfiltered events in `window`: the scripted batch when present, else
+    /// a live `get_logs` scan for the `ChallengeCreated` topic decoded via
+    /// [`decode_challenge_created`].
+    async fn collect_raw_events(
+        &self,
+        window: ScanWindow,
+    ) -> anyhow::Result<Vec<RawChallengeEvent>> {
         if let Some(events) = self.state.lock().unwrap().scripted_events.clone() {
             return Ok(events
                 .into_iter()
-                .filter(|e| e.block_number >= window.from_block && e.block_number <= window.to_block)
+                .filter(|e| {
+                    e.block_number >= window.from_block && e.block_number <= window.to_block
+                })
                 .collect());
         }
-        let provider =
-            self.provider.as_ref().context("challenge adapter has neither provider nor scripted events")?;
+        let provider = self
+            .provider
+            .as_ref()
+            .context("challenge adapter has neither provider nor scripted events")?;
         let filter = Filter::new()
             .address(self.contract)
             .event_signature(ChallengeCreated::SIGNATURE_HASH)
             .from_block(window.from_block)
             .to_block(window.to_block);
-        let logs = provider.get_logs(&filter).await.context("get_logs for ChallengeCreated failed")?;
+        let logs =
+            provider.get_logs(&filter).await.context("get_logs for ChallengeCreated failed")?;
         let mut raws = Vec::with_capacity(logs.len());
         for log in &logs {
             match decode_challenge_created(log, self.chain_id) {
@@ -225,10 +237,11 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
         Ok(raws)
     }
 
-    /// Filter to `WithdrawNotInRoot`, resolve the leaf via the locator, build a [`ChallengeOpened`],
-    /// and record the opaque-id → on-chain-id mapping and deadline. A locator error for a single
-    /// event is logged and that event skipped (witness-wait semantics), never a scan failure. Every
-    /// other challenge type is dropped silently — no event, no error, no witness query.
+    /// Filter to `WithdrawNotInRoot`, resolve the leaf via the locator, build a
+    /// [`ChallengeOpened`], and record the opaque-id → on-chain-id mapping and deadline. A
+    /// locator error for a single event is logged and that event skipped (witness-wait
+    /// semantics), never a scan failure. Every other challenge type is dropped silently — no
+    /// event, no error, no witness query.
     async fn process_raw_events(&self, raws: Vec<RawChallengeEvent>) -> Vec<ChallengeOpened> {
         let mut opened = Vec::new();
         for raw in raws {
@@ -363,7 +376,9 @@ impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
                 .unwrap_or(TxStatus::Pending));
         }
         // Live path: no transaction is broadcast this stage, so there is no receipt to confirm.
-        anyhow::bail!("live confirm is not wired (no transaction is broadcast until a signer lands)")
+        anyhow::bail!(
+            "live confirm is not wired (no transaction is broadcast until a signer lands)"
+        )
     }
 }
 
@@ -426,8 +441,10 @@ mod tests {
             challenger: Address::repeat_byte(0x0c),
             responseDeadline: response_deadline,
         };
-        let inner =
-            alloy_primitives::Log { address: Address::repeat_byte(0x01), data: ev.encode_log_data() };
+        let inner = alloy_primitives::Log {
+            address: Address::repeat_byte(0x01),
+            data: ev.encode_log_data(),
+        };
         alloy_rpc_types_eth::Log {
             inner,
             block_number: Some(100),
@@ -441,12 +458,8 @@ mod tests {
     fn decodes_challenge_created_fields_from_real_abi() {
         let id = U256::from(42u64);
         let ident = B256::repeat_byte(0x7c);
-        let log = challenge_created_log_fixture(
-            id,
-            WITHDRAW_NOT_IN_ROOT_DISCRIMINANT,
-            ident,
-            1_700u64,
-        );
+        let log =
+            challenge_created_log_fixture(id, WITHDRAW_NOT_IN_ROOT_DISCRIMINANT, ident, 1_700u64);
         let ev = decode_challenge_created(&log, 196).unwrap();
         assert_eq!(ev.onchain_challenge_id, id);
         assert_eq!(ev.challenge_type, ChallengeType::WithdrawNotInRoot);
@@ -459,15 +472,20 @@ mod tests {
 
     #[test]
     fn maps_non_withdraw_types_to_other() {
-        assert_eq!(ChallengeType::from_discriminant(WITHDRAW_NOT_IN_ROOT_DISCRIMINANT), ChallengeType::WithdrawNotInRoot);
+        assert_eq!(
+            ChallengeType::from_discriminant(WITHDRAW_NOT_IN_ROOT_DISCRIMINANT),
+            ChallengeType::WithdrawNotInRoot
+        );
         let other = WITHDRAW_NOT_IN_ROOT_DISCRIMINANT.wrapping_add(1);
         assert_eq!(ChallengeType::from_discriminant(other), ChallengeType::Other(other));
     }
 
     // ── Real adapter: WithdrawNotInRoot filter + leaf-locator replaceability ──
 
-    use crate::tz::defender::leaf_locator::{DirectLeafLocator, ReverseLookupLeafLocator};
-    use crate::tz::withdraw::wb_client::test_doubles::MockTzTxToLeaf;
+    use crate::tz::{
+        defender::leaf_locator::{DirectLeafLocator, ReverseLookupLeafLocator},
+        withdraw::wb_client::test_doubles::MockTzTxToLeaf,
+    };
 
     const CONTRACT_ADDR: Address = Address::repeat_byte(0x01);
 
@@ -551,7 +569,8 @@ mod tests {
         adapter.script_status(opened[0].challenge_id, true, 1_700, 1_000, false);
         let st = adapter.get_challenge(opened[0].challenge_id).await.unwrap();
         assert!(st.open && st.deadline == 1_700 && st.chain_timestamp == 1_000);
-        // An id the adapter never decoded returns a typed error (routed to a safe retry), not a panic.
+        // An id the adapter never decoded returns a typed error (routed to a safe retry), not a
+        // panic.
         assert!(adapter.get_challenge(ChallengeId([0xEE; 32])).await.is_err());
     }
 
@@ -567,17 +586,19 @@ mod tests {
         let opened = adapter.watch_opened(window()).await.unwrap();
         let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
         let sibs = [B256::repeat_byte(0x07); 32];
-        // checkpoint_height (12345) is deliberately NOT part of submitWithdrawProof and must be dropped.
-        let outcome = adapter
-            .prove_challenge(opened[0].challenge_id, 12345, 7, 9, sibs)
-            .await
-            .unwrap();
+        // checkpoint_height (12345) is deliberately NOT part of submitWithdrawProof and must be
+        // dropped.
+        let outcome =
+            adapter.prove_challenge(opened[0].challenge_id, 12345, 7, 9, sibs).await.unwrap();
         assert!(matches!(outcome, SubmitOutcome::Submitted(_)));
         let call = adapter.last_submit_call().unwrap();
         assert_eq!(call.challenge_id, onchain_id, "challengeId passed through verbatim");
         assert_eq!(call.leaf_index, 7, "leafIndex passed through verbatim");
         assert_eq!(call.leaf_count, 9, "leafCount passed through verbatim");
         assert_eq!(call.proof, sibs, "proof passed through verbatim");
-        assert!(!adapter.submitted_any_checkpoint_height(), "checkpoint_height is not part of the call");
+        assert!(
+            !adapter.submitted_any_checkpoint_height(),
+            "checkpoint_height is not part of the call"
+        );
     }
 }
