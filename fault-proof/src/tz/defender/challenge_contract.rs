@@ -164,7 +164,6 @@ pub trait ChallengeSender: Send + Sync {
     async fn prove_challenge(
         &self,
         id: ChallengeId,
-        checkpoint_height: u64,
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
@@ -178,7 +177,6 @@ pub trait ChallengeSender: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProveCall {
     pub challenge_id: ChallengeId,
-    pub checkpoint_height: u64,
     pub leaf_index: u32,
     pub count: u32,
     pub siblings: [B256; 32],
@@ -375,7 +373,6 @@ impl ChallengeSender for MockChallengeContract {
     async fn prove_challenge(
         &self,
         id: ChallengeId,
-        checkpoint_height: u64,
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
@@ -384,13 +381,7 @@ impl ChallengeSender for MockChallengeContract {
         if let Some(err) = s.sender_errors.get(&id).copied() {
             return Err(err);
         }
-        s.prove_calls.push(ProveCall {
-            challenge_id: id,
-            checkpoint_height,
-            leaf_index,
-            count,
-            siblings,
-        });
+        s.prove_calls.push(ProveCall { challenge_id: id, leaf_index, count, siblings });
         Ok(SubmitOutcome::Submitted(TxHash::repeat_byte(0x99)))
     }
 
@@ -480,12 +471,12 @@ mod tests {
         );
         m.set_sender_error(id, SenderError::SafeToRetryPreBroadcast);
         assert!(matches!(
-            m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
+            m.prove_challenge(id, 0, 1, [B256::ZERO; 32]).await,
             Err(SenderError::SafeToRetryPreBroadcast)
         ));
         m.clear_sender_error(id);
         assert!(matches!(
-            m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
+            m.prove_challenge(id, 0, 1, [B256::ZERO; 32]).await,
             Ok(SubmitOutcome::Submitted(_))
         ));
     }
@@ -527,18 +518,12 @@ mod tests {
             5_000,
         );
         let sibs = [B256::repeat_byte(0x07); 32];
-        mock.prove_challenge(id, 20, 3, 5, sibs).await.unwrap();
+        mock.prove_challenge(id, 3, 5, sibs).await.unwrap();
         let calls = mock.prove_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            ProveCall {
-                challenge_id: id,
-                checkpoint_height: 20,
-                leaf_index: 3,
-                count: 5,
-                siblings: sibs
-            }
+            ProveCall { challenge_id: id, leaf_index: 3, count: 5, siblings: sibs }
         );
     }
 

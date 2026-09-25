@@ -208,7 +208,6 @@ async fn full_pipeline_covering_gate_submits_then_proved() {
     let calls = cc.prove_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].challenge_id, id);
-    assert_eq!(calls[0].checkpoint_height, CHECKPOINT_HEIGHT);
     assert_eq!(calls[0].count, 1);
     assert_eq!(calls[0].leaf_index, 0);
 

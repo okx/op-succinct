@@ -366,14 +366,13 @@ impl Handler {
         }
 
         // 6. Gated optimistic submit with typed outcome handling.
-        self.submit(ev, checkpoint_height, withdrawal_root, &proof, attempts, gate).await
+        self.submit(ev, withdrawal_root, &proof, attempts, gate).await
     }
 
     /// Submit the proof; the in-flight gate is held by `ev` on entry.
     async fn submit(
         &self,
         ev: &ChallengeOpened,
-        checkpoint_height: u64,
         withdrawal_root: B256,
         proof: &HistoricalInclusionProof,
         attempts: u32,
@@ -381,13 +380,7 @@ impl Handler {
     ) -> Result<ChallengeState> {
         match self
             .sender
-            .prove_challenge(
-                ev.challenge_id,
-                checkpoint_height,
-                proof.leaf_index,
-                proof.count,
-                proof.siblings,
-            )
+            .prove_challenge(ev.challenge_id, proof.leaf_index, proof.count, proof.siblings)
             .await
         {
             Ok(SubmitOutcome::Submitted(tx)) => {
@@ -761,7 +754,6 @@ mod tests {
         assert_eq!(gate.holder(), Some(ev.challenge_id), "Submitted holds the in-flight gate");
         let calls = cc.prove_calls();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].checkpoint_height, 20);
         assert_eq!(calls[0].count, 1);
 
         // Confirmation requires a successful receipt AND a resolved on-chain status.
