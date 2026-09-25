@@ -28,6 +28,9 @@ pub use challenge_contract::{
     ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
     ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
 };
+pub use challenge_manager::{
+    ChallengeManagerClient, ChallengeType, TxToLeafResolver, WbTxToLeafResolver,
+};
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
 pub use supervisor::Supervisor;
