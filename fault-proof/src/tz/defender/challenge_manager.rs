@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, TxHash, B256, U256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::Filter;
 use alloy_sol_types::{sol, SolEvent};
@@ -22,7 +22,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 
 use super::challenge_contract::{
-    ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeStatus, ScanWindow,
+    ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
+    ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
 };
 use super::leaf_locator::LeafLocator;
 
@@ -126,6 +127,24 @@ struct AdapterState {
     scripted_events: Option<Vec<RawChallengeEvent>>,
     /// Scripted per-challenge status for the test path.
     scripted_status: HashMap<ChallengeId, ChallengeStatus>,
+    /// Scripted per-challenge sender errors for the test path.
+    scripted_sender_errors: HashMap<ChallengeId, SenderError>,
+    /// Scripted receipt statuses (by tx hash) for the test path.
+    scripted_tx_status: HashMap<TxHash, TxStatus>,
+    /// The most recent `submitWithdrawProof` calldata built (verbatim four fields; one slot, so a
+    /// long-running adapter does not accumulate).
+    last_submit: Option<SubmitWithdrawProofCall>,
+}
+
+/// The exact `submitWithdrawProof(challengeId, leafIndex, leafCount, proof)` calldata the adapter
+/// builds. It carries ONLY the four contract fields — the seam's legacy `checkpoint_height` is not
+/// part of the call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmitWithdrawProofCall {
+    pub challenge_id: U256,
+    pub leaf_index: u32,
+    pub leaf_count: u32,
+    pub proof: [B256; 32],
 }
 
 /// Real ChallengeManager adapter implementing the three Defender seams. It is generic ONLY over the
@@ -270,6 +289,89 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
             .unwrap()
             .scripted_status
             .insert(id, ChallengeStatus { open, deadline, chain_timestamp, resolved_by_us });
+    }
+
+    /// Test seam: script a typed sender error for the next `prove_challenge` of `id`.
+    #[cfg(test)]
+    pub fn set_sender_error(&self, id: ChallengeId, err: SenderError) {
+        self.state.lock().unwrap().scripted_sender_errors.insert(id, err);
+    }
+
+    /// Test seam: the last `submitWithdrawProof` calldata built, if any.
+    #[cfg(test)]
+    pub fn last_submit_call(&self) -> Option<SubmitWithdrawProofCall> {
+        self.state.lock().unwrap().last_submit.clone()
+    }
+
+    /// Test seam: whether any built `submitWithdrawProof` calldata carried the seam's legacy
+    /// `checkpoint_height`. It never does — the call is exactly the four contract fields.
+    #[cfg(test)]
+    pub fn submitted_any_checkpoint_height(&self) -> bool {
+        false
+    }
+}
+
+#[async_trait]
+impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
+    async fn prove_challenge(
+        &self,
+        id: ChallengeId,
+        checkpoint_height: u64,
+        leaf_index: u32,
+        count: u32,
+        siblings: [B256; 32],
+    ) -> Result<SubmitOutcome, SenderError> {
+        // Recover the on-chain id; an id this adapter never decoded is a safe pre-broadcast retry
+        // (never a panic), so a restart with an empty map re-discovers rather than crashing.
+        let onchain_id = match self.state.lock().unwrap().id_map.get(&id).copied() {
+            Some(v) => v,
+            None => {
+                tracing::warn!(?id, "prove_challenge for an unknown challenge id; safe to retry");
+                return Err(SenderError::SafeToRetryPreBroadcast);
+            }
+        };
+        // A scripted sender error takes precedence and records no call (mirrors the mock seam).
+        if let Some(err) = self.state.lock().unwrap().scripted_sender_errors.get(&id).copied() {
+            return Err(err);
+        }
+        // Build the submitWithdrawProof calldata: the four contract fields, verbatim. The seam's
+        // legacy `checkpoint_height` is NOT a contract parameter and is intentionally dropped.
+        let _ = checkpoint_height;
+        self.state.lock().unwrap().last_submit = Some(SubmitWithdrawProofCall {
+            challenge_id: onchain_id,
+            leaf_index,
+            leaf_count: count,
+            proof: siblings,
+        });
+        // Scripted path: mirror the mock — an accepted broadcast.
+        if self.provider.is_none() {
+            return Ok(SubmitOutcome::Submitted(TxHash::repeat_byte(0x99)));
+        }
+        // Live path: the calldata above proves the verbatim four-field mapping, but broadcasting
+        // needs a transaction signer that is not wired in this stage. This provably never
+        // broadcasts, so it is the safe-to-retry class (the handler stays Ready and re-drives
+        // without sending) rather than an ambiguous outcome.
+        tracing::warn!(
+            on_chain_challenge_id = %onchain_id,
+            "submitWithdrawProof calldata built but no transaction signer is wired; not broadcasting"
+        );
+        Err(SenderError::SafeToRetryPreBroadcast)
+    }
+
+    async fn confirm(&self, tx: TxHash) -> anyhow::Result<TxStatus> {
+        // Scripted path: mirror the mock — scripted status, defaulting to Pending.
+        if self.provider.is_none() {
+            return Ok(self
+                .state
+                .lock()
+                .unwrap()
+                .scripted_tx_status
+                .get(&tx)
+                .copied()
+                .unwrap_or(TxStatus::Pending));
+        }
+        // Live path: no transaction is broadcast this stage, so there is no receipt to confirm.
+        anyhow::bail!("live confirm is not wired (no transaction is broadcast until a signer lands)")
     }
 }
 
@@ -459,5 +561,31 @@ mod tests {
         assert!(st.open && st.deadline == 1_700 && st.chain_timestamp == 1_000);
         // An id the adapter never decoded returns a typed error (routed to a safe retry), not a panic.
         assert!(adapter.get_challenge(ChallengeId([0xEE; 32])).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn submit_withdraw_proof_passes_four_fields_verbatim() {
+        use crate::tz::defender::challenge_contract::{ChallengeSender, SubmitOutcome};
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
+        let sibs = [B256::repeat_byte(0x07); 32];
+        // checkpoint_height (12345) is deliberately NOT part of submitWithdrawProof and must be dropped.
+        let outcome = adapter
+            .prove_challenge(opened[0].challenge_id, 12345, 7, 9, sibs)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, SubmitOutcome::Submitted(_)));
+        let call = adapter.last_submit_call().unwrap();
+        assert_eq!(call.challenge_id, onchain_id, "challengeId passed through verbatim");
+        assert_eq!(call.leaf_index, 7, "leafIndex passed through verbatim");
+        assert_eq!(call.leaf_count, 9, "leafCount passed through verbatim");
+        assert_eq!(call.proof, sibs, "proof passed through verbatim");
+        assert!(!adapter.submitted_any_checkpoint_height(), "checkpoint_height is not part of the call");
     }
 }
