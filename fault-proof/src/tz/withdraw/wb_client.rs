@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     // ── Reverse-lookup (tzTxHash -> leafHash) — written against the documented endpoint contract;
-    //    the route does not exist upstream yet, so these are wiremock-only (AC#5). Errors are
+    //    the route does not exist upstream yet, so these are wiremock-only. Errors are
     //    classified by the same joint (endpoint, status, code, message-prefix) validation, so the
     //    fixtures use the exact wire tokens (e.g. `WithdrawalNotFound:`), not free-form prose. ──
 

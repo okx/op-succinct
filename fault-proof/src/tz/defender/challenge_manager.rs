@@ -11,8 +11,10 @@
 //! ABI-encoded as `uint8`, so the binding declares `uint8 indexed challengeType`, which yields the
 //! identical event signature as the Solidity `ChallengeType` enum.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, TxHash, B256, U256};
@@ -89,7 +91,8 @@ pub fn challenge_id_to_bytes(id: U256) -> ChallengeId {
     ChallengeId(id.to_be_bytes::<32>())
 }
 
-/// Inverse of [`challenge_id_to_bytes`]: recover the `uint256 challengeId` for on-chain reads/calls.
+/// Inverse of [`challenge_id_to_bytes`]: recover the `uint256 challengeId` for on-chain
+/// reads/calls.
 pub fn challenge_id_from_bytes(id: ChallengeId) -> U256 {
     U256::from_be_bytes(id.0)
 }
@@ -196,8 +199,8 @@ impl<P: Provider + Clone + Send + Sync + 'static> EventLogSource for ProviderEve
     }
 }
 
-/// Real [`ActiveChallengeReader`] over an `alloy` provider: the public mapping getter + latest block
-/// timestamp.
+/// Real [`ActiveChallengeReader`] over an `alloy` provider: the public mapping getter + latest
+/// block timestamp.
 pub struct ProviderChainReader<P> {
     provider: P,
     contract: Address,
@@ -364,8 +367,9 @@ impl ChallengeEventSource for ChallengeManagerClient {
                     affected_bridge: parsed.affected_bridge,
                 },
             );
-            // Construct ChallengeOpened directly from the authoritative id + reverse-looked-up leaf;
-            // `ChallengeOpened::new`/`derive_challenge_id` are NOT used by the real adapter.
+            // Construct ChallengeOpened directly from the authoritative id + reverse-looked-up
+            // leaf; `ChallengeOpened::new`/`derive_challenge_id` are NOT used by the
+            // real adapter.
             out.push(ChallengeOpened {
                 challenge_id: id,
                 leaf_hash,
@@ -383,9 +387,9 @@ impl ChallengeEventSource for ChallengeManagerClient {
 #[async_trait]
 impl ChallengeReader for ChallengeManagerClient {
     async fn get_challenge(&self, id: ChallengeId) -> Result<ChallengeStatus> {
-        let facts = self
-            .facts_for(id)
-            .ok_or_else(|| anyhow!("no cached ChallengeCreated facts for the requested challenge"))?;
+        let facts = self.facts_for(id).ok_or_else(|| {
+            anyhow!("no cached ChallengeCreated facts for the requested challenge")
+        })?;
         // `open` is an EXACT equality against the cached challenge id: a bridge holds at most one
         // active withdraw-type challenge in this slot, so `activeWithdrawChallenge[bridge]` equals
         // this id iff it is still open (a different or zero id ⇒ closed).
@@ -431,7 +435,8 @@ mod tests {
 
     #[test]
     fn challenge_id_roundtrip_big_endian() {
-        for v in [U256::ZERO, U256::from(1u64), U256::from(u64::MAX), U256::MAX - U256::from(3u64)] {
+        for v in [U256::ZERO, U256::from(1u64), U256::from(u64::MAX), U256::MAX - U256::from(3u64)]
+        {
             assert_eq!(challenge_id_from_bytes(challenge_id_to_bytes(v)), v);
         }
         // Big-endian layout: the low byte of `1` is the LAST byte.
@@ -466,7 +471,8 @@ mod tests {
     #[test]
     fn decode_parses_all_bound_fields() {
         let tz = B256::repeat_byte(0xCC);
-        let log = encode_created(U256::from(42u64), 0 /* WithdrawNotInRoot */, tz, 1_700_000_000);
+        let log =
+            encode_created(U256::from(42u64), 0 /* WithdrawNotInRoot */, tz, 1_700_000_000);
         let p = decode_challenge_created(&log).unwrap();
         assert_eq!(p.challenge_id, U256::from(42u64));
         assert_eq!(p.challenge_type, ChallengeType::WithdrawNotInRoot);
@@ -519,9 +525,10 @@ mod tests {
         assert!(matches!(decode_challenge_created(&bad), Err(ChallengeDecodeError::Abi(_))));
     }
 
-    // ── Task 4: real-adapter seams driven by in-test stubs (no live node / HTTP). The `created_log`
-    //    helper builds real ABI-encoded ChallengeCreated logs, so the parse/filter/reverse-lookup/
-    //    construct + open-derivation + four-field passthrough surface is exercised end-to-end. ──
+    // ── Task 4: real-adapter seams driven by in-test stubs (no live node / HTTP). The
+    // `created_log`    helper builds real ABI-encoded ChallengeCreated logs, so the
+    // parse/filter/reverse-lookup/    construct + open-derivation + four-field passthrough
+    // surface is exercised end-to-end. ──
 
     #[allow(clippy::too_many_arguments)]
     fn created_log(
@@ -687,7 +694,7 @@ mod tests {
     async fn watch_opened_keeps_only_withdraw_not_in_root_and_reverse_looks_up_leaf() {
         let bridge = Address::repeat_byte(0xBB);
         let tz0 = B256::repeat_byte(0xC0);
-        // Three logs of types 0/1/2; only the type-0 (WithdrawNotInRoot) event survives.
+        // Three logs of types 0/1/2; only the type 0 (WithdrawNotInRoot) event survives.
         let logs = vec![
             created_log(U256::from(10u64), 0, tz0, bridge, 111, 7, 5_000),
             created_log(U256::from(11u64), 1, B256::repeat_byte(0xC1), bridge, 112, 8, 5_000),

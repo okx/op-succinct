@@ -362,12 +362,13 @@ impl Handler {
 
         // 4.5 Pre-send root-freshness recheck (ADDITIVE; bounded to a single re-fetch). This runs
         //     strictly BEFORE any broadcast and is entirely distinct from the post-broadcast
-        //     `RetryableRevert` path (reached only AFTER a broadcast + a confirmed on-chain revert /
-        //     `ConfirmedRejection`). It must NEVER route `SenderError::ConfirmedRejection` or
-        //     `UnknownBroadcastOutcome` — those are post-broadcast outcomes and keep their existing
-        //     handling. Re-read the latest root: if it still matches the root this proof is bound
-        //     to, proceed unchanged; if it moved, discard the proof and re-fetch+verify against the
-        //     new root ONCE. If the root moves AGAIN during that single re-fetch, do NOT send a
+        //     `RetryableRevert` path (reached only AFTER a broadcast + a confirmed on-chain revert
+        // /     `ConfirmedRejection`). It must NEVER route
+        // `SenderError::ConfirmedRejection` or     `UnknownBroadcastOutcome` — those are
+        // post-broadcast outcomes and keep their existing     handling. Re-read the latest
+        // root: if it still matches the root this proof is bound     to, proceed unchanged;
+        // if it moved, discard the proof and re-fetch+verify against the     new root ONCE.
+        // If the root moves AGAIN during that single re-fetch, do NOT send a
         //     possibly-stale proof and do NOT spin — return the non-terminal `Ready { attempts }`
         //     (the in-flight gate is not acquired) so the next supervisor tick re-drives from
         //     scratch.
@@ -1487,7 +1488,7 @@ mod tests {
 }
 
 /// Pre-send root-freshness recheck tests — kept in a module PHYSICALLY SEPARATE from the
-/// `RetryableRevert` tests above (AC#7/#9). The freshness path runs strictly BEFORE any broadcast;
+/// `RetryableRevert` tests above. The freshness path runs strictly BEFORE any broadcast;
 /// `RetryableRevert` runs only AFTER a broadcast + a confirmed on-chain revert. These tests assert
 /// the two are never conflated: a changed root regenerates the proof pre-broadcast, a persistently
 /// churning root yields a non-terminal `Ready` (no broadcast), and the post-broadcast
@@ -1503,8 +1504,10 @@ mod freshness_recheck_tests {
         withdraw::{tree_adapter::two_leaf_withdrawal_fixture, types::WithdrawRecord},
     };
     use alloy_primitives::{Address, TxHash, B256, U256};
-    use std::collections::{HashMap, VecDeque};
-    use std::sync::Mutex as StdMutex;
+    use std::{
+        collections::{HashMap, VecDeque},
+        sync::Mutex as StdMutex,
+    };
 
     const SAFETY: u64 = 100;
     const CHAIN_ID: u64 = 196;
@@ -1524,12 +1527,23 @@ mod freshness_recheck_tests {
     }
 
     fn ev_for(leaf: B256) -> ChallengeOpened {
-        ChallengeOpened::new(CHAIN_ID, Address::repeat_byte(0x01), B256::repeat_byte(0x02), 0, leaf, 10)
+        ChallengeOpened::new(
+            CHAIN_ID,
+            Address::repeat_byte(0x01),
+            B256::repeat_byte(0x02),
+            0,
+            leaf,
+            10,
+        )
     }
 
     /// A valid count==2 proof for `leaf` under a root that varies with `filler` — so the SAME leaf
     /// is provable under a changing root (the root-staleness path).
-    fn proof_for(record: &WithdrawRecord, leaf: B256, filler: u8) -> (HistoricalInclusionProof, B256) {
+    fn proof_for(
+        record: &WithdrawRecord,
+        leaf: B256,
+        filler: u8,
+    ) -> (HistoricalInclusionProof, B256) {
         let ((sib0, idx0), _sib1, root) =
             two_leaf_withdrawal_fixture(leaf, B256::repeat_byte(filler));
         let proof = HistoricalInclusionProof {
@@ -1546,8 +1560,8 @@ mod freshness_recheck_tests {
     }
 
     /// A latest-root source that returns a SCRIPTED SEQUENCE across successive `latest_root()`
-    /// calls (repeating the last entry once exhausted) — lets a test change the root BETWEEN the two
-    /// reads within a single drive. Distinct from the fixed-value `MockRootManager`.
+    /// calls (repeating the last entry once exhausted) — lets a test change the root BETWEEN the
+    /// two reads within a single drive. Distinct from the fixed-value `MockRootManager`.
     struct SeqRootManager {
         seq: StdMutex<VecDeque<(u64, B256)>>,
         last: StdMutex<(u64, B256)>,
@@ -1566,8 +1580,8 @@ mod freshness_recheck_tests {
         }
     }
 
-    /// A witness that serves a proof keyed by the requested `withdrawal_root`, so a re-fetch against
-    /// a new root returns a proof bound to THAT root (and verifies).
+    /// A witness that serves a proof keyed by the requested `withdrawal_root`, so a re-fetch
+    /// against a new root returns a proof bound to THAT root (and verifies).
     struct MultiRootWitness {
         by_root: HashMap<B256, HistoricalInclusionProof>,
         record_height: u64,
@@ -1594,7 +1608,7 @@ mod freshness_recheck_tests {
 
     #[tokio::test]
     async fn changed_root_discards_proof_and_regenerates_against_new_root_then_sends() {
-        // Root at the step-1 read is root0; between the status recheck and the send it flips to
+        // Root at the initial read is root0; between the status recheck and the send it flips to
         // root1 (and stays there). Expect: the proof is re-fetched+verified against root1 and the
         // broadcast is Submitted with root == root1, carrying root1's proof fields verbatim.
         let record = valid_record(0x42);
@@ -1611,7 +1625,8 @@ mod freshness_recheck_tests {
             record_height: 10,
             proof_calls: StdMutex::new(0),
         });
-        // latest_root() sequence within one drive: step-1 root0, step-4.5 root1, re-confirm root1.
+        // latest_root() sequence within one drive: initial read root0, recheck root1, reconfirm
+        // root1.
         let rm = Arc::new(SeqRootManager::new(vec![(20, root0), (20, root1), (20, root1)]));
         let h = Handler::new(cc.clone(), cc.clone(), witness, rm, CHAIN_ID, 16, SAFETY, 3);
         let gate = InFlightGate::new();
@@ -1631,8 +1646,9 @@ mod freshness_recheck_tests {
 
     #[tokio::test]
     async fn still_stale_after_bounded_refetch_returns_ready_without_broadcast() {
-        // Root flips on EVERY read (root0, root1, root2): after the single bounded re-fetch the root
-        // is STILL stale ⇒ non-terminal Ready { attempts }, gate NOT acquired, NO prove call.
+        // Root flips on EVERY read (root0, root1, root2): after the single bounded re-fetch the
+        // root is STILL stale ⇒ non-terminal Ready { attempts }, gate NOT acquired, NO
+        // prove call.
         let record = valid_record(0x42);
         let leaf = record_leaf_hash(&record).unwrap();
         let (p0, root0) = proof_for(&record, leaf, 0xF0);
@@ -1665,8 +1681,8 @@ mod freshness_recheck_tests {
     #[tokio::test]
     async fn confirmed_rejection_bypasses_freshness_recheck() {
         // Root is STABLE (freshness path proceeds unchanged). A ConfirmedRejection at submit still
-        // routes to the post-broadcast counted-resend path (RetryableRevert), NOT intercepted by the
-        // freshness recheck.
+        // routes to the post-broadcast counted-resend path (RetryableRevert), NOT intercepted by
+        // the freshness recheck.
         let record = valid_record(0x42);
         let leaf = record_leaf_hash(&record).unwrap();
         let (p0, root0) = proof_for(&record, leaf, 0xF0);
@@ -1680,7 +1696,7 @@ mod freshness_recheck_tests {
             record_height: 10,
             proof_calls: StdMutex::new(0),
         });
-        // Stable root on every read (step-1 and step-4.5) ⇒ fresh ⇒ proceed to submit.
+        // Stable root on every read (initial and recheck) ⇒ fresh ⇒ proceed to submit.
         let rm = Arc::new(SeqRootManager::new(vec![(20, root0)]));
         let h = Handler::new(cc.clone(), cc.clone(), witness, rm, CHAIN_ID, 16, SAFETY, 3);
         let gate = InFlightGate::new();
@@ -1704,7 +1720,10 @@ mod freshness_recheck_tests {
         let cc = Arc::new(MockChallengeContract::new());
         let ev = ev_for(leaf);
         cc.set_status(ev.challenge_id, open_status(100_000));
-        cc.set_sender_error(ev.challenge_id, SenderError::UnknownBroadcastOutcome { tx_hash: None });
+        cc.set_sender_error(
+            ev.challenge_id,
+            SenderError::UnknownBroadcastOutcome { tx_hash: None },
+        );
         cc.keep_open(ev.challenge_id);
         let witness = Arc::new(MultiRootWitness {
             by_root: HashMap::from([(root0, p0)]),
