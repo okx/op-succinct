@@ -15,6 +15,7 @@
 
 pub mod cache;
 pub mod challenge_contract;
+pub mod challenge_manager;
 pub mod config;
 pub mod handler;
 pub mod rootmanager_client;
