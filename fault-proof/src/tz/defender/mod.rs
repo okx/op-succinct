@@ -18,6 +18,7 @@ pub mod challenge_contract;
 pub mod challenge_manager;
 pub mod config;
 pub mod handler;
+pub mod leaf_locator;
 pub mod rootmanager_client;
 pub mod supervisor;
 pub mod verifier;
@@ -30,4 +31,5 @@ pub use challenge_contract::{
 };
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
+pub use leaf_locator::{DirectLeafLocator, LeafLocator};
 pub use supervisor::Supervisor;
