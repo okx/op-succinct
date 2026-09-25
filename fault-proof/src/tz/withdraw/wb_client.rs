@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256, U256};
+use async_trait::async_trait;
 use reqwest::Url;
 use serde::Deserialize;
 
@@ -70,6 +71,23 @@ const ROUTE_CHECKPOINT: &str = "chain/dex_state_snapshot";
 const ROUTE_BOUNDARY: &str = "chain/witness/tree-boundary";
 const ROUTE_RECORD_PREFIX: &str = "chain/witness/withdrawals/"; // + {recordHash}
 const ROUTE_PROOF: &str = "chain/witness/withdrawal-proof";
+// Reverse lookup from a transaction-scoped withdraw identifier to its record hash. This route is
+// NOT yet exposed by the witness builder; its shape follows the other query routes and is exercised
+// only via `wiremock` and a trait mock. Real end-to-end use is blocked until the endpoint is
+// delivered — this is a declared cross-repo dependency.
+const ROUTE_TZ_TX_RECORD: &str = "chain/witness/tz-tx-record";
+
+/// Reverse lookup from a transaction-scoped withdraw identifier to its Witness-Builder record hash
+/// (`record_hash == leaf_hash` for V1). This is the fixed interface contract the leaf-locator
+/// reverse path depends on; mocking it lets the state machine be tested without the (not-yet-live)
+/// endpoint.
+#[async_trait]
+pub trait TzTxToLeaf: Send + Sync {
+    /// Resolve `tz_tx_hash` to its record hash. Returns [`WbError::WithdrawalNotFound`] when no
+    /// record maps to it, and [`WbError::Protocol`] (fail-closed) when the identifier maps to more
+    /// than one leaf — an ambiguous mapping must never silently resolve to a single leaf.
+    async fn record_hash_by_tz_tx(&self, tz_tx_hash: B256) -> Result<B256, WbError>;
+}
 
 /// Host-side Witness Builder v2 client.
 pub struct WbClient {
@@ -395,6 +413,29 @@ impl WbClient {
             siblings,
         })
     }
+
+    /// Reverse lookup: resolve a transaction-scoped withdraw identifier to its record hash
+    /// (`record_hash == leaf_hash` for V1). The request carries only the identifier as a query
+    /// param, mirroring the other query routes. An empty result is [`WbError::WithdrawalNotFound`];
+    /// more than one candidate is an ambiguous mapping and fails closed as [`WbError::Protocol`]
+    /// rather than silently choosing one.
+    ///
+    /// NOTE: [`ROUTE_TZ_TX_RECORD`] is NOT yet exposed by the witness builder, so this method is
+    /// exercised only against `wiremock` in tests; real end-to-end use is blocked on that endpoint.
+    pub async fn get_record_hash_by_tz_tx(&self, tz_tx_hash: B256) -> Result<B256, WbError> {
+        let d: TzTxRecordDto = self
+            .get(
+                WbEndpoint::Record,
+                ROUTE_TZ_TX_RECORD,
+                &[("tzTxHash", format!("{tz_tx_hash:#x}"))],
+            )
+            .await?;
+        match d.record_hashes.as_slice() {
+            [] => Err(WbError::WithdrawalNotFound),
+            [one] => Ok(*one),
+            _ => Err(WbError::Protocol),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -517,6 +558,42 @@ struct ProofDto {
     leaf_index: u32,
     count: u32,
     siblings: Vec<B256>,
+}
+
+/// Response body for the (not-yet-live) reverse-lookup route: the candidate record hashes a
+/// transaction-scoped identifier maps to. Zero ⇒ not found; more than one ⇒ ambiguous.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TzTxRecordDto {
+    #[serde(default)]
+    record_hashes: Vec<B256>,
+}
+
+#[async_trait]
+impl TzTxToLeaf for WbClient {
+    async fn record_hash_by_tz_tx(&self, tz_tx_hash: B256) -> Result<B256, WbError> {
+        self.get_record_hash_by_tz_tx(tz_tx_hash).await
+    }
+}
+
+/// Test doubles for the reverse-lookup contract, shared across the crate's test modules (the
+/// leaf-locator and adapter tests reuse [`MockTzTxToLeaf`]). Compiled only under test.
+#[cfg(test)]
+pub(crate) mod test_doubles {
+    use super::{TzTxToLeaf, WbError};
+    use alloy_primitives::B256;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+
+    /// A unique `tzTxHash -> recordHash` map. Absent keys resolve to [`WbError::WithdrawalNotFound`].
+    pub struct MockTzTxToLeaf(pub HashMap<B256, B256>);
+
+    #[async_trait]
+    impl TzTxToLeaf for MockTzTxToLeaf {
+        async fn record_hash_by_tz_tx(&self, tz_tx_hash: B256) -> Result<B256, WbError> {
+            self.0.get(&tz_tx_hash).copied().ok_or(WbError::WithdrawalNotFound)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1073,6 +1150,75 @@ mod tests {
         assert!(matches!(
             client(&s_record, 196).get_canonical_record(B256::repeat_byte(0x01)).await.unwrap_err(),
             WbError::Protocol
+        ));
+    }
+
+    // ── Reverse lookup (tzTxHash → recordHash) contract ──
+
+    /// The trait contract exercised through a pure in-memory mock: a known identifier resolves to
+    /// its record hash; an unknown one is `WithdrawalNotFound`.
+    #[tokio::test]
+    async fn reverse_lookup_returns_leaf_for_known_tz_tx() {
+        use super::test_doubles::MockTzTxToLeaf;
+        let mut m = std::collections::HashMap::new();
+        m.insert(B256::repeat_byte(0x11), B256::repeat_byte(0x99));
+        let wb = MockTzTxToLeaf(m);
+        assert_eq!(
+            wb.record_hash_by_tz_tx(B256::repeat_byte(0x11)).await.unwrap(),
+            B256::repeat_byte(0x99)
+        );
+        assert!(matches!(
+            wb.record_hash_by_tz_tx(B256::repeat_byte(0x22)).await,
+            Err(WbError::WithdrawalNotFound)
+        ));
+    }
+
+    /// The real `WbClient` method against the documented (not-yet-live) route: a single candidate
+    /// resolves; an empty list is `WithdrawalNotFound`; more than one candidate is an ambiguous
+    /// mapping that fails closed as `Protocol` (never silently picking one leaf).
+    #[tokio::test]
+    async fn get_record_hash_by_tz_tx_single_empty_and_ambiguous() {
+        let tz = B256::repeat_byte(0x11);
+
+        // Single candidate ⇒ resolved.
+        let s1 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/tz-tx-record"))
+            .and(query_param("tzTxHash", format!("{tz:#x}")))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(ok_body(serde_json::json!({ "recordHashes": [B256::repeat_byte(0x99)] }))))
+            .mount(&s1)
+            .await;
+        assert_eq!(
+            client(&s1, 196).get_record_hash_by_tz_tx(tz).await.unwrap(),
+            B256::repeat_byte(0x99)
+        );
+
+        // Empty list ⇒ not found.
+        let s2 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/tz-tx-record"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(ok_body(serde_json::json!({ "recordHashes": [] }))))
+            .mount(&s2)
+            .await;
+        assert!(matches!(
+            client(&s2, 196).get_record_hash_by_tz_tx(tz).await,
+            Err(WbError::WithdrawalNotFound)
+        ));
+
+        // More than one candidate ⇒ ambiguous ⇒ fail closed (Protocol), never a silent single pick.
+        let s3 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/witness/tz-tx-record"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_body(serde_json::json!({
+                "recordHashes": [B256::repeat_byte(0x99), B256::repeat_byte(0xaa)]
+            }))))
+            .mount(&s3)
+            .await;
+        assert!(matches!(
+            client(&s3, 196).get_record_hash_by_tz_tx(tz).await,
+            Err(WbError::Protocol)
         ));
     }
 }
