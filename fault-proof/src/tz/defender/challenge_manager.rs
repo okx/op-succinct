@@ -127,8 +127,6 @@ struct AdapterState {
     scripted_events: Option<Vec<RawChallengeEvent>>,
     /// Scripted per-challenge status for the test path.
     scripted_status: HashMap<ChallengeId, ChallengeStatus>,
-    /// Scripted per-challenge sender errors for the test path.
-    scripted_sender_errors: HashMap<ChallengeId, SenderError>,
     /// Scripted receipt statuses (by tx hash) for the test path.
     scripted_tx_status: HashMap<TxHash, TxStatus>,
     /// The most recent `submitWithdrawProof` calldata built (verbatim four fields; one slot, so a
@@ -178,9 +176,10 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
         }
     }
 
-    /// Test constructor: feed a scripted, already-decoded batch of events through the same
-    /// filter → locate → build pipeline as the live path, with no provider.
-    #[cfg(test)]
+    /// Scripted/offline constructor: feed an already-decoded batch of events through the same
+    /// filter → locate → build pipeline as the live path, with no provider. Used by tests
+    /// (including cross-crate integration tests); hidden from the public docs.
+    #[doc(hidden)]
     pub fn from_raw_events(
         events: Vec<RawChallengeEvent>,
         locator: L,
@@ -274,8 +273,9 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
         self.state.lock().unwrap().id_map.get(&id).copied()
     }
 
-    /// Test seam: script the status returned by `get_challenge` for a (discovered) challenge id.
-    #[cfg(test)]
+    /// Scripted/offline seam: set the status returned by `get_challenge` for a (discovered)
+    /// challenge id. Used by tests (including cross-crate integration tests); hidden from docs.
+    #[doc(hidden)]
     pub fn script_status(
         &self,
         id: ChallengeId,
@@ -289,12 +289,6 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
             .unwrap()
             .scripted_status
             .insert(id, ChallengeStatus { open, deadline, chain_timestamp, resolved_by_us });
-    }
-
-    /// Test seam: script a typed sender error for the next `prove_challenge` of `id`.
-    #[cfg(test)]
-    pub fn set_sender_error(&self, id: ChallengeId, err: SenderError) {
-        self.state.lock().unwrap().scripted_sender_errors.insert(id, err);
     }
 
     /// The last `submitWithdrawProof` calldata this adapter built, if any (introspection).
@@ -329,10 +323,6 @@ impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
                 return Err(SenderError::SafeToRetryPreBroadcast);
             }
         };
-        // A scripted sender error takes precedence and records no call (mirrors the mock seam).
-        if let Some(err) = self.state.lock().unwrap().scripted_sender_errors.get(&id).copied() {
-            return Err(err);
-        }
         // Build the submitWithdrawProof calldata: the four contract fields, verbatim. The seam's
         // legacy `checkpoint_height` is NOT a contract parameter and is intentionally dropped.
         let _ = checkpoint_height;

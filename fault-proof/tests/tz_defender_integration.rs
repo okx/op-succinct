@@ -23,13 +23,14 @@ use fault_proof::tz::{
             ChallengeEventSource, ChallengeOpened, ChallengeStatus, MockChallengeContract,
             ScanWindow, TxStatus,
         },
+        challenge_manager::{ChallengeManagerContract, ChallengeType, RawChallengeEvent},
         handler::{ChallengeState, Handler, InFlightGate, WitnessSource},
         rootmanager_client::MockRootManager,
         supervisor::Supervisor,
         verifier::record_leaf_hash,
         watcher::Watcher,
         witness_wb::WbWitnessSource,
-        ChallengeId,
+        ChallengeId, DirectLeafLocator,
     },
     withdraw::{
         tree_adapter::{business_root, root_from_frontier, zero_hashes, WITHDRAWAL_TAG},
@@ -504,4 +505,82 @@ async fn restart_rescan_reconciles_status_only() {
     sup.reconcile_on_startup(&rediscovered).await.unwrap();
     assert!(sup.is_pending(open_id), "still-open ⇒ best-effort re-drive");
     assert!(!sup.is_pending(closed_id), "closed ⇒ skipped (no old-receipt lookup)");
+}
+
+/// A decoded challenge event for the real adapter's scripted/offline event source.
+fn raw_event(
+    onchain_id: U256,
+    challenge_type: ChallengeType,
+    identifier: B256,
+    tx_seed: u8,
+    log_index: u64,
+) -> RawChallengeEvent {
+    RawChallengeEvent {
+        onchain_challenge_id: onchain_id,
+        challenge_type,
+        identifier,
+        response_deadline: 10_000,
+        block_number: 100,
+        chain_id: CHAIN_ID,
+        contract: Address::repeat_byte(CONTRACT),
+        tx_hash: B256::repeat_byte(tx_seed),
+        log_index,
+    }
+}
+
+/// End-to-end with the REAL `ChallengeManagerContract`: a mixed-type batch in one scan window is
+/// filtered to exactly the `WithdrawNotInRoot` challenge, driven through the real `WbClient`
+/// (wiremock) → `WbWitnessSource` → `Handler`, and the resulting submit carries the WB proof's four
+/// fields verbatim. This exercises the real adapter across the whole stack (not the mock seam).
+#[tokio::test]
+async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
+    let r = valid_record(0x42);
+    let leaf = leaf_of(&r);
+    let (root, siblings) = build_proof(leaf);
+    let server = MockServer::start().await;
+    mount_record(&server, &r, leaf, RECORD_HEIGHT).await;
+    mount_proof(&server, &r, leaf, root, &siblings).await;
+
+    let rm = Arc::new(MockRootManager::new());
+    rm.set_latest(CHECKPOINT_HEIGHT, root);
+
+    // One WithdrawNotInRoot (identifier == leaf, via DirectLeafLocator) interleaved with other
+    // types that must be ignored — no event emitted, no witness query, no transaction for them.
+    let onchain_id = U256::from(4242u64);
+    let raws = vec![
+        raw_event(onchain_id, ChallengeType::WithdrawNotInRoot, leaf, 0xAA, 1),
+        raw_event(U256::from(7u64), ChallengeType::Other(3), B256::repeat_byte(0x02), 0xBB, 2),
+        raw_event(U256::from(9u64), ChallengeType::Other(8), B256::repeat_byte(0x03), 0xCC, 3),
+    ];
+    let adapter = Arc::new(ChallengeManagerContract::from_raw_events(
+        raws,
+        DirectLeafLocator,
+        CHAIN_ID,
+        Address::repeat_byte(CONTRACT),
+    ));
+
+    let opened =
+        ChallengeEventSource::watch_opened(&*adapter, ScanWindow { from_block: 0, to_block: 10_000 })
+            .await
+            .unwrap();
+    assert_eq!(opened.len(), 1, "only the WithdrawNotInRoot challenge is emitted from the mixed batch");
+    let ev = opened[0].clone();
+    adapter.script_status(ev.challenge_id, true, 10_000, 0, false);
+
+    let witness = witness_for(&server);
+    let h = Handler::new(adapter.clone(), adapter.clone(), witness, rm, CHAIN_ID, 16, SAFETY, MAX_RESEND);
+    let gate = InFlightGate::new();
+    let mut state = ChallengeState::Discovered;
+    h.drive(&ev, &mut state, &gate).await.unwrap();
+    assert!(
+        matches!(state, ChallengeState::Submitted { .. }),
+        "the WithdrawNotInRoot challenge is answered, got {state:?}"
+    );
+
+    // The recorded submit carries the WB proof's four fields, verbatim.
+    let call = adapter.last_submit_call().expect("a submit was recorded");
+    assert_eq!(call.challenge_id, onchain_id, "on-chain challengeId passed through verbatim");
+    assert_eq!(call.leaf_index, 0);
+    assert_eq!(call.leaf_count, 1);
+    assert_eq!(call.proof, siblings);
 }
