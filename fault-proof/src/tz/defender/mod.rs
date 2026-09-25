@@ -31,5 +31,5 @@ pub use challenge_contract::{
 };
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
-pub use leaf_locator::{DirectLeafLocator, LeafLocator};
+pub use leaf_locator::{DirectLeafLocator, LeafLocator, ReverseLookupLeafLocator};
 pub use supervisor::Supervisor;
