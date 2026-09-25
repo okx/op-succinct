@@ -31,6 +31,12 @@ use super::{
     verifier::verify,
 };
 
+/// Maximum number of pre-send root-freshness re-binds within a single `prepare_and_submit` before
+/// falling back to a wait. This is deliberately distinct from `max_resend` (the POST-send
+/// confirmed-revert bound): it caps how many times a proof is re-fetched against a moving root
+/// BEFORE any broadcast, so a root that keeps changing near the deadline cannot livelock the tick.
+const PRE_SEND_ROOT_RECHECK_MAX: u32 = 3;
+
 /// Lock a mutex, recovering the guard if a previous holder panicked. The state these mutexes
 /// guard (an `Option<ChallengeId>` gate token and an in-memory LRU proof cache) stays structurally
 /// valid across a panic, so a poisoned lock must NOT turn into a permanent panic loop on every
@@ -351,6 +357,57 @@ impl Handler {
         }
         lock_recover(&self.cache).put((ev.leaf_hash, withdrawal_root), proof.clone());
 
+        // 3b. Pre-send root-freshness recheck (acceptance #7): re-read the latest root just before
+        //     the gate/submit. If it changed since the proof was fetched+verified, discard the
+        //     proof and re-fetch+re-verify against the new root, bounded and deadline-guarded. This
+        //     is a PRE-broadcast check driven ONLY by an observed root change; it never sets
+        //     `RetryableRevert` and never consumes `SenderError` — those are the POST-send
+        //     business-error paths in `submit`, kept strictly separate. `checkpoint_height` stays
+        //     the value read at step 2 (it is not a `submitWithdrawProof` field); only the bound
+        //     root and its proof are re-bound.
+        let mut withdrawal_root = withdrawal_root;
+        let mut proof = proof;
+        for _ in 0..PRE_SEND_ROOT_RECHECK_MAX {
+            let (_h, root_now) = self.root_manager.latest_root().await?;
+            if root_now == withdrawal_root {
+                break; // stable → proceed to the status recheck + gate + submit unchanged
+            }
+            // Root moved before broadcast. Re-check liveness first (deadline/closed short-circuit).
+            let status = self.reader.get_challenge(ev.challenge_id).await?;
+            if !status.open {
+                return Ok(ChallengeState::Closed);
+            }
+            if self.past_deadline(&status) {
+                return Ok(ChallengeState::Expired);
+            }
+            // Re-bind to the new root: re-fetch + re-verify; never send a proof bound to a stale
+            // root. A witness lag here is a wait, a mis-bound proof is a permanent failure — exactly
+            // as on the initial bind.
+            let re = match self.fetch_proof(ev.leaf_hash, root_now).await {
+                Ok(p) => p,
+                Err(e) => return Ok(Self::classify_witness_wait(e, attempts, Some(root_now))),
+            };
+            if verify(&re, ev.leaf_hash, root_now, self.chain_id).is_err() {
+                return Ok(ChallengeState::PermanentFailure);
+            }
+            lock_recover(&self.cache).put((ev.leaf_hash, root_now), re.clone());
+            withdrawal_root = root_now;
+            proof = re;
+        }
+        // Exhausted the bound without a stable root: do NOT send a stale-bound proof — wait a tick
+        // and retry, rather than broadcasting against a root that is still moving or escalating to a
+        // permanent failure.
+        {
+            let (_h, root_final) = self.root_manager.latest_root().await?;
+            if root_final != withdrawal_root {
+                return Ok(ChallengeState::WaitingWitness {
+                    reason: WaitReason::RootBehindRecord,
+                    attempts,
+                    last_root: Some(root_final),
+                });
+            }
+        }
+
         // 4. Pre-broadcast recheck: fresh status + deadline before EVERY send.
         let status = self.reader.get_challenge(ev.challenge_id).await?;
         if !status.open {
@@ -667,6 +724,9 @@ mod tests {
         proof: StdMutex<Result<HistoricalInclusionProof, WbError>>,
         err_once: StdMutex<Option<WbError>>,
         proof_calls: StdMutex<u32>,
+        /// Per-root proofs consulted (by the requested root) before the single `proof`, so a test
+        /// can return a distinct, correctly-bound proof for each root the pre-send recheck fetches.
+        root_proofs: StdMutex<std::collections::HashMap<B256, HistoricalInclusionProof>>,
     }
     impl MockWitness {
         fn ok(proof: HistoricalInclusionProof, record_height: u64) -> Self {
@@ -675,7 +735,12 @@ mod tests {
                 proof: StdMutex::new(Ok(proof)),
                 err_once: StdMutex::new(None),
                 proof_calls: StdMutex::new(0),
+                root_proofs: StdMutex::new(std::collections::HashMap::new()),
             }
+        }
+        /// Register a proof to return when the requested root equals `root`.
+        fn set_root_proof(&self, root: B256, proof: HistoricalInclusionProof) {
+            self.root_proofs.lock().unwrap().insert(root, proof);
         }
         fn set_proof(&self, proof: HistoricalInclusionProof) {
             *self.proof.lock().unwrap() = Ok(proof);
@@ -701,11 +766,14 @@ mod tests {
         async fn historical_proof(
             &self,
             _leaf: B256,
-            _root: B256,
+            root: B256,
         ) -> Result<HistoricalInclusionProof, WbError> {
             *self.proof_calls.lock().unwrap() += 1;
             if let Some(e) = self.err_once.lock().unwrap().take() {
                 return Err(e);
+            }
+            if let Some(p) = self.root_proofs.lock().unwrap().get(&root) {
+                return Ok(p.clone());
             }
             self.proof.lock().unwrap().clone()
         }
@@ -1448,5 +1516,168 @@ mod tests {
         let mut state = ChallengeState::Discovered;
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(matches!(state, ChallengeState::Submitted { .. }), "recovered: {state:?}");
+    }
+
+    // ── Pre-send root-freshness recheck (acceptance #7): a PRE-broadcast check driven only by an
+    //    observed root change, bounded + deadline-guarded, strictly separate from the POST-send
+    //    RetryableRevert / business-error paths. ──
+
+    /// A ready challenge (open, far deadline) with a manually-built cc/ev for an explicit leaf.
+    fn ready_for(record: &WithdrawRecord) -> (Arc<MockChallengeContract>, ChallengeOpened, B256) {
+        let leaf = record_leaf_hash(record).unwrap();
+        let cc = Arc::new(MockChallengeContract::new());
+        let ev = ev_for(leaf);
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline: 100_000, chain_timestamp: 0, resolved_by_us: false },
+        );
+        (cc, ev, leaf)
+    }
+
+    #[tokio::test]
+    async fn pre_send_recheck_rebinds_to_new_root_before_submit() {
+        let record = valid_record(0x42);
+        let (cc, ev, leaf) = ready_for(&record);
+        let (proof_a, root_a) = proof_for(&record, leaf, 0xA0);
+        let (proof_b, root_b) = proof_for(&record, leaf, 0xB0);
+        assert_ne!(root_a, root_b);
+        let witness = Arc::new(MockWitness::ok(proof_a.clone(), 10));
+        witness.set_root_proof(root_a, proof_a);
+        witness.set_root_proof(root_b, proof_b.clone());
+        let rm = Arc::new(MockRootManager::new());
+        // Initial read binds root_a; the pre-send recheck observes root_b; then it is stable.
+        rm.push_next(20, root_a);
+        rm.push_next(20, root_b);
+        rm.set_latest(20, root_b);
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+
+        let state = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Submitted { root, .. } if root == root_b),
+            "the proof is re-bound to root_b before the send, got {state:?}"
+        );
+        // The broadcast carried the RE-FETCHED proof (bound to root_b), not the stale root_a proof.
+        assert_eq!(cc.prove_calls().last().unwrap().siblings, proof_b.siblings);
+    }
+
+    #[tokio::test]
+    async fn business_errors_bypass_pre_send_loop_and_use_post_send_paths() {
+        // Stable root ⇒ the pre-send loop is a no-op; the sender's business errors must flow through
+        // the existing POST-send paths and never be observed by the pre-send recheck.
+        let (cc, witness, rm, ev, root) = setup_ready(100_000, 0, 20);
+        cc.keep_open(ev.challenge_id);
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+
+        cc.set_sender_error(ev.challenge_id, SenderError::ConfirmedRejection);
+        let state = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::RetryableRevert { attempts: 1, prev_root } if prev_root == root),
+            "confirmed rejection still yields RetryableRevert (post-send), got {state:?}"
+        );
+        assert_eq!(gate.holder(), None, "the reverted tx released the gate");
+
+        cc.set_sender_error(ev.challenge_id, SenderError::UnknownBroadcastOutcome { tx_hash: None });
+        let state2 = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
+        assert!(
+            matches!(state2, ChallengeState::ReconcileUnknownNoTx { .. }),
+            "unknown broadcast outcome still yields ReconcileUnknownNoTx (post-send), got {state2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_send_recheck_bounded_falls_back_to_waiting_witness() {
+        // The root changes on every read and never stabilizes ⇒ the bounded loop must fall back to
+        // WaitingWitness (not send a stale-bound proof, not PermanentFailure) and record no submit.
+        let record = valid_record(0x42);
+        let (cc, ev, leaf) = ready_for(&record);
+        let mut roots = Vec::new();
+        let witness = {
+            let (p0, r0) = proof_for(&record, leaf, 0xC0);
+            let w = Arc::new(MockWitness::ok(p0.clone(), 10));
+            w.set_root_proof(r0, p0);
+            roots.push(r0);
+            for i in 1..=3u8 {
+                let (pi, ri) = proof_for(&record, leaf, 0xC0 + i);
+                w.set_root_proof(ri, pi);
+                roots.push(ri);
+            }
+            // One more root that is never fetched — it is the final "still moving" observation.
+            let (_p4, r4) = proof_for(&record, leaf, 0xC4);
+            roots.push(r4);
+            w
+        };
+        let rm = Arc::new(MockRootManager::new());
+        for r in &roots {
+            rm.push_next(20, *r);
+        }
+        rm.set_latest(20, *roots.last().unwrap());
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+
+        let state = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::WaitingWitness { .. }),
+            "a never-stabilizing root falls back to a wait, got {state:?}"
+        );
+        assert!(cc.prove_calls().is_empty(), "never broadcast a stale-bound proof");
+        assert_eq!(gate.holder(), None, "no gate held on the pre-send wait fallback");
+    }
+
+    #[tokio::test]
+    async fn pre_send_recheck_closed_mid_loop_short_circuits() {
+        // The challenge closes while the pre-send loop is re-binding ⇒ Closed, no broadcast.
+        let record = valid_record(0x42);
+        let leaf = record_leaf_hash(&record).unwrap();
+        let cc = Arc::new(MockChallengeContract::new());
+        let ev = ev_for(leaf);
+        // Closed status: the loop's liveness recheck short-circuits before any re-fetch.
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: false, deadline: 100_000, chain_timestamp: 0, resolved_by_us: false },
+        );
+        let (proof_a, root_a) = proof_for(&record, leaf, 0xD0);
+        let (_proof_b, root_b) = proof_for(&record, leaf, 0xD1);
+        let witness = Arc::new(MockWitness::ok(proof_a.clone(), 10));
+        witness.set_root_proof(root_a, proof_a);
+        let rm = Arc::new(MockRootManager::new());
+        rm.push_next(20, root_a);
+        rm.push_next(20, root_b);
+        rm.set_latest(20, root_b);
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+
+        let state = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
+        assert!(matches!(state, ChallengeState::Closed), "closed mid-loop ⇒ Closed, got {state:?}");
+        assert!(cc.prove_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pre_send_recheck_expired_mid_loop_short_circuits() {
+        // The deadline passes while the pre-send loop is re-binding ⇒ Expired, no broadcast.
+        let record = valid_record(0x42);
+        let leaf = record_leaf_hash(&record).unwrap();
+        let cc = Arc::new(MockChallengeContract::new());
+        let ev = ev_for(leaf);
+        // Open but past the L2-time deadline (chain_ts + SAFETY >= deadline).
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: true, deadline: 1_000, chain_timestamp: 999, resolved_by_us: false },
+        );
+        let (proof_a, root_a) = proof_for(&record, leaf, 0xE0);
+        let (_proof_b, root_b) = proof_for(&record, leaf, 0xE1);
+        let witness = Arc::new(MockWitness::ok(proof_a.clone(), 10));
+        witness.set_root_proof(root_a, proof_a);
+        let rm = Arc::new(MockRootManager::new());
+        rm.push_next(20, root_a);
+        rm.push_next(20, root_b);
+        rm.set_latest(20, root_b);
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+
+        let state = h.prepare_and_submit(&ev, 0, &gate).await.unwrap();
+        assert!(matches!(state, ChallengeState::Expired), "expired mid-loop ⇒ Expired, got {state:?}");
+        assert!(cc.prove_calls().is_empty());
     }
 }

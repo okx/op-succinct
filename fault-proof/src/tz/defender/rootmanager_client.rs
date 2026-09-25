@@ -62,6 +62,10 @@ pub struct MockRootManager {
     /// When `true`, the NEXT `latest_root` call returns a transient error (then resets), so tests
     /// can simulate a RootManager RPC blip without disturbing the stored latest root.
     fail_next: std::sync::Mutex<bool>,
+    /// Values returned (and consumed) in order BEFORE falling back to the stored latest, so a test
+    /// can make consecutive `latest_root` reads within a single call return different roots (e.g.
+    /// root A on the first read and root B on the pre-send recheck read).
+    queued: std::sync::Mutex<std::collections::VecDeque<(u64, B256)>>,
 }
 
 impl MockRootManager {
@@ -72,6 +76,13 @@ impl MockRootManager {
     /// Set the current latest checkpoint (latest-only semantics: replaces any prior value).
     pub fn set_latest(&self, height: u64, withdrawal_root: B256) {
         *self.latest.lock().unwrap() = Some((height, withdrawal_root));
+    }
+
+    /// Enqueue a checkpoint returned by the next `latest_root` call. Queued values are consumed in
+    /// FIFO order before the stored latest, letting a test script a root that changes between the
+    /// initial read and the pre-send recheck read within one `prepare_and_submit`.
+    pub fn push_next(&self, height: u64, withdrawal_root: B256) {
+        self.queued.lock().unwrap().push_back((height, withdrawal_root));
     }
 
     /// Make the next `latest_root` call fail with a transient error, then resume returning the
@@ -86,6 +97,9 @@ impl LatestRootSource for MockRootManager {
     async fn latest_root(&self) -> Result<(u64, B256)> {
         if std::mem::replace(&mut *self.fail_next.lock().unwrap(), false) {
             anyhow::bail!("transient RootManager RPC failure (scripted, one-shot)");
+        }
+        if let Some(next) = self.queued.lock().unwrap().pop_front() {
+            return Ok(next);
         }
         self.latest.lock().unwrap().ok_or_else(|| anyhow::anyhow!("no latest root set"))
     }
