@@ -27,9 +27,11 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use fault_proof::tz::{
     defender::{
-        challenge_contract::{ChallengeEventSource, MockChallengeContract, ScanWindow},
+        challenge_contract::{ChallengeEventSource, ScanWindow},
+        challenge_manager::ChallengeManagerContract,
         config::DefenderConfig,
         handler::{Handler, InFlightGate},
+        leaf_locator::ReverseLookupLeafLocator,
         rootmanager_client::RootManagerClient,
         supervisor::Supervisor,
         watcher::Watcher,
@@ -95,9 +97,10 @@ async fn run() -> Result<()> {
     // real signer is constructed and validated by the challenge sender adapter when the
     // on-chain ABI is delivered.
 
-    // Witness Builder v2 client + witness-source adapter (record/proof witness data only).
+    // Witness Builder v2 client + witness-source adapter (record/proof witness data only). The
+    // same client backs the reverse-lookup leaf-locator below, so keep an Arc handle.
     let wb = Arc::new(WbClient::new(config.wb_endpoint.clone(), config.chain_id)?);
-    let witness = Arc::new(WbWitnessSource::new(wb));
+    let witness = Arc::new(WbWitnessSource::new(wb.clone()));
 
     // X Layer / L2 provider: challenge events, the L2 tip for finality gating, challenge
     // status/deadline reads, and the current/latest RootManager root all read here.
@@ -107,13 +110,30 @@ async fn run() -> Result<()> {
         .connect_http(l2_rpc.parse().context("DEFENDER_L2_RPC must be a URL")?);
     let root_manager = Arc::new(RootManagerClient::new(config.root_manager, l2_provider.clone()));
 
-    // Challenge-contract seam: mock until the real X Layer ABI is wired.
+    // Challenge-contract seam: the real ChallengeManager adapter (WithdrawNotInRoot only), wired
+    // with the reverse-lookup leaf-locator because the event carries a transaction-scoped
+    // identifier, not a leaf key. Three cross-repo/stage dependencies gate LIVE responses and are
+    // called out here so operators are not misled into thinking the defender can already answer:
+    //   1. the Witness-Builder tzTxHash->recordHash reverse-lookup RPC does not yet exist, so leaf
+    //      location waits until it lands;
+    //   2. no transaction signer is wired in this stage, so submitWithdrawProof calldata is built
+    //      but not broadcast;
+    //   3. the on-chain challenge status-view ABI is pending verification, so live status reads are
+    //      not yet wired.
+    // Only the leaf-locator (and, later, the status-view read and signer) change when those land —
+    // the watcher, handler state machine, and local verification stay as-is.
     tracing::warn!(
-        "tz-defender is running against the in-memory MockChallengeContract seam: the real X \
-         Layer Withdraw-challenge ABI is not yet wired. Watcher/handler/verification are final; \
-         only the challenge event-source/reader/sender implementations will be swapped in."
+        "tz-defender wired the real ChallengeManager adapter (WithdrawNotInRoot only); LIVE \
+         responses are gated on the not-yet-live WB tzTxHash->recordHash reverse-lookup RPC, an \
+         unwired transaction signer, and the pending on-chain status-view ABI"
     );
-    let challenge = Arc::new(MockChallengeContract::new());
+    let locator = ReverseLookupLeafLocator::new(wb.clone());
+    let challenge = Arc::new(ChallengeManagerContract::new(
+        l2_provider.clone(),
+        config.challenge_contract,
+        config.chain_id,
+        locator,
+    ));
 
     // Global single-process in-flight gate (at most one broadcast in flight); lost on restart.
     let gate = InFlightGate::new();

@@ -132,7 +132,7 @@ struct AdapterState {
     /// Scripted receipt statuses (by tx hash) for the test path.
     scripted_tx_status: HashMap<TxHash, TxStatus>,
     /// The most recent `submitWithdrawProof` calldata built (verbatim four fields; one slot, so a
-    /// long-running adapter does not accumulate).
+    /// long-running adapter does not accumulate). Observability for tests and operators.
     last_submit: Option<SubmitWithdrawProofCall>,
 }
 
@@ -297,15 +297,14 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
         self.state.lock().unwrap().scripted_sender_errors.insert(id, err);
     }
 
-    /// Test seam: the last `submitWithdrawProof` calldata built, if any.
-    #[cfg(test)]
+    /// The last `submitWithdrawProof` calldata this adapter built, if any (introspection).
     pub fn last_submit_call(&self) -> Option<SubmitWithdrawProofCall> {
         self.state.lock().unwrap().last_submit.clone()
     }
 
-    /// Test seam: whether any built `submitWithdrawProof` calldata carried the seam's legacy
-    /// `checkpoint_height`. It never does — the call is exactly the four contract fields.
-    #[cfg(test)]
+    /// Whether any built `submitWithdrawProof` calldata carried the seam's legacy
+    /// `checkpoint_height`. It never does — the call is exactly the four contract fields — so this
+    /// is a standing invariant, not runtime state.
     pub fn submitted_any_checkpoint_height(&self) -> bool {
         false
     }
@@ -347,13 +346,16 @@ impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
         if self.provider.is_none() {
             return Ok(SubmitOutcome::Submitted(TxHash::repeat_byte(0x99)));
         }
-        // Live path: the calldata above proves the verbatim four-field mapping, but broadcasting
-        // needs a transaction signer that is not wired in this stage. This provably never
-        // broadcasts, so it is the safe-to-retry class (the handler stays Ready and re-drives
+        // Live path: the four fields above are the verbatim submitWithdrawProof mapping, but
+        // broadcasting needs a transaction signer that is not wired in this stage. This provably
+        // never broadcasts, so it is the safe-to-retry class (the handler stays Ready and re-drives
         // without sending) rather than an ambiguous outcome.
         tracing::warn!(
             on_chain_challenge_id = %onchain_id,
-            "submitWithdrawProof calldata built but no transaction signer is wired; not broadcasting"
+            leaf_index,
+            leaf_count = count,
+            "submitWithdrawProof calldata built (verbatim four fields); no transaction signer is \
+             wired, not broadcasting"
         );
         Err(SenderError::SafeToRetryPreBroadcast)
     }
