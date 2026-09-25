@@ -357,7 +357,7 @@ impl Handler {
         }
         lock_recover(&self.cache).put((ev.leaf_hash, withdrawal_root), proof.clone());
 
-        // 3b. Pre-send root-freshness recheck (acceptance #7): re-read the latest root just before
+        // 3b. Pre-send root-freshness recheck: re-read the latest root just before
         //     the gate/submit. If it changed since the proof was fetched+verified, discard the
         //     proof and re-fetch+re-verify against the new root, bounded and deadline-guarded. This
         //     is a PRE-broadcast check driven ONLY by an observed root change; it never sets
@@ -1519,7 +1519,7 @@ mod tests {
         assert!(matches!(state, ChallengeState::Submitted { .. }), "recovered: {state:?}");
     }
 
-    // ── Pre-send root-freshness recheck (acceptance #7): a PRE-broadcast check driven only by an
+    // ── Pre-send root-freshness recheck: a PRE-broadcast check driven only by an
     //    observed root change, bounded + deadline-guarded, strictly separate from the POST-send
     //    RetryableRevert / business-error paths. ──
 
