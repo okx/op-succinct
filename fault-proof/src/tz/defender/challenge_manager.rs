@@ -79,6 +79,23 @@ sol! {
     );
 }
 
+sol! {
+    // The ChallengeManager view + failure event that back the live status read and resolution
+    // attribution. `activeWithdrawChallenge` returns the challengeId currently occupying a bridge's
+    // active withdraw-challenge slot (zero when none). `ChallengeFailed` carries the challengeId
+    // resolved against the challenger; matching it against our own confirmed proof receipt is how
+    // resolution is attributed. Both shapes are bound from the owner brief and MUST be re-confirmed
+    // against the deployed contract before LIVE responses are relied upon.
+    #[allow(missing_docs)]
+    #[sol(rpc)]
+    interface IChallengeManager {
+        function activeWithdrawChallenge(address bridge) external view returns (uint256);
+    }
+
+    #[allow(missing_docs)]
+    event ChallengeFailed(uint256 indexed challengeId);
+}
+
 /// A decoded-but-unfiltered `ChallengeCreated` event. `tz_tx_hash` is the transaction-scoped
 /// withdraw identifier, retained for observability and a future fallback path; `leaf` is the Merkle
 /// leaf the proof path consumes directly via a [`LeafLocator`]. The two are independent decoded
@@ -142,6 +159,10 @@ struct AdapterState {
     scripted_events: Option<Vec<RawChallengeEvent>>,
     /// Scripted per-challenge status for the test path.
     scripted_status: HashMap<ChallengeId, ChallengeStatus>,
+    /// Scripted live-status inputs `(active_withdraw_challenge_id, chain_timestamp)` for the test
+    /// path, driving the same exact-equality open/closed derivation the live path uses without a
+    /// provider.
+    scripted_active: HashMap<ChallengeId, (U256, u64)>,
     /// Scripted receipt statuses (by tx hash) for the test path.
     scripted_tx_status: HashMap<TxHash, TxStatus>,
     /// The most recent `submitWithdrawProof` calldata built (verbatim four fields; one slot, so a
@@ -323,6 +344,14 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
             .insert(id, ChallengeStatus { open, deadline, chain_timestamp, resolved_by_us });
     }
 
+    /// Scripted/offline seam: feed the `(active_withdraw_challenge_id, chain_timestamp)` the live
+    /// derivation would read for a (discovered) challenge, exercising the same exact-equality
+    /// open/closed rule without a provider. Used by tests; hidden from docs.
+    #[doc(hidden)]
+    pub fn script_active(&self, id: ChallengeId, active: U256, chain_timestamp: u64) {
+        self.state.lock().unwrap().scripted_active.insert(id, (active, chain_timestamp));
+    }
+
     /// The last `submitWithdrawProof` calldata this adapter built, if any (introspection).
     pub fn last_submit_call(&self) -> Option<SubmitWithdrawProofCall> {
         self.state.lock().unwrap().last_submit.clone()
@@ -409,28 +438,60 @@ impl<L: LeafLocator> ChallengeEventSource for ChallengeManagerContract<L> {
 #[async_trait]
 impl<L: LeafLocator> ChallengeReader for ChallengeManagerContract<L> {
     async fn get_challenge(&self, id: ChallengeId) -> anyhow::Result<ChallengeStatus> {
-        // Recover the on-chain id; an id this adapter never decoded (e.g. after a restart with an
-        // empty map) is a typed error routed to a safe retry — never an unwrap panic.
-        let onchain_id = self
-            .state
-            .lock()
-            .unwrap()
-            .id_map
-            .get(&id)
-            .copied()
-            .with_context(|| format!("get_challenge for an unknown challenge id {id:?}"))?;
+        // Recover the on-chain id and cached facts; an id this adapter never decoded (e.g. after a
+        // restart with an empty map) is a typed error routed to a safe retry — never an unwrap
+        // panic.
+        let (onchain_id, affected_bridge, deadline) = {
+            let state = self.state.lock().unwrap();
+            let onchain_id = state
+                .id_map
+                .get(&id)
+                .copied()
+                .with_context(|| format!("get_challenge for an unknown challenge id {id:?}"))?;
+            let affected_bridge = state.affected_bridge.get(&onchain_id).copied();
+            let deadline = state.deadlines.get(&onchain_id).copied().unwrap_or(0);
+            (onchain_id, affected_bridge, deadline)
+        };
         // Scripted (test) status when present.
         if let Some(status) = self.state.lock().unwrap().scripted_status.get(&id).copied() {
             return Ok(status);
         }
-        // Live path: reading the on-chain challenge status needs the verified ChallengeManager
-        // status-view ABI, which is not yet available. Fail closed with a clear message rather than
-        // fabricating a call.
-        if self.provider.is_some() {
-            anyhow::bail!(
-                "live challenge status read is not yet wired (blocked on the verified \
-                 ChallengeManager status-view ABI); on-chain challengeId {onchain_id}"
-            );
+        // Scripted live-status inputs: drive the exact-equality open/closed derivation offline.
+        if let Some((active, chain_timestamp)) =
+            self.state.lock().unwrap().scripted_active.get(&id).copied()
+        {
+            return Ok(ChallengeStatus {
+                open: active == onchain_id,
+                deadline,
+                chain_timestamp,
+                resolved_by_us: false,
+            });
+        }
+        // Live path: read the bridge's active withdraw-challenge id and the latest L2 block
+        // timestamp through the provider, then derive open/closed by EXACT equality (a different or
+        // zero active id means this challenge no longer holds the slot). Resolution attribution is
+        // NOT read here — it comes only from our own confirmed prove receipt.
+        if let Some(provider) = self.provider.as_ref() {
+            let bridge = affected_bridge.with_context(|| {
+                format!("no affectedBridge cached for challenge id {id:?}; cannot read live status")
+            })?;
+            let manager = IChallengeManager::new(self.contract, provider.clone());
+            let active = manager
+                .activeWithdrawChallenge(bridge)
+                .call()
+                .await
+                .context("failed to read activeWithdrawChallenge")?;
+            let block = provider
+                .get_block_by_number(alloy_eips::BlockNumberOrTag::Latest)
+                .await
+                .context("failed to read latest L2 block for challenge status")?
+                .context("latest L2 block is missing")?;
+            return Ok(ChallengeStatus {
+                open: active == onchain_id,
+                deadline,
+                chain_timestamp: block.header.timestamp,
+                resolved_by_us: false,
+            });
         }
         // A scripted adapter with no status for a known id defaults to closed (mirrors the mock).
         Ok(ChallengeStatus { open: false, deadline: 0, chain_timestamp: 0, resolved_by_us: false })
@@ -711,6 +772,32 @@ mod tests {
         assert_eq!(or[0].leaf_hash, leaf, "Reverse resolves the same leaf via the WB by tzTxHash");
         // Same event coordinates ⇒ identical opaque ChallengeId regardless of the locator.
         assert_eq!(od[0].challenge_id, or[0].challenge_id);
+    }
+
+    #[tokio::test]
+    async fn live_get_challenge_open_closed_by_active_id() {
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        let id = opened[0].challenge_id;
+        let onchain_id = adapter.onchain_id_for(id).unwrap();
+        // active-withdraw-challenge id EXACTLY equals our on-chain id ⇒ open; the deadline comes
+        // from the cached event and the chain timestamp from the (scripted) block read.
+        adapter.script_active(id, onchain_id, 4_200);
+        let st = adapter.get_challenge(id).await.unwrap();
+        assert!(st.open, "active == our on-chain id ⇒ open");
+        assert_eq!(st.chain_timestamp, 4_200);
+        assert_eq!(st.deadline, 10_000, "deadline is the cached event's response deadline");
+        // A DIFFERENT active id ⇒ closed (exact equality; not merely non-zero).
+        adapter.script_active(id, onchain_id + U256::from(1u64), 4_200);
+        assert!(!adapter.get_challenge(id).await.unwrap().open, "a different active id ⇒ closed");
+        // A zero active id ⇒ closed.
+        adapter.script_active(id, U256::ZERO, 4_200);
+        assert!(!adapter.get_challenge(id).await.unwrap().open, "a zero active id ⇒ closed");
     }
 
     #[tokio::test]
