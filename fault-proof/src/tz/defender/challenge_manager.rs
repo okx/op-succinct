@@ -84,8 +84,8 @@ sol! {
     // attribution. `activeWithdrawChallenge` returns the challengeId currently occupying a bridge's
     // active withdraw-challenge slot (zero when none). `ChallengeFailed` carries the challengeId
     // resolved against the challenger; matching it against our own confirmed proof receipt is how
-    // resolution is attributed. Both shapes are bound from the owner brief and MUST be re-confirmed
-    // against the deployed contract before LIVE responses are relied upon.
+    // resolution is attributed. Both shapes MUST be re-confirmed against the deployed contract
+    // before LIVE responses are relied upon.
     #[allow(missing_docs)]
     #[sol(rpc)]
     interface IChallengeManager {
