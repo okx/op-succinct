@@ -21,6 +21,7 @@ members = [
     "validity",
     "fault-proof",
     "bindings",
+    "stubs/ok-kms-rust",
 ]
 exclude = [
     "scripts/ci-env",
@@ -37,7 +38,7 @@ version = "4.4.0"
 
 [workspace.dependencies]
 # general
-ok-kms-rust = { git = "ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git", tag = "v1.0.0" }
+ok-kms-rust = { path = "stubs/ok-kms-rust" }
 anyhow = { version = "1.0.86", default-features = false }
 thiserror = { version = "2.0.3" }
 cfg-if = "1.0.0"
@@ -153,9 +154,9 @@ op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
 # tradezone (range guest deps)
-tz-block-processor = { git = "ssh://git@github.com/okx/x2.git", rev = "b3e2cf98affd3f8e64a3ed13966449bd92d84910", features = ["tee"] }
-tz-dex = { git = "ssh://git@github.com/okx/x2.git", rev = "b3e2cf98affd3f8e64a3ed13966449bd92d84910", features = ["zkvm"] }
-tz-primitives = { git = "ssh://git@github.com/okx/x2.git", rev = "b3e2cf98affd3f8e64a3ed13966449bd92d84910" }
+tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0", features = ["tee"] }
+tz-dex = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0", features = ["zkvm"] }
+tz-primitives = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }

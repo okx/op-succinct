@@ -1,5 +1,5 @@
 use alloy_primitives::B256;
-use op_succinct_client_utils::types::{AggregationInputs, AggregationOutputs, u32_to_u8};
+use op_succinct_client_utils::types::{u32_to_u8, AggregationInputs, AggregationOutputs};
 
 /// Precondition: `inputs.boot_infos` is non-empty (enforced by `check_link`).
 pub fn build_outputs(inputs: &AggregationInputs) -> AggregationOutputs {

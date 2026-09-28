@@ -8,16 +8,10 @@ import {InvalidPostAnchor, InvalidRoot, Unauthorized, StaleRoot} from "src/fp/li
 
 /// @title TZRootManager
 /// @notice Target-chain sink for cross-chain root synchronization. It authenticates the single
-///         L1 forwarder by its OP-Stack alias, stores committed roots by checkpoint, tracks the
-///         latest checkpoint, and accepts only strictly increasing checkpoint heights. It holds no
-///         owner, admin, or upgrade surface: every trust address is a constructor immutable.
+///         L1 forwarder by its OP-Stack alias, stores only the latest committed roots, and accepts
+///         only strictly increasing checkpoint heights. It holds no owner, admin, or upgrade
+///         surface: every trust address is a constructor immutable.
 contract TZRootManager is ITZRootManager {
-    /// @notice The root pair recorded atomically for one checkpoint.
-    struct CheckpointRoots {
-        bytes32 withdrawalRoot;
-        bytes32 forceTxRoot;
-    }
-
     /// @notice The L1 forwarder authorized to record roots. Its target-chain caller identity is
     ///         this address run through the OP-Stack L1-to-L2 alias.
     address public immutable L1_POST_ANCHOR;
@@ -25,9 +19,9 @@ contract TZRootManager is ITZRootManager {
     /// @notice The height (L2 block number) of the latest recorded roots. Never decreases.
     uint256 public l2BlockNumber;
 
-    /// @notice Exact-height history. Since record rejects either zero root, a zero-valued entry
-    ///         unambiguously means that the checkpoint has not been recorded.
-    mapping(uint256 => CheckpointRoots) public _rootsByCheckpoint;
+    /// @notice The latest root pair. Roots from superseded checkpoints are not retained.
+    bytes32 public latestWithdrawalRoot;
+    bytes32 public latestForceTxRoot;
 
     /// @notice Emitted for the first recorded checkpoint or a strictly newer checkpoint.
     /// @param withdrawalRoot The recorded withdrawal root.
@@ -54,20 +48,11 @@ contract TZRootManager is ITZRootManager {
 
         if (newCheckpointBlockHeight <= l2BlockNumber) revert StaleRoot();
 
-        _rootsByCheckpoint[newCheckpointBlockHeight] = CheckpointRoots(newWithdrawalRoot, newForceTxRoot);
+        latestWithdrawalRoot = newWithdrawalRoot;
+        latestForceTxRoot = newForceTxRoot;
         l2BlockNumber = newCheckpointBlockHeight;
 
         emit RootsRecorded(newWithdrawalRoot, newForceTxRoot, newCheckpointBlockHeight);
-    }
-
-    /// @inheritdoc ITZRootManager
-    function getRoots(uint256 checkpointBlockHeight)
-        external
-        view
-        returns (bytes32 withdrawalRoot, bytes32 forceTxRoot)
-    {
-        CheckpointRoots storage roots = _rootsByCheckpoint[checkpointBlockHeight];
-        return (roots.withdrawalRoot, roots.forceTxRoot);
     }
 
     /// @inheritdoc ITZRootManager
@@ -77,7 +62,6 @@ contract TZRootManager is ITZRootManager {
         returns (uint256 checkpointBlockHeight, bytes32 withdrawalRoot, bytes32 forceTxRoot)
     {
         checkpointBlockHeight = l2BlockNumber;
-        CheckpointRoots storage roots = _rootsByCheckpoint[checkpointBlockHeight];
-        return (checkpointBlockHeight, roots.withdrawalRoot, roots.forceTxRoot);
+        return (checkpointBlockHeight, latestWithdrawalRoot, latestForceTxRoot);
     }
 }

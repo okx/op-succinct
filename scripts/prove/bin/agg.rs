@@ -1,3 +1,8 @@
+// See multi.rs: the proving async block overflows rustc's default query depth with
+// the sp1-cluster types under the newer CI nightly. Raise the crate recursion limit
+// as rustc suggests; build-config only, no behavioral change.
+#![recursion_limit = "256"]
+
 use alloy_primitives::{Address, B256};
 use anyhow::{Context, Result};
 use clap::Parser;

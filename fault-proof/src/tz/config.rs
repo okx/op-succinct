@@ -44,11 +44,8 @@ impl TzConfig {
         let raw = read("L2_RPC").ok_or_else(|| {
             anyhow!("L2_RPC must be set for tz services (comma-separated endpoint list)")
         })?;
-        let rpc_urls: Vec<String> = raw
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let rpc_urls: Vec<String> =
+            raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         if rpc_urls.is_empty() {
             bail!("L2_RPC must contain at least one non-empty URL");
         }
@@ -65,7 +62,7 @@ mod tests {
     // FR-10 / DM-10.1 — L2_RPC unset.
     #[test]
     fn from_env_missing_l2_rpc_errors() {
-        let err = TzConfig::parse_from(|_| None).err().expect("must error");
+        let err = TzConfig::parse_from(|_| None).expect_err("must error");
         assert!(err.to_string().contains("L2_RPC must be set"));
     }
 
@@ -76,8 +73,7 @@ mod tests {
             "L2_RPC" => Some(",".to_string()),
             _ => None,
         })
-        .err()
-        .expect("must error");
+        .expect_err("must error");
         assert!(err.to_string().contains("non-empty URL"));
     }
 

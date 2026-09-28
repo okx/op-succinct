@@ -1,2 +1,16 @@
 [net]
 git-fetch-with-cli = true
+
+# Pin the gitlab.okg.com SSH host key so cargo's built-in SSH transport can
+# verify it when resolving git dependencies. The SP1 `cargo-prove ... --docker`
+# guest build resolves the workspace with cargo's native SSH transport (it does
+# not run the system git client, so the `git-fetch-with-cli` setting above does
+# not cover it) and otherwise aborts with "unknown SSH host key" when fetching
+# the tradezone git sources over ssh://git@gitlab.okg.com. Host builds keep
+# using the system git client above, for which this entry is inert. The key
+# below is the server's public host key (ECDSA fingerprint
+# SHA256:WVHggRqLJV1llNO1i6GfCRViEFqQAZhko/BgMuxwqv4); verification stays on.
+[net.ssh]
+known-hosts = [
+    "gitlab.okg.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEfAhLKm5ngX3vDbqr4XxmobBAxilt+t7dBoDUC/uasdEkq3AQEpm+2Um/6fNgJoglN6WjOFNQssjLQOmerVDXI=",
+]

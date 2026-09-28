@@ -15,23 +15,32 @@ use alloy_primitives::{Address, FixedBytes, TxHash, B256, U256};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_sol_types::{SolEvent, SolValue};
 use anyhow::{bail, Context, Result};
+// `futures::stream` (buffer_unordered pipeline) is used only by the stock proving
+// path, which is gated `#[cfg(not(feature = "tz"))]`. Mirror that gate so the
+// imports are not flagged unused under `--all-features` (where `tz` is on).
+#[cfg(not(feature = "tz"))]
 use futures::stream::{self, StreamExt, TryStreamExt};
 use op_succinct_client_utils::boot::{hash_rollup_config, BootInfoStruct};
 use op_succinct_host_utils::{
     fetcher::OPSuccinctDataFetcher,
-    get_agg_proof_stdin,
     host::OPSuccinctHost,
     metrics::MetricsGauge,
     network::{determine_network_mode, get_network_signer},
-    witness_generation::WitnessGenerator,
 };
+// `WitnessGenerator` is only used by range_proof_stdin (stock, `not(tz)`).
+#[cfg(not(feature = "tz"))]
+use op_succinct_host_utils::witness_generation::WitnessGenerator;
+// Only the stock (`not(tz)`) agg-proof path calls this; gate to match.
+#[cfg(not(feature = "tz"))]
+use op_succinct_host_utils::get_agg_proof_stdin;
 use op_succinct_proof_utils::{
     cluster_setup_keys, get_range_elf_embedded, is_cluster_mode, AGGREGATION_ELF,
 };
 use op_succinct_signer_utils::SignerLock;
-use sp1_sdk::{
-    Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1ProofWithPublicValues, SP1Stdin,
-};
+use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1Stdin};
+// `SP1ProofWithPublicValues` is only named by the stock (`not(tz)`) proving path.
+#[cfg(not(feature = "tz"))]
+use sp1_sdk::SP1ProofWithPublicValues;
 use tokio::{
     sync::{Mutex, RwLock, Semaphore},
     time,
@@ -323,7 +332,13 @@ where
     init_bond: OnceLock<U256>,
     pub safe_db_fallback: bool,
     prover: ProofProvider,
+    // Read only by the stock (`not(tz)`) proving path (range_proof_stdin); the tz path drives
+    // proving through the cluster and never reads them. `host: Arc<H>` also anchors the generic
+    // `H`, so both fields must exist in every cfg — gating `host` out under `--all-features`
+    // (tz on) would leave `H` unused (E0392). Keep them and silence the dead-code lint under tz.
+    #[cfg_attr(feature = "tz", allow(dead_code))]
     fetcher: Arc<OPSuccinctDataFetcher>,
+    #[cfg_attr(feature = "tz", allow(dead_code))]
     host: Arc<H>,
     tasks: Arc<Mutex<TaskMap>>,
     next_task_id: Arc<AtomicU64>,
@@ -1183,6 +1198,8 @@ where
 
     /// Returns true if on-chain vkeys match ours (safe to create games).
     /// Checks all 3 identity fields: aggregation_vkey, range_vkey_commitment, rollup_config_hash.
+    /// Called only from the stock (`not(tz)`) game-creation gate; the tz path always proceeds.
+    #[cfg(not(feature = "tz"))]
     async fn on_chain_vkeys_match(&self) -> Result<bool> {
         // for tz Phase 1: TeeDisputeGame.rangeVkeyCommitment() / aggregationVkey() are reserved
         // for the Phase 2 real SP1 program and MUST NOT be compared against the local proposer
@@ -1342,6 +1359,8 @@ where
         Ok((receipt.transaction_hash, total_instruction_cycles, total_sp1_gas))
     }
 
+    // Used only by the stock (`not(tz)`) proving pipeline (prove_game); gate to match.
+    #[cfg(not(feature = "tz"))]
     async fn range_proof_stdin(
         &self,
         start_block: u64,
@@ -1626,7 +1645,8 @@ where
         // tz: cache miss — own games skip rootClaim validation; foreign games still enter
         // state.games to preserve canonical head tracking in multi-proposer deployments.
         // This impl is for tz only can fetch latest stateHash
-        // If tz update and can fetch historical stateHash, we can remove this special handling and unify with xlayer impl.
+        // If tz update and can fetch historical stateHash, we can remove this special handling and
+        // unify with xlayer impl.
         #[cfg(feature = "tz")]
         let maybe_output_root: Option<FixedBytes<32>> = {
             use crate::tz::chain_client::TzCacheMissError;
@@ -2012,7 +2032,7 @@ where
             let mut task_counts: HashMap<&str, usize> = HashMap::new();
             let mut proving_games: Vec<String> = Vec::new();
 
-            for (_, (_, info)) in tasks.iter() {
+            for (_, info) in tasks.values() {
                 let task_type = match info {
                     TaskInfo::GameCreation { .. } => "GameCreation",
                     TaskInfo::GameProving { game_address, .. } => {
