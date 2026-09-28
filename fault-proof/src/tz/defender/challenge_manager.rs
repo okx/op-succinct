@@ -62,28 +62,35 @@ impl ChallengeType {
 
 sol! {
     // The ChallengeManager `ChallengeCreated` event. The challenge-type enum is ABI-encoded as its
-    // underlying `uint8`; the identifier slot carries the transaction-scoped withdraw identifier
-    // (a `bytes32`), not a leaf hash — the leaf key is resolved separately by a `LeafLocator`.
+    // underlying `uint8`. The event carries two independent `bytes32` values: `tzTxHash`, the
+    // transaction-scoped withdraw identifier retained for observability, and `leaf`, the Merkle leaf
+    // the proof path consumes directly. Withdraw challenge types emit the withdraw-hash leaf; a
+    // force-transaction challenge emits a zero leaf.
     #[allow(missing_docs)]
     event ChallengeCreated(
         uint256 indexed challengeId,
         uint8 indexed challengeType,
         address indexed target,
         address affectedBridge,
-        bytes32 identifier,
+        bytes32 tzTxHash,
+        bytes32 leaf,
         address challenger,
         uint64 responseDeadline
     );
 }
 
-/// A decoded-but-unfiltered `ChallengeCreated` event. `identifier` is the event's
-/// transaction-scoped withdraw identifier (a `bytes32`); resolving it to a Witness-Builder leaf key
-/// is the job of a [`LeafLocator`], never of the state machine.
+/// A decoded-but-unfiltered `ChallengeCreated` event. `tz_tx_hash` is the transaction-scoped
+/// withdraw identifier, retained for observability and a future fallback path; `leaf` is the Merkle
+/// leaf the proof path consumes directly via a [`LeafLocator`]. The two are independent decoded
+/// fields and must never be conflated. `affected_bridge` is the bridge whose active-challenge slot
+/// this challenge occupies, used by the live status read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawChallengeEvent {
     pub onchain_challenge_id: U256,
     pub challenge_type: ChallengeType,
-    pub identifier: B256,
+    pub tz_tx_hash: B256,
+    pub leaf: B256,
+    pub affected_bridge: Address,
     pub response_deadline: u64,
     pub block_number: u64,
     pub chain_id: u64,
@@ -108,7 +115,9 @@ pub fn decode_challenge_created(
     Ok(RawChallengeEvent {
         onchain_challenge_id: decoded.data.challengeId,
         challenge_type: ChallengeType::from_discriminant(decoded.data.challengeType),
-        identifier: decoded.data.identifier,
+        tz_tx_hash: decoded.data.tzTxHash,
+        leaf: decoded.data.leaf,
+        affected_bridge: decoded.data.affectedBridge,
         response_deadline: decoded.data.responseDeadline,
         block_number,
         chain_id,
@@ -425,19 +434,23 @@ impl<L: LeafLocator> ChallengeReader for ChallengeManagerContract<L> {
 mod tests {
     use super::*;
 
-    /// Build a `ChallengeCreated` log fixture from the generated event type.
+    /// Build a `ChallengeCreated` log fixture from the generated event type. The event carries
+    /// independent `tzTxHash` and `leaf` fields plus `affectedBridge`.
     fn challenge_created_log_fixture(
         challenge_id: U256,
         challenge_type: u8,
-        identifier: B256,
+        tz_tx_hash: B256,
+        leaf: B256,
+        affected_bridge: Address,
         response_deadline: u64,
     ) -> alloy_rpc_types_eth::Log {
         let ev = ChallengeCreated {
             challengeId: challenge_id,
             challengeType: challenge_type,
             target: Address::repeat_byte(0x0a),
-            affectedBridge: Address::repeat_byte(0x0b),
-            identifier,
+            affectedBridge: affected_bridge,
+            tzTxHash: tz_tx_hash,
+            leaf,
             challenger: Address::repeat_byte(0x0c),
             responseDeadline: response_deadline,
         };
@@ -454,20 +467,103 @@ mod tests {
         }
     }
 
+    /// The retired event shape carrying a single transaction-scoped `identifier` and no `leaf`,
+    /// used only to prove the current decoder rejects a log carrying the old event signature.
+    mod retired_abi {
+        alloy_sol_types::sol! {
+            #[allow(missing_docs)]
+            event ChallengeCreated(
+                uint256 indexed challengeId,
+                uint8 indexed challengeType,
+                address indexed target,
+                address affectedBridge,
+                bytes32 identifier,
+                address challenger,
+                uint64 responseDeadline
+            );
+        }
+    }
+
     #[test]
-    fn decodes_challenge_created_fields_from_real_abi() {
+    fn decodes_new_challenge_created_abi_with_distinct_tztxhash_and_leaf() {
         let id = U256::from(42u64);
-        let ident = B256::repeat_byte(0x7c);
-        let log =
-            challenge_created_log_fixture(id, WITHDRAW_NOT_IN_ROOT_DISCRIMINANT, ident, 1_700u64);
+        let tz_tx = B256::repeat_byte(0x7c);
+        let leaf = B256::repeat_byte(0x5e);
+        let bridge = Address::repeat_byte(0x2b);
+        assert_ne!(tz_tx, leaf, "the fixture must use distinct tzTxHash and leaf values");
+        let log = challenge_created_log_fixture(
+            id,
+            WITHDRAW_NOT_IN_ROOT_DISCRIMINANT,
+            tz_tx,
+            leaf,
+            bridge,
+            1_700u64,
+        );
         let ev = decode_challenge_created(&log, 196).unwrap();
         assert_eq!(ev.onchain_challenge_id, id);
         assert_eq!(ev.challenge_type, ChallengeType::WithdrawNotInRoot);
-        assert_eq!(ev.identifier, ident);
+        assert_eq!(ev.tz_tx_hash, tz_tx, "tzTxHash decodes into its own field");
+        assert_eq!(ev.leaf, leaf, "leaf decodes into its own field");
+        assert_ne!(ev.tz_tx_hash, ev.leaf, "tzTxHash and leaf are decoded independently");
+        assert_eq!(ev.affected_bridge, bridge, "affectedBridge decodes into its own field");
         assert_eq!(ev.response_deadline, 1_700);
         assert_eq!(ev.chain_id, 196);
         assert_eq!(ev.block_number, 100);
         assert_eq!(ev.log_index, 0);
+    }
+
+    #[test]
+    fn old_signature_log_does_not_decode() {
+        // Adding the leaf field changes the event signature, so the previous event's topic0 differs
+        // and a log carrying it must fail closed rather than be mis-parsed as the current event.
+        assert_ne!(
+            retired_abi::ChallengeCreated::SIGNATURE_HASH,
+            ChallengeCreated::SIGNATURE_HASH,
+            "the extra leaf field changes the event signature (topic0)"
+        );
+        let old = retired_abi::ChallengeCreated {
+            challengeId: U256::from(1u64),
+            challengeType: WITHDRAW_NOT_IN_ROOT_DISCRIMINANT,
+            target: Address::repeat_byte(0x0a),
+            affectedBridge: Address::repeat_byte(0x0b),
+            identifier: B256::repeat_byte(0x7c),
+            challenger: Address::repeat_byte(0x0c),
+            responseDeadline: 1_700,
+        };
+        let inner = alloy_primitives::Log {
+            address: Address::repeat_byte(0x01),
+            data: old.encode_log_data(),
+        };
+        let log = alloy_rpc_types_eth::Log {
+            inner,
+            block_number: Some(100),
+            transaction_hash: Some(B256::repeat_byte(0x02)),
+            log_index: Some(0),
+            ..Default::default()
+        };
+        assert!(
+            decode_challenge_created(&log, 196).is_err(),
+            "a log with the retired signature fails closed under the current decoder"
+        );
+    }
+
+    #[test]
+    fn truncated_log_fails_closed() {
+        // A log whose ABI data payload is too short to hold the event's non-indexed fields must
+        // decode to an error, never a partially-filled event.
+        let mut log = challenge_created_log_fixture(
+            U256::from(1u64),
+            WITHDRAW_NOT_IN_ROOT_DISCRIMINANT,
+            B256::repeat_byte(0x7c),
+            B256::repeat_byte(0x5e),
+            Address::repeat_byte(0x2b),
+            1_700,
+        );
+        log.inner.data.data = alloy_primitives::Bytes::from_static(&[0x00, 0x01, 0x02]);
+        assert!(
+            decode_challenge_created(&log, 196).is_err(),
+            "a truncated data payload fails closed"
+        );
     }
 
     #[test]
@@ -494,12 +590,15 @@ mod tests {
     }
 
     /// A decoded event with a distinct tx hash per `log_index` (so distinct ChallengeIds), inside
-    /// the default window.
-    fn raw(challenge_type: ChallengeType, identifier: B256, log_index: u64) -> RawChallengeEvent {
+    /// the default window. `tz_tx_hash` is derived to stay distinct from `leaf` so a
+    /// field-order/mapping bug cannot pass by coincidence.
+    fn raw(challenge_type: ChallengeType, leaf: B256, log_index: u64) -> RawChallengeEvent {
         RawChallengeEvent {
             onchain_challenge_id: U256::from(log_index + 1),
             challenge_type,
-            identifier,
+            tz_tx_hash: B256::repeat_byte(0xF0 | (log_index as u8)),
+            leaf,
+            affected_bridge: Address::repeat_byte(0xB0),
             response_deadline: 10_000,
             block_number: 10,
             chain_id: 196,
@@ -531,18 +630,24 @@ mod tests {
     #[tokio::test]
     async fn state_machine_behavior_is_identical_across_locators() {
         let leaf = B256::repeat_byte(0x99);
-        // Direct: the identifier IS the leaf.
+        let tz_tx = B256::repeat_byte(0x11);
+        assert_ne!(tz_tx, leaf, "tzTxHash and leaf must differ so the two locators are distinguished");
+        // Direct: the event's explicit `leaf` field is the leaf; its tzTxHash is unrelated.
+        let mut direct_ev = raw(ChallengeType::WithdrawNotInRoot, leaf, 1);
+        direct_ev.tz_tx_hash = tz_tx;
         let direct = ChallengeManagerContract::from_raw_events(
-            vec![raw(ChallengeType::WithdrawNotInRoot, leaf, 1)],
+            vec![direct_ev],
             DirectLeafLocator,
             196,
             CONTRACT_ADDR,
         );
-        // Reverse: the identifier is a transaction-scoped id the WB maps to the same leaf.
+        // Reverse: the WB maps the event's tzTxHash to the same leaf; its own leaf field is unused.
+        let mut reverse_ev = raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x77), 1);
+        reverse_ev.tz_tx_hash = tz_tx;
         let mut m = std::collections::HashMap::new();
-        m.insert(B256::repeat_byte(0x11), leaf);
+        m.insert(tz_tx, leaf);
         let reverse = ChallengeManagerContract::from_raw_events(
-            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x11), 1)],
+            vec![reverse_ev],
             ReverseLookupLeafLocator::new(std::sync::Arc::new(MockTzTxToLeaf(m))),
             196,
             CONTRACT_ADDR,
@@ -551,8 +656,8 @@ mod tests {
         let or = reverse.watch_opened(window()).await.unwrap();
         assert_eq!(od.len(), 1);
         assert_eq!(or.len(), 1);
-        assert_eq!(od[0].leaf_hash, leaf, "Direct resolves the leaf from the identifier");
-        assert_eq!(or[0].leaf_hash, leaf, "Reverse resolves the same leaf via the WB");
+        assert_eq!(od[0].leaf_hash, leaf, "Direct resolves the leaf from the event's leaf field");
+        assert_eq!(or[0].leaf_hash, leaf, "Reverse resolves the same leaf via the WB by tzTxHash");
         // Same event coordinates ⇒ identical opaque ChallengeId regardless of the locator.
         assert_eq!(od[0].challenge_id, or[0].challenge_id);
     }

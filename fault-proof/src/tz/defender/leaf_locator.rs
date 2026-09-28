@@ -30,7 +30,7 @@ pub struct DirectLeafLocator;
 #[async_trait]
 impl LeafLocator for DirectLeafLocator {
     async fn locate(&self, ev: &RawChallengeEvent) -> Result<B256, WbError> {
-        Ok(ev.identifier)
+        Ok(ev.leaf)
     }
 }
 
@@ -51,7 +51,7 @@ impl<W: TzTxToLeaf> ReverseLookupLeafLocator<W> {
 #[async_trait]
 impl<W: TzTxToLeaf> LeafLocator for ReverseLookupLeafLocator<W> {
     async fn locate(&self, ev: &RawChallengeEvent) -> Result<B256, WbError> {
-        self.wb.record_hash_by_tz_tx(ev.identifier).await
+        self.wb.record_hash_by_tz_tx(ev.tz_tx_hash).await
     }
 }
 
@@ -61,12 +61,14 @@ mod tests {
     use crate::tz::defender::challenge_manager::ChallengeType;
     use alloy_primitives::{Address, U256};
 
-    /// A `RawChallengeEvent` whose identifier slot is `identifier`.
-    fn raw_event_with_identifier(identifier: B256) -> RawChallengeEvent {
+    /// A `RawChallengeEvent` with independent `tz_tx_hash` and `leaf` fields.
+    fn raw_event(tz_tx_hash: B256, leaf: B256) -> RawChallengeEvent {
         RawChallengeEvent {
             onchain_challenge_id: U256::from(1u64),
             challenge_type: ChallengeType::WithdrawNotInRoot,
-            identifier,
+            tz_tx_hash,
+            leaf,
+            affected_bridge: Address::repeat_byte(0x0b),
             response_deadline: 1_000,
             block_number: 10,
             chain_id: 196,
@@ -77,10 +79,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_locator_returns_event_identifier_as_leaf() {
-        let ev = raw_event_with_identifier(B256::repeat_byte(0xab));
+    async fn direct_locator_returns_event_leaf_not_tztxhash() {
+        // Distinct tzTxHash and leaf so a field-mapping bug cannot pass by coincidence.
+        let ev = raw_event(B256::repeat_byte(0xaa), B256::repeat_byte(0xbb));
         let leaf = DirectLeafLocator.locate(&ev).await.unwrap();
-        assert_eq!(leaf, B256::repeat_byte(0xab));
+        assert_eq!(leaf, ev.leaf, "Direct returns the event's explicit leaf field");
+        assert_ne!(leaf, ev.tz_tx_hash, "Direct must NOT return the tzTxHash");
     }
 
     #[tokio::test]
@@ -89,7 +93,8 @@ mod tests {
         let mut m = std::collections::HashMap::new();
         m.insert(B256::repeat_byte(0x11), B256::repeat_byte(0x99));
         let loc = ReverseLookupLeafLocator::new(Arc::new(MockTzTxToLeaf(m)));
-        let ev = raw_event_with_identifier(B256::repeat_byte(0x11));
+        // The reverse lookup is keyed on tzTxHash; the event's own leaf field is irrelevant here.
+        let ev = raw_event(B256::repeat_byte(0x11), B256::repeat_byte(0x44));
         assert_eq!(loc.locate(&ev).await.unwrap(), B256::repeat_byte(0x99));
     }
 
@@ -97,7 +102,7 @@ mod tests {
     async fn reverse_locator_propagates_not_found() {
         use crate::tz::withdraw::wb_client::test_doubles::MockTzTxToLeaf;
         let loc = ReverseLookupLeafLocator::new(Arc::new(MockTzTxToLeaf(Default::default())));
-        let ev = raw_event_with_identifier(B256::repeat_byte(0x11));
+        let ev = raw_event(B256::repeat_byte(0x11), B256::repeat_byte(0x44));
         assert!(matches!(loc.locate(&ev).await, Err(WbError::WithdrawalNotFound)));
     }
 }
