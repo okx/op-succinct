@@ -903,7 +903,8 @@ mod tests {
         let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
         // A ChallengeFailed carrying OUR on-chain id but emitted by a DIFFERENT contract must be
         // ignored: resolution is attributed only from our own challenge manager's events.
-        let failed = ChallengeFailed { challengeId: onchain_id, treasury: Address::repeat_byte(0x7a) };
+        let failed =
+            ChallengeFailed { challengeId: onchain_id, treasury: Address::repeat_byte(0x7a) };
         let foreign_log = alloy_rpc_types_eth::Log {
             inner: alloy_primitives::Log {
                 address: Address::repeat_byte(0xFE),

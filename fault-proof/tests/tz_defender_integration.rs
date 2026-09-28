@@ -30,8 +30,8 @@ use fault_proof::tz::{
         verifier::record_leaf_hash,
         watcher::Watcher,
         witness_wb::WbWitnessSource,
-        ChallengeId, CompatibilityDeclaration, DeploymentTarget, DirectLeafLocator,
-        LeafEncodingGate,
+        ChallengeId, CompatibilityDeclaration, DeclarationProvenance, DeploymentTarget,
+        DirectLeafLocator, LeafEncodingGate,
     },
     withdraw::{
         tree_adapter::{business_root, root_from_frontier, zero_hashes, WITHDRAWAL_TAG},
@@ -144,22 +144,36 @@ fn witness_for(server: &MockServer) -> Arc<dyn WitnessSource> {
     Arc::new(WbWitnessSource::new(wb))
 }
 
-/// A gate that is `Proven` for this test deployment (a matching, deployment-bound compatibility
-/// declaration), so the proof-path tests exercise the full flow.
+/// The expected encoding identity this test deployment is bound to (arbitrary fixed values; the
+/// matching declaration below reproduces all of them).
+fn gate_target() -> DeploymentTarget {
+    DeploymentTarget {
+        address: Address::repeat_byte(CONTRACT),
+        chain_id: CHAIN_ID,
+        expected_encoding_version: 1,
+        expected_canonical_encoding_hash: B256::repeat_byte(0xcc),
+        expected_witness_builder_id: B256::repeat_byte(0xdd),
+    }
+}
+
+/// A gate that is `Proven` for this test deployment (a declaration matching every criterion), so
+/// the proof-path tests exercise the full flow.
 fn proven_gate() -> Arc<LeafEncodingGate> {
-    let target = DeploymentTarget { address: Address::repeat_byte(CONTRACT), chain_id: CHAIN_ID };
+    let target = gate_target();
     let declaration = CompatibilityDeclaration {
         address: target.address,
         chain_id: target.chain_id,
-        encoding_version: 1,
+        encoding_version: target.expected_encoding_version,
+        canonical_encoding_hash: target.expected_canonical_encoding_hash,
+        witness_builder_id: target.expected_witness_builder_id,
+        provenance: DeclarationProvenance::AuthenticatedImmutable,
     };
     Arc::new(LeafEncodingGate::new(target, Some(declaration)))
 }
 
 /// A gate with no compatibility declaration ⇒ `LeafEncodingMismatch` for this test deployment.
 fn mismatch_gate() -> Arc<LeafEncodingGate> {
-    let target = DeploymentTarget { address: Address::repeat_byte(CONTRACT), chain_id: CHAIN_ID };
-    Arc::new(LeafEncodingGate::new(target, None))
+    Arc::new(LeafEncodingGate::new(gate_target(), None))
 }
 
 fn handler_with_gate(

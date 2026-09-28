@@ -100,12 +100,12 @@ impl CompatibilityDeclaration {
     /// never open the gate — a wrong encoding version, canonical hash, Witness-Builder identity, or
     /// an unauthenticated source keeps it `Blocked`.
     fn matches(&self, target: &DeploymentTarget) -> bool {
-        self.address == target.address
-            && self.chain_id == target.chain_id
-            && self.encoding_version == target.expected_encoding_version
-            && self.canonical_encoding_hash == target.expected_canonical_encoding_hash
-            && self.witness_builder_id == target.expected_witness_builder_id
-            && matches!(self.provenance, DeclarationProvenance::AuthenticatedImmutable)
+        self.address == target.address &&
+            self.chain_id == target.chain_id &&
+            self.encoding_version == target.expected_encoding_version &&
+            self.canonical_encoding_hash == target.expected_canonical_encoding_hash &&
+            self.witness_builder_id == target.expected_witness_builder_id &&
+            matches!(self.provenance, DeclarationProvenance::AuthenticatedImmutable)
     }
 }
 
@@ -253,7 +253,10 @@ mod tests {
         // A declaration differing in ANY single criterion must NOT match, so the gate stays
         // Blocked. Matching address + chain id alone can never release it.
         let deviations = [
-            CompatibilityDeclaration { address: Address::repeat_byte(0x22), ..matching_declaration() },
+            CompatibilityDeclaration {
+                address: Address::repeat_byte(0x22),
+                ..matching_declaration()
+            },
             CompatibilityDeclaration { chain_id: 1, ..matching_declaration() },
             CompatibilityDeclaration { encoding_version: 2, ..matching_declaration() },
             CompatibilityDeclaration {
@@ -270,7 +273,10 @@ mod tests {
             },
         ];
         for d in deviations {
-            assert!(!d.matches(&strict_target()), "a single-criterion deviation must not match: {d:?}");
+            assert!(
+                !d.matches(&strict_target()),
+                "a single-criterion deviation must not match: {d:?}"
+            );
             assert!(
                 matches!(
                     LeafEncodingGate::new(strict_target(), Some(d)).decision(),

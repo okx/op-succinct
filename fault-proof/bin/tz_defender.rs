@@ -128,9 +128,10 @@ async fn run() -> Result<()> {
     // declaration — none is published yet and none is constructible from local config/env/flags —
     // so the gate is unconditionally mismatched and every proof path is withheld with an observable
     // Blocked status; there is no local re-encode shim to mask it. The expected encoding
-    // version / canonical hash / Witness-Builder identity are placeholders here: with no declaration
-    // to match, they are never compared. Lifting fail-closed is a separate contract/WB prerequisite
-    // (publish an authenticated, immutable declaration + wire an authenticated read).
+    // version / canonical hash / Witness-Builder identity are placeholders here: with no
+    // declaration to match, they are never compared. Lifting fail-closed is a separate
+    // contract/WB prerequisite (publish an authenticated, immutable declaration + wire an
+    // authenticated read).
     let leaf_encoding_gate = Arc::new(LeafEncodingGate::new(
         DeploymentTarget {
             address: config.challenge_contract,
