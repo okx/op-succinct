@@ -105,10 +105,9 @@ that its safe head exists with the same hash on the paired execution node. Start
 retried until this fixed node pair is healthy.
 
 The shared challenger lifecycle delegates chain-specific claim checks to a `GameValidator`.
-The standard challenger binary constructs and injects the OP Stack validator, which owns the
-op-node and paired L2 execution providers and performs all of the SafeDB checks described below.
-Custom integrations may inject another validator without changing game discovery, retry, deadline,
-or transaction handling.
+The standard Challenger binary wires the OP Stack validator, which owns the op-node and paired L2
+execution providers and performs all of the SafeDB checks described below. Custom integrations may
+inject another validator without changing game discovery, retry, deadline, or transaction handling.
 
 For every active unchallenged game, the challenger resolves `game.l1Head` to its canonical L1
 block number `X`, then queries `optimism_safeHeadAtL1Block(X)` after confirming that
