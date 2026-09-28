@@ -7813,7 +7813,7 @@ dependencies = [
  "alloy",
  "alloy-contract",
  "alloy-eips",
- "alloy-json-rpc 2.1.1",
+ "alloy-json-rpc",
  "alloy-network",
  "alloy-node-bindings",
  "alloy-primitives",
