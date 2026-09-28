@@ -31,7 +31,8 @@ use fault_proof::tz::{
         challenge_manager::ChallengeManagerContract,
         config::DefenderConfig,
         handler::{Handler, InFlightGate},
-        leaf_locator::ReverseLookupLeafLocator,
+        leaf_encoding_gate::{DeploymentTarget, LeafEncodingGate},
+        leaf_locator::DirectLeafLocator,
         rootmanager_client::RootManagerClient,
         supervisor::Supervisor,
         watcher::Watcher,
@@ -97,10 +98,9 @@ async fn run() -> Result<()> {
     // real signer is constructed and validated by the challenge sender adapter when the
     // on-chain ABI is delivered.
 
-    // Witness Builder v2 client + witness-source adapter (record/proof witness data only). The
-    // same client backs the reverse-lookup leaf-locator below, so keep an Arc handle.
+    // Witness Builder v2 client + witness-source adapter (record/proof witness data only).
     let wb = Arc::new(WbClient::new(config.wb_endpoint.clone(), config.chain_id)?);
-    let witness = Arc::new(WbWitnessSource::new(wb.clone()));
+    let witness = Arc::new(WbWitnessSource::new(wb));
 
     // X Layer / L2 provider: challenge events, the L2 tip for finality gating, challenge
     // status/deadline reads, and the current/latest RootManager root all read here.
@@ -111,29 +111,33 @@ async fn run() -> Result<()> {
     let root_manager = Arc::new(RootManagerClient::new(config.root_manager, l2_provider.clone()));
 
     // Challenge-contract seam: the real ChallengeManager adapter (WithdrawNotInRoot only), wired
-    // with the reverse-lookup leaf-locator because the event carries a transaction-scoped
-    // identifier, not a leaf key. Three cross-repo/stage dependencies gate LIVE responses and are
-    // called out here so operators are not misled into thinking the defender can already answer:
-    //   1. the Witness-Builder tzTxHash->recordHash reverse-lookup RPC does not yet exist, so leaf
-    //      location waits until it lands;
-    //   2. no transaction signer is wired in this stage, so submitWithdrawProof calldata is built
-    //      but not broadcast;
-    //   3. the on-chain challenge status-view ABI is pending verification, so live status reads are
-    //      not yet wired.
-    // Only the leaf-locator (and, later, the status-view read and signer) change when those land —
-    // the watcher, handler state machine, and local verification stay as-is.
-    tracing::warn!(
-        "tz-defender wired the real ChallengeManager adapter (WithdrawNotInRoot only); LIVE \
-         responses are gated on the not-yet-live WB tzTxHash->recordHash reverse-lookup RPC, an \
-         unwired transaction signer, and the pending on-chain status-view ABI"
-    );
-    let locator = ReverseLookupLeafLocator::new(wb.clone());
+    // with the direct leaf-locator — the event carries the Merkle leaf explicitly, so the leaf is
+    // read straight from it. There is no reverse lookup, and nothing about a reverse-lookup service
+    // gates the challenge-listening chain. One honest limitation remains: no transaction signer is
+    // wired in this stage, so submitWithdrawProof calldata is built but not broadcast.
+    let locator = DirectLeafLocator;
     let challenge = Arc::new(ChallengeManagerContract::new(
         l2_provider.clone(),
         config.challenge_contract,
         config.chain_id,
         locator,
     ));
+
+    // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
+    // flow, bound to the deployed challenge contract + chain id. Production passes no compatibility
+    // declaration — none is published yet — so the gate stays mismatched and every proof path is
+    // withheld with an observable Blocked status; there is no local re-encode shim to mask it.
+    let leaf_encoding_gate = Arc::new(LeafEncodingGate::new(
+        DeploymentTarget { address: config.challenge_contract, chain_id: config.chain_id },
+        None,
+    ));
+    tracing::info!(
+        challenge_contract = %config.challenge_contract,
+        "tz-defender wired the real ChallengeManager adapter (WithdrawNotInRoot only) with the \
+         direct event-leaf locator; the Witness-Builder proof flow stays behind the leaf-encoding \
+         compatibility gate until the contract and Witness-Builder encodings are declared \
+         compatible for this deployment, and no transaction signer is wired yet"
+    );
 
     // Global single-process in-flight gate (at most one broadcast in flight); lost on restart.
     let gate = InFlightGate::new();
@@ -143,6 +147,7 @@ async fn run() -> Result<()> {
         challenge.clone(),
         witness,
         root_manager,
+        leaf_encoding_gate,
         config.chain_id,
         config.cache_capacity,
         config.deadline_safety_margin.as_secs(),
