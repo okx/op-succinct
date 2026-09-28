@@ -18,6 +18,7 @@ pub mod challenge_contract;
 pub mod challenge_manager;
 pub mod config;
 pub mod handler;
+pub mod leaf_encoding_gate;
 pub mod leaf_locator;
 pub mod rootmanager_client;
 pub mod supervisor;
@@ -31,5 +32,9 @@ pub use challenge_contract::{
 };
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
+pub use leaf_encoding_gate::{
+    CompatibilityDeclaration, DeploymentTarget, EncodingMismatchSummary, LeafEncodingDecision,
+    LeafEncodingGate,
+};
 pub use leaf_locator::{DirectLeafLocator, LeafLocator, ReverseLookupLeafLocator};
 pub use supervisor::Supervisor;

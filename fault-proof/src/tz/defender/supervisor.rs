@@ -308,7 +308,8 @@ mod tests {
         witness: Arc<dyn WitnessSource>,
         rm: Arc<MockRootManager>,
     ) -> Handler {
-        Handler::new(cc.clone(), cc.clone(), witness, rm, CHAIN_ID, 16, SAFETY, 3)
+        let gate = Arc::new(super::super::leaf_encoding_gate::LeafEncodingGate::forced_proven());
+        Handler::new(cc.clone(), cc.clone(), witness, rm, gate, CHAIN_ID, 16, SAFETY, 3)
     }
 
     #[tokio::test]

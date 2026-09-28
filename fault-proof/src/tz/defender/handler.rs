@@ -27,6 +27,7 @@ use super::{
         ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender, ChallengeStatus,
         ConfirmOutcome, SenderError, SubmitOutcome,
     },
+    leaf_encoding_gate::{EncodingMismatchSummary, LeafEncodingDecision, LeafEncodingGate},
     rootmanager_client::LatestRootSource,
     verifier::verify,
 };
@@ -118,17 +119,26 @@ pub enum ChallengeState {
     /// Local verification failed, the witness store is corrupt/mismatched, a protocol error
     /// occurred, or the resend bound was exhausted — never send again; alert.
     PermanentFailure,
+    /// The cross-repo leaf-encoding compatibility gate is not satisfied for this deployment, so the
+    /// entire Witness-Builder proof flow is withheld: no record-height resolution, no proof fetch,
+    /// no `prove_challenge`. A distinct, observable, terminal-for-now status carrying the
+    /// field-level mismatch summary — never `Ready`, an error-retry, or a witness wait — so an
+    /// operator sees exactly why no proof is attempted. It reopens only when a matching
+    /// deployment-bound compatibility declaration is published (a redeploy/reconfiguration).
+    Blocked(EncodingMismatchSummary),
 }
 
 impl ChallengeState {
-    /// Whether the challenge has reached a terminal outcome and needs no further work.
+    /// Whether the challenge has reached a terminal outcome and needs no further work. `Blocked` is
+    /// terminal-for-now: while the leaf-encoding gate is mismatched there is nothing more to try.
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
             ChallengeState::Proved(_) |
                 ChallengeState::Closed |
                 ChallengeState::Expired |
-                ChallengeState::PermanentFailure
+                ChallengeState::PermanentFailure |
+                ChallengeState::Blocked(_)
         )
     }
 
@@ -189,6 +199,8 @@ pub struct Handler {
     sender: Arc<dyn ChallengeSender>,
     witness: Arc<dyn WitnessSource>,
     root_manager: Arc<dyn LatestRootSource>,
+    /// The sole precondition of the Witness-Builder proof flow; a mismatch blocks every proof path.
+    leaf_encoding_gate: Arc<LeafEncodingGate>,
     chain_id: u64,
     cache: Mutex<ProofCache>,
     deadline_safety_margin_secs: u64,
@@ -202,6 +214,7 @@ impl Handler {
         sender: Arc<dyn ChallengeSender>,
         witness: Arc<dyn WitnessSource>,
         root_manager: Arc<dyn LatestRootSource>,
+        leaf_encoding_gate: Arc<LeafEncodingGate>,
         chain_id: u64,
         cache_capacity: usize,
         deadline_safety_margin_secs: u64,
@@ -212,6 +225,7 @@ impl Handler {
             sender,
             witness,
             root_manager,
+            leaf_encoding_gate,
             chain_id,
             cache: Mutex::new(ProofCache::new(cache_capacity)),
             deadline_safety_margin_secs,
@@ -330,6 +344,26 @@ impl Handler {
         attempts: u32,
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
+        // 0. Leaf-encoding gate: the SOLE entry to the Witness-Builder proof flow. While the
+        //    contract and Witness-Builder leaf encodings are not declared compatible for this
+        //    deployment, stop here — BEFORE any record-height resolution, proof fetch, or
+        //    prove_challenge — and surface an observable, terminal-for-now Blocked status carrying
+        //    the field-level mismatch. Watch / decode / leaf-locate / get_challenge have already run
+        //    (observability preserved); only the proof path beyond this point is withheld.
+        if let LeafEncodingDecision::LeafEncodingMismatch(summary) =
+            self.leaf_encoding_gate.decision()
+        {
+            tracing::warn!(
+                challenge_id = ?ev.challenge_id,
+                contract_field_count = summary.contract_field_count,
+                witness_builder_field_count = summary.witness_builder_field_count,
+                detail = %summary.detail,
+                "leaf-encoding compatibility is not declared for this deployment; blocking the \
+                 proof flow (no record-height resolution, no proof fetch, no prove_challenge)"
+            );
+            return Ok(ChallengeState::Blocked(summary));
+        }
+
         // 1. Covering-root gate: the record must be covered by the latest checkpoint.
         let record_height = match self.witness.canonical_record_height(ev.leaf_hash).await {
             Ok(h) => h,
@@ -714,6 +748,7 @@ mod tests {
         proof: StdMutex<Result<HistoricalInclusionProof, WbError>>,
         err_once: StdMutex<Option<WbError>>,
         proof_calls: StdMutex<u32>,
+        record_height_calls: StdMutex<u32>,
         /// Per-root proofs consulted (by the requested root) before the single `proof`, so a test
         /// can return a distinct, correctly-bound proof for each root the pre-send recheck
         /// fetches.
@@ -726,8 +761,12 @@ mod tests {
                 proof: StdMutex::new(Ok(proof)),
                 err_once: StdMutex::new(None),
                 proof_calls: StdMutex::new(0),
+                record_height_calls: StdMutex::new(0),
                 root_proofs: StdMutex::new(std::collections::HashMap::new()),
             }
+        }
+        fn record_height_calls(&self) -> u32 {
+            *self.record_height_calls.lock().unwrap()
         }
         /// Register a proof to return when the requested root equals `root`.
         fn set_root_proof(&self, root: B256, proof: HistoricalInclusionProof) {
@@ -752,6 +791,7 @@ mod tests {
     #[async_trait]
     impl WitnessSource for MockWitness {
         async fn canonical_record_height(&self, _leaf: B256) -> Result<u64, WbError> {
+            *self.record_height_calls.lock().unwrap() += 1;
             Ok(*self.record_height.lock().unwrap())
         }
         async fn historical_proof(
@@ -771,13 +811,26 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
+    fn handler_with_gate(
+        cc: Arc<MockChallengeContract>,
+        witness: Arc<dyn WitnessSource>,
+        rm: Arc<MockRootManager>,
+        max_resend: u32,
+        gate: Arc<LeafEncodingGate>,
+    ) -> Handler {
+        Handler::new(cc.clone(), cc.clone(), witness, rm, gate, CHAIN_ID, 16, SAFETY, max_resend)
+    }
+
+    #[allow(clippy::type_complexity)]
     fn handler_with(
         cc: Arc<MockChallengeContract>,
         witness: Arc<dyn WitnessSource>,
         rm: Arc<MockRootManager>,
         max_resend: u32,
     ) -> Handler {
-        Handler::new(cc.clone(), cc.clone(), witness, rm, CHAIN_ID, 16, SAFETY, max_resend)
+        // Default to a proven gate so the existing proof-path tests exercise the full flow; the
+        // gate's own block/allow behavior is covered by the dedicated gate tests.
+        handler_with_gate(cc, witness, rm, max_resend, Arc::new(LeafEncodingGate::forced_proven()))
     }
 
     /// A ready challenge: valid proof, root set, scriptable status; `record_height` covered by the
@@ -1767,5 +1820,45 @@ mod tests {
             "expired mid-loop ⇒ Expired, got {state:?}"
         );
         assert!(cc.prove_calls().is_empty());
+    }
+
+    // ── LeafEncodingGate: the sole entry to the Witness-Builder proof flow. A mismatch blocks it
+    //    entirely (zero record-height / proof / sender calls); a proven gate lets the flow run. ──
+
+    #[tokio::test]
+    async fn mismatch_gate_makes_zero_wb_and_zero_sender_calls() {
+        let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
+        let gate = Arc::new(LeafEncodingGate::forced_mismatch(
+            EncodingMismatchSummary::contract_vs_witness_builder(),
+        ));
+        let h = handler_with_gate(cc.clone(), witness.clone(), rm, 3, gate);
+        let ig = InFlightGate::new();
+        let mut state = ChallengeState::Discovered;
+        h.drive(&ev, &mut state, &ig).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Blocked(_)),
+            "a mismatched gate blocks the challenge, got {state:?}"
+        );
+        assert_eq!(witness.record_height_calls(), 0, "zero record-height calls while blocked");
+        assert_eq!(witness.proof_calls(), 0, "zero WB proof-fetch calls while blocked");
+        assert!(cc.prove_calls().is_empty(), "zero prove_challenge calls while blocked");
+        assert_eq!(ig.holder(), None, "no in-flight gate held while blocked");
+        assert!(state.is_terminal(), "Blocked is terminal-for-now");
+    }
+
+    #[tokio::test]
+    async fn proven_gate_reaches_proof_path() {
+        let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
+        let gate = Arc::new(LeafEncodingGate::forced_proven());
+        let h = handler_with_gate(cc.clone(), witness.clone(), rm, 3, gate);
+        let ig = InFlightGate::new();
+        let mut state = ChallengeState::Discovered;
+        h.drive(&ev, &mut state, &ig).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Submitted { .. }),
+            "a proven gate lets the proof flow run to a broadcast, got {state:?}"
+        );
+        assert!(witness.record_height_calls() >= 1, "the record-height path was reached");
+        assert_eq!(cc.prove_calls().len(), 1, "prove_challenge was reached");
     }
 }
