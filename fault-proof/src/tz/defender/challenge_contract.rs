@@ -232,10 +232,8 @@ impl MockChallengeContract {
     /// Inject an already-built opened challenge and default its status to open (by its id).
     pub fn inject_opened(&self, ev: ChallengeOpened, deadline: u64) {
         let mut s = self.inner.lock().unwrap();
-        s.status.insert(
-            ev.challenge_id,
-            ChallengeStatus { open: true, deadline, chain_timestamp: 0 },
-        );
+        s.status
+            .insert(ev.challenge_id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
         s.opened.push(ev);
     }
 
@@ -279,8 +277,9 @@ impl MockChallengeContract {
         self.inner.lock().unwrap().confirm_outcomes.insert(tx, outcome);
     }
 
-    /// Mark a challenge no longer open (used to model a challenge that was resolved/closed while our
-    /// tx was in flight). Attribution is not modeled here — it comes from the confirm outcome.
+    /// Mark a challenge no longer open (used to model a challenge that was resolved/closed while
+    /// our tx was in flight). Attribution is not modeled here — it comes from the confirm
+    /// outcome.
     pub fn mark_closed(&self, id: ChallengeId) {
         if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
             st.open = false;

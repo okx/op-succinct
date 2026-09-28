@@ -20,8 +20,8 @@ use alloy_primitives::{Address, TxHash, B256, U256};
 use fault_proof::tz::{
     defender::{
         challenge_contract::{
-            ChallengeEventSource, ChallengeOpened, ChallengeStatus, MockChallengeContract,
-            ScanWindow, TxStatus,
+            ChallengeEventSource, ChallengeOpened, ChallengeStatus, ConfirmOutcome,
+            MockChallengeContract, ScanWindow,
         },
         challenge_manager::{ChallengeManagerContract, ChallengeType, RawChallengeEvent},
         handler::{ChallengeState, Handler, InFlightGate, WitnessSource},
@@ -30,7 +30,8 @@ use fault_proof::tz::{
         verifier::record_leaf_hash,
         watcher::Watcher,
         witness_wb::WbWitnessSource,
-        ChallengeId, DirectLeafLocator,
+        ChallengeId, CompatibilityDeclaration, DeploymentTarget, DirectLeafLocator,
+        LeafEncodingGate,
     },
     withdraw::{
         tree_adapter::{business_root, root_from_frontier, zero_hashes, WITHDRAWAL_TAG},
@@ -143,12 +144,39 @@ fn witness_for(server: &MockServer) -> Arc<dyn WitnessSource> {
     Arc::new(WbWitnessSource::new(wb))
 }
 
+/// A gate that is `Proven` for this test deployment (a matching, deployment-bound compatibility
+/// declaration), so the proof-path tests exercise the full flow.
+fn proven_gate() -> Arc<LeafEncodingGate> {
+    let target = DeploymentTarget { address: Address::repeat_byte(CONTRACT), chain_id: CHAIN_ID };
+    let declaration = CompatibilityDeclaration {
+        address: target.address,
+        chain_id: target.chain_id,
+        encoding_version: 1,
+    };
+    Arc::new(LeafEncodingGate::new(target, Some(declaration)))
+}
+
+/// A gate with no compatibility declaration ⇒ `LeafEncodingMismatch` for this test deployment.
+fn mismatch_gate() -> Arc<LeafEncodingGate> {
+    let target = DeploymentTarget { address: Address::repeat_byte(CONTRACT), chain_id: CHAIN_ID };
+    Arc::new(LeafEncodingGate::new(target, None))
+}
+
+fn handler_with_gate(
+    server: &MockServer,
+    rm: Arc<MockRootManager>,
+    cc: Arc<MockChallengeContract>,
+    gate: Arc<LeafEncodingGate>,
+) -> Handler {
+    Handler::new(cc.clone(), cc, witness_for(server), rm, gate, CHAIN_ID, 16, SAFETY, MAX_RESEND)
+}
+
 fn handler(
     server: &MockServer,
     rm: Arc<MockRootManager>,
     cc: Arc<MockChallengeContract>,
 ) -> Handler {
-    Handler::new(cc.clone(), cc, witness_for(server), rm, CHAIN_ID, 16, SAFETY, MAX_RESEND)
+    handler_with_gate(server, rm, cc, proven_gate())
 }
 
 fn opened(tx_seed: u8, leaf: B256, block: u64) -> ChallengeOpened {
@@ -172,10 +200,7 @@ fn inject(
     let ev = opened(tx_seed, leaf, block);
     let id = ev.challenge_id;
     cc.inject_opened(ev, deadline);
-    cc.set_status(
-        id,
-        ChallengeStatus { open: true, deadline, chain_timestamp: 0, resolved_by_us: false },
-    );
+    cc.set_status(id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
     id
 }
 
@@ -209,12 +234,13 @@ async fn full_pipeline_covering_gate_submits_then_proved() {
     let calls = cc.prove_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].challenge_id, id);
-    assert_eq!(calls[0].checkpoint_height, CHECKPOINT_HEIGHT);
     assert_eq!(calls[0].count, 1);
     assert_eq!(calls[0].leaf_index, 0);
 
-    cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
-    cc.mark_resolved_in_our_favor(id);
+    cc.set_confirm_outcome(
+        TxHash::repeat_byte(0x99),
+        ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![id] },
+    );
     h.drive(&ev, &mut state, &gate).await.unwrap();
     assert!(matches!(state, ChallengeState::Proved(_)));
     assert_eq!(gate.holder(), None, "gate released on Proved");
@@ -419,7 +445,10 @@ async fn supervisor_single_finality_scan_and_redrive() {
     rm.set_latest(CHECKPOINT_HEIGHT, root);
     let cc = Arc::new(MockChallengeContract::new());
     inject(&cc, 0x02, leaf, 100, 10_000); // event at block 100
-    cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+    cc.set_confirm_outcome(
+        TxHash::repeat_byte(0x99),
+        ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+    );
     let h = handler(&server, rm, cc.clone());
     // finality_blocks = 32, startup_lookback = 1000.
     let mut sup = Supervisor::new(
@@ -485,15 +514,7 @@ async fn restart_rescan_reconciles_status_only() {
     let cc = Arc::new(MockChallengeContract::new());
     let open_id = inject(&cc, 0x10, leaf, 100, 10_000);
     let closed_id = inject(&cc, 0x11, leaf, 100, 10_000);
-    cc.set_status(
-        closed_id,
-        ChallengeStatus {
-            open: false,
-            deadline: 10_000,
-            chain_timestamp: 0,
-            resolved_by_us: false,
-        },
-    );
+    cc.set_status(closed_id, ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 });
 
     let h = handler(&server, rm, cc.clone());
     let mut sup =
@@ -511,14 +532,18 @@ async fn restart_rescan_reconciles_status_only() {
 fn raw_event(
     onchain_id: U256,
     challenge_type: ChallengeType,
-    identifier: B256,
+    leaf: B256,
     tx_seed: u8,
     log_index: u64,
 ) -> RawChallengeEvent {
     RawChallengeEvent {
         onchain_challenge_id: onchain_id,
         challenge_type,
-        identifier,
+        // Keep tz_tx_hash distinct from leaf so a field-order/mapping bug cannot pass by
+        // coincidence.
+        tz_tx_hash: B256::repeat_byte(0xF0 | tx_seed),
+        leaf,
+        affected_bridge: Address::repeat_byte(0xB0),
         response_deadline: 10_000,
         block_number: 100,
         chain_id: CHAIN_ID,
@@ -551,6 +576,9 @@ async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
         raw_event(onchain_id, ChallengeType::WithdrawNotInRoot, leaf, 0xAA, 1),
         raw_event(U256::from(7u64), ChallengeType::Other(3), B256::repeat_byte(0x02), 0xBB, 2),
         raw_event(U256::from(9u64), ChallengeType::Other(8), B256::repeat_byte(0x03), 0xCC, 3),
+        // A force-transaction challenge carrying a zero leaf: dropped by the type filter, never a
+        // zero-leaf proof attempt.
+        raw_event(U256::from(11u64), ChallengeType::Other(2), B256::ZERO, 0xDD, 4),
     ];
     let adapter = Arc::new(ChallengeManagerContract::from_raw_events(
         raws,
@@ -571,7 +599,7 @@ async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
         "only the WithdrawNotInRoot challenge is emitted from the mixed batch"
     );
     let ev = opened[0].clone();
-    adapter.script_status(ev.challenge_id, true, 10_000, 0, false);
+    adapter.script_status(ev.challenge_id, true, 10_000, 0);
 
     let witness = witness_for(&server);
     let h = Handler::new(
@@ -579,6 +607,7 @@ async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
         adapter.clone(),
         witness,
         rm,
+        proven_gate(),
         CHAIN_ID,
         16,
         SAFETY,
@@ -598,4 +627,68 @@ async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
     assert_eq!(call.leaf_index, 0);
     assert_eq!(call.leaf_count, 1);
     assert_eq!(call.proof, siblings);
+}
+
+/// End-to-end with a MISMATCHED leaf-encoding gate: a `WithdrawNotInRoot` challenge driven through
+/// the real adapter lands in `Blocked` with ZERO Witness-Builder calls and ZERO submit calls. No
+/// record/proof endpoints are mounted, so the absence of any wiremock endpoint proves the proof
+/// flow was never entered. A force-transaction challenge (zero leaf) in the same batch is dropped
+/// by the type filter before it could reach any proof path.
+#[tokio::test]
+async fn end_to_end_blocked_leaf_encoding_mismatch_makes_zero_wb_and_zero_sender_calls() {
+    let r = valid_record(0x42);
+    let leaf = leaf_of(&r);
+    // Deliberately mount NO record/proof endpoints: a mismatched gate must block BEFORE any WB
+    // call, so the absence of endpoints is itself the zero-WB-call proof.
+    let server = MockServer::start().await;
+    let rm = Arc::new(MockRootManager::new());
+    rm.set_latest(CHECKPOINT_HEIGHT, B256::repeat_byte(0x33));
+
+    let onchain_id = U256::from(4242u64);
+    let raws = vec![
+        raw_event(onchain_id, ChallengeType::WithdrawNotInRoot, leaf, 0xAA, 1),
+        // A force-transaction challenge with a zero leaf: dropped by the type filter.
+        raw_event(U256::from(7u64), ChallengeType::Other(2), B256::ZERO, 0xDD, 2),
+    ];
+    let adapter = Arc::new(ChallengeManagerContract::from_raw_events(
+        raws,
+        DirectLeafLocator,
+        CHAIN_ID,
+        Address::repeat_byte(CONTRACT),
+    ));
+
+    let opened = ChallengeEventSource::watch_opened(
+        &*adapter,
+        ScanWindow { from_block: 0, to_block: 10_000 },
+    )
+    .await
+    .unwrap();
+    assert_eq!(opened.len(), 1, "the zero-leaf force-tx challenge is dropped by the type filter");
+    let ev = opened[0].clone();
+    assert_eq!(ev.leaf_hash, leaf, "the emitted leaf_hash is the event's leaf");
+    adapter.script_status(ev.challenge_id, true, 10_000, 0);
+
+    let h = Handler::new(
+        adapter.clone(),
+        adapter.clone(),
+        witness_for(&server),
+        rm,
+        mismatch_gate(),
+        CHAIN_ID,
+        16,
+        SAFETY,
+        MAX_RESEND,
+    );
+    let gate = InFlightGate::new();
+    let mut state = ChallengeState::Discovered;
+    h.drive(&ev, &mut state, &gate).await.unwrap();
+    assert!(
+        matches!(state, ChallengeState::Blocked(_)),
+        "a mismatched leaf-encoding gate blocks the challenge, got {state:?}"
+    );
+    assert!(
+        adapter.last_submit_call().is_none(),
+        "no submitWithdrawProof calldata is built while blocked"
+    );
+    assert_eq!(gate.holder(), None, "no in-flight gate is held while blocked");
 }

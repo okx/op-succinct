@@ -720,9 +720,17 @@ mod tests {
         assert_eq!(opened.len(), 2, "only WithdrawNotInRoot events are emitted");
         // The emitted leaf_hash is the event's leaf field, never its (distinct) tz_tx_hash.
         assert_eq!(opened[0].leaf_hash, B256::repeat_byte(0x01));
-        assert_ne!(opened[0].leaf_hash, B256::repeat_byte(0xF1), "leaf_hash is the leaf, not tzTxHash");
+        assert_ne!(
+            opened[0].leaf_hash,
+            B256::repeat_byte(0xF1),
+            "leaf_hash is the leaf, not tzTxHash"
+        );
         assert_eq!(opened[1].leaf_hash, B256::repeat_byte(0x04));
-        assert_ne!(opened[1].leaf_hash, B256::repeat_byte(0xF4), "leaf_hash is the leaf, not tzTxHash");
+        assert_ne!(
+            opened[1].leaf_hash,
+            B256::repeat_byte(0xF4),
+            "leaf_hash is the leaf, not tzTxHash"
+        );
     }
 
     #[tokio::test]
@@ -739,7 +747,10 @@ mod tests {
             CONTRACT_ADDR,
         );
         let opened = adapter.watch_opened(window()).await.unwrap();
-        assert!(opened.is_empty(), "a non-withdraw (zero-leaf) challenge produces no ChallengeOpened");
+        assert!(
+            opened.is_empty(),
+            "a non-withdraw (zero-leaf) challenge produces no ChallengeOpened"
+        );
     }
 
     #[tokio::test]
@@ -769,7 +780,10 @@ mod tests {
     async fn state_machine_behavior_is_identical_across_locators() {
         let leaf = B256::repeat_byte(0x99);
         let tz_tx = B256::repeat_byte(0x11);
-        assert_ne!(tz_tx, leaf, "tzTxHash and leaf must differ so the two locators are distinguished");
+        assert_ne!(
+            tz_tx, leaf,
+            "tzTxHash and leaf must differ so the two locators are distinguished"
+        );
         // Direct: the event's explicit `leaf` field is the leaf; its tzTxHash is unrelated.
         let mut direct_ev = raw(ChallengeType::WithdrawNotInRoot, leaf, 1);
         direct_ev.tz_tx_hash = tz_tx;
@@ -840,10 +854,7 @@ mod tests {
         // A ChallengeFailed log for our on-chain id maps back to the opaque ChallengeId.
         let failed = ChallengeFailed { challengeId: onchain_id };
         let log = alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log {
-                address: CONTRACT_ADDR,
-                data: failed.encode_log_data(),
-            },
+            inner: alloy_primitives::Log { address: CONTRACT_ADDR, data: failed.encode_log_data() },
             ..Default::default()
         };
         assert_eq!(
@@ -854,10 +865,7 @@ mod tests {
         // A ChallengeFailed for an id this adapter never decoded is ignored.
         let other = ChallengeFailed { challengeId: U256::from(9_999u64) };
         let other_log = alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log {
-                address: CONTRACT_ADDR,
-                data: other.encode_log_data(),
-            },
+            inner: alloy_primitives::Log { address: CONTRACT_ADDR, data: other.encode_log_data() },
             ..Default::default()
         };
         assert!(

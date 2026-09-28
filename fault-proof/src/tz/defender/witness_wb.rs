@@ -1,7 +1,11 @@
-//! Adapter implementing [`WitnessSource`] over the real [`WbClient`] (spec §7.1/§7.4).
+//! Adapter implementing [`WitnessSource`] over the real [`WbClient`].
 //!
-//! For V1 records `recordHash == leafHash` (spec §4), so the challenge's `leaf_hash` is used
-//! directly as the record hash for the WB lookups.
+//! The challenge event's `leaf_hash` is passed to the Witness Builder as the record-hash key for
+//! its lookups. Whether the contract's event leaf actually equals the Witness Builder record hash
+//! is an open cross-repo question governed by the leaf-encoding compatibility gate: while the two
+//! encodings are not declared compatible for a deployment, the proof flow is blocked upstream and
+//! this adapter is never reached. There is no local re-encoding here — masking any mismatch is
+//! deliberately avoided.
 
 use std::sync::Arc;
 

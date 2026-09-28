@@ -319,13 +319,7 @@ mod tests {
         let ev = ChallengeOpened::new(CHAIN_ID, contract(), B256::repeat_byte(0x02), 0, leaf, 100);
         let id = ev.challenge_id;
         cc.inject_opened(ev, 10_000);
-        cc.set_status(
-            id,
-            ChallengeStatus {
-                open: true,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
-        );
+        cc.set_status(id, ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 });
         let witness = Arc::new(SwitchWitness::not_ready());
         let rm = Arc::new(MockRootManager::new());
         rm.set_latest(20, root);
@@ -412,17 +406,11 @@ mod tests {
         cc.inject_opened(b.clone(), 10_000);
         cc.set_status(
             a.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
         );
         cc.set_status(
             b.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
         );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
@@ -507,17 +495,11 @@ mod tests {
         cc.inject_opened(b.clone(), 5_000);
         cc.set_status(
             a.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 9_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 9_000, chain_timestamp: 0 },
         );
         cc.set_status(
             b.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 5_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 0 },
         );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
@@ -570,10 +552,7 @@ mod tests {
         cc.inject_opened(closed.clone(), 10_000);
         cc.set_status(
             closed.challenge_id,
-            ChallengeStatus {
-                open: false,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
         );
 
         let witness = Arc::new(SwitchWitness::not_ready());
@@ -835,10 +814,7 @@ mod tests {
         let cc = Arc::new(MockChallengeContract::new());
         cc.inject_opened(first.clone(), 5_000);
         cc.inject_opened(second.clone(), 5_000);
-        let st = ChallengeStatus {
-            open: true,
-            deadline: 5_000,
-            chain_timestamp: 0,        };
+        let st = ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 0 };
         cc.set_status(first.challenge_id, st);
         cc.set_status(second.challenge_id, st);
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);

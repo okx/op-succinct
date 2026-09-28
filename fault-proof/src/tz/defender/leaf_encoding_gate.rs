@@ -17,8 +17,8 @@
 
 use alloy_primitives::Address;
 
-/// A field-by-field summary of why the two leaf encodings differ, surfaced on a blocked challenge so
-/// an operator sees exactly why no proof is attempted.
+/// A field-by-field summary of why the two leaf encodings differ, surfaced on a blocked challenge
+/// so an operator sees exactly why no proof is attempted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodingMismatchSummary {
     /// Number of ABI fields the contract's withdraw hash encodes.
@@ -67,8 +67,8 @@ pub struct DeploymentTarget {
 
 /// An immutable, deployment-bound declaration — published by the contract and Witness Builder
 /// owners — that the two leaf encodings agree for a specific deployment. It is the SOLE input that
-/// can open the gate. It carries the deployment it is bound to (address + chain id) and the encoding
-/// version it certifies; it opens the gate only when it matches the wired deployment.
+/// can open the gate. It carries the deployment it is bound to (address + chain id) and the
+/// encoding version it certifies; it opens the gate only when it matches the wired deployment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompatibilityDeclaration {
     pub address: Address,

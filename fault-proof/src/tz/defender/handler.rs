@@ -119,12 +119,13 @@ pub enum ChallengeState {
     /// Local verification failed, the witness store is corrupt/mismatched, a protocol error
     /// occurred, or the resend bound was exhausted — never send again; alert.
     PermanentFailure,
-    /// The cross-repo leaf-encoding compatibility gate is not satisfied for this deployment, so the
-    /// entire Witness-Builder proof flow is withheld: no record-height resolution, no proof fetch,
-    /// no `prove_challenge`. A distinct, observable, terminal-for-now status carrying the
-    /// field-level mismatch summary — never `Ready`, an error-retry, or a witness wait — so an
-    /// operator sees exactly why no proof is attempted. It reopens only when a matching
-    /// deployment-bound compatibility declaration is published (a redeploy/reconfiguration).
+    /// The cross-repo leaf-encoding compatibility gate is not satisfied for this deployment, so
+    /// the entire Witness-Builder proof flow is withheld: no record-height resolution, no
+    /// proof fetch, no `prove_challenge`. A distinct, observable, terminal-for-now status
+    /// carrying the field-level mismatch summary — never `Ready`, an error-retry, or a witness
+    /// wait — so an operator sees exactly why no proof is attempted. It reopens only when a
+    /// matching deployment-bound compatibility declaration is published (a
+    /// redeploy/reconfiguration).
     Blocked(EncodingMismatchSummary),
 }
 
@@ -199,7 +200,8 @@ pub struct Handler {
     sender: Arc<dyn ChallengeSender>,
     witness: Arc<dyn WitnessSource>,
     root_manager: Arc<dyn LatestRootSource>,
-    /// The sole precondition of the Witness-Builder proof flow; a mismatch blocks every proof path.
+    /// The sole precondition of the Witness-Builder proof flow; a mismatch blocks every proof
+    /// path.
     leaf_encoding_gate: Arc<LeafEncodingGate>,
     chain_id: u64,
     cache: Mutex<ProofCache>,
@@ -348,8 +350,8 @@ impl Handler {
         //    contract and Witness-Builder leaf encodings are not declared compatible for this
         //    deployment, stop here — BEFORE any record-height resolution, proof fetch, or
         //    prove_challenge — and surface an observable, terminal-for-now Blocked status carrying
-        //    the field-level mismatch. Watch / decode / leaf-locate / get_challenge have already run
-        //    (observability preserved); only the proof path beyond this point is withheld.
+        //    the field-level mismatch. Watch / decode / leaf-locate / get_challenge have already
+        //    run (observability preserved); only the proof path beyond this point is withheld.
         if let LeafEncodingDecision::LeafEncodingMismatch(summary) =
             self.leaf_encoding_gate.decision()
         {
@@ -847,10 +849,7 @@ mod tests {
         let ev = ev_for(leaf);
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline,
-                chain_timestamp: chain_ts,            },
+            ChallengeStatus { open: true, deadline, chain_timestamp: chain_ts },
         );
         let witness = Arc::new(MockWitness::ok(proof, 10));
         let rm = Arc::new(MockRootManager::new());
@@ -1029,10 +1028,7 @@ mod tests {
         let ev = ev_for(leaf);
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 100_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 100_000, chain_timestamp: 0 },
         );
         cc.set_confirm_outcome(TxHash::repeat_byte(0x99), ConfirmOutcome::Reverted);
         cc.keep_open(ev.challenge_id);
@@ -1088,10 +1084,7 @@ mod tests {
         let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: false,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
         );
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -1137,10 +1130,7 @@ mod tests {
         let ev = ev_for(record_leaf_hash(&valid_record(0x42)).unwrap()); // challenge for leaf 0x42
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
         );
         let witness = Arc::new(MockWitness::ok(other_proof, 10));
         let rm = Arc::new(MockRootManager::new());
@@ -1160,10 +1150,7 @@ mod tests {
         let ev = ev_for(leaf);
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
         );
         let witness = Arc::new(MockWitness::ok(proof, 10));
         let rm = Arc::new(MockRootManager::new()); // never set
@@ -1406,10 +1393,7 @@ mod tests {
         assert_ne!(ev_a.challenge_id, ev_b.challenge_id, "A and B are distinct challenges");
         cc_b.set_status(
             ev_b.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 10_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 },
         );
         let wit_b = Arc::new(MockWitness::ok(proof_b, 10));
         let rm_b = Arc::new(MockRootManager::new());
@@ -1654,10 +1638,7 @@ mod tests {
         let ev = ev_for(leaf);
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 100_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: true, deadline: 100_000, chain_timestamp: 0 },
         );
         (cc, ev, leaf)
     }
@@ -1767,10 +1748,7 @@ mod tests {
         // Closed status: the loop's liveness recheck short-circuits before any re-fetch.
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: false,
-                deadline: 100_000,
-                chain_timestamp: 0,            },
+            ChallengeStatus { open: false, deadline: 100_000, chain_timestamp: 0 },
         );
         let (proof_a, root_a) = proof_for(&record, leaf, 0xD0);
         let (_proof_b, root_b) = proof_for(&record, leaf, 0xD1);
@@ -1798,10 +1776,7 @@ mod tests {
         // Open but past the L2-time deadline (chain_ts + SAFETY >= deadline).
         cc.set_status(
             ev.challenge_id,
-            ChallengeStatus {
-                open: true,
-                deadline: 1_000,
-                chain_timestamp: 999,            },
+            ChallengeStatus { open: true, deadline: 1_000, chain_timestamp: 999 },
         );
         let (proof_a, root_a) = proof_for(&record, leaf, 0xE0);
         let (_proof_b, root_b) = proof_for(&record, leaf, 0xE1);
