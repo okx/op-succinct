@@ -15,7 +15,7 @@
 //! it, and there is no local re-encode shim: masking the mismatch is forbidden. An offline equality
 //! fixed vector (see the module tests) is a REGRESSION check only — never the release authority.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 
 /// A field-by-field summary of why the two leaf encodings differ, surfaced on a blocked challenge
 /// so an operator sees exactly why no proof is attempted.
@@ -57,28 +57,55 @@ pub enum LeafEncodingDecision {
     LeafEncodingMismatch(EncodingMismatchSummary),
 }
 
-/// The deployment (contract address + chain id) the Defender is wired to. A compatibility
-/// declaration must be bound to exactly this deployment to open the gate.
+/// Where a [`CompatibilityDeclaration`] came from. Only an authenticated, immutable publication
+/// source (e.g. a signed / on-chain-anchored declaration) may open the gate; anything else — an
+/// unauthenticated or mutable source — can never release it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationProvenance {
+    /// Published through an authenticated, immutable source.
+    AuthenticatedImmutable,
+    /// Any other (unauthenticated / mutable) source — never opens the gate.
+    Unauthenticated,
+}
+
+/// The deployment the Defender is wired to, plus the encoding identity a declaration must certify
+/// to open the gate: the contract address, chain id, and the expected encoding version, canonical
+/// encoding hash, and Witness-Builder identity. A declaration must match ALL of these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeploymentTarget {
     pub address: Address,
     pub chain_id: u64,
+    pub expected_encoding_version: u32,
+    pub expected_canonical_encoding_hash: B256,
+    pub expected_witness_builder_id: B256,
 }
 
 /// An immutable, deployment-bound declaration — published by the contract and Witness Builder
 /// owners — that the two leaf encodings agree for a specific deployment. It is the SOLE input that
-/// can open the gate. It carries the deployment it is bound to (address + chain id) and the
-/// encoding version it certifies; it opens the gate only when it matches the wired deployment.
+/// can open the gate, and only when it matches the wired deployment on EVERY criterion: address,
+/// chain id, encoding version, canonical encoding hash, Witness-Builder identity, and an
+/// authenticated/immutable publication source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompatibilityDeclaration {
     pub address: Address,
     pub chain_id: u64,
     pub encoding_version: u32,
+    pub canonical_encoding_hash: B256,
+    pub witness_builder_id: B256,
+    pub provenance: DeclarationProvenance,
 }
 
 impl CompatibilityDeclaration {
+    /// Strict match: EVERY criterion must hold. Matching only the deployment address + chain id can
+    /// never open the gate — a wrong encoding version, canonical hash, Witness-Builder identity, or
+    /// an unauthenticated source keeps it `Blocked`.
     fn matches(&self, target: &DeploymentTarget) -> bool {
-        self.address == target.address && self.chain_id == target.chain_id
+        self.address == target.address
+            && self.chain_id == target.chain_id
+            && self.encoding_version == target.expected_encoding_version
+            && self.canonical_encoding_hash == target.expected_canonical_encoding_hash
+            && self.witness_builder_id == target.expected_witness_builder_id
+            && matches!(self.provenance, DeclarationProvenance::AuthenticatedImmutable)
     }
 }
 
@@ -182,45 +209,75 @@ mod tests {
         );
     }
 
+    fn strict_target() -> DeploymentTarget {
+        DeploymentTarget {
+            address: Address::repeat_byte(0x11),
+            chain_id: 196,
+            expected_encoding_version: 1,
+            expected_canonical_encoding_hash: B256::repeat_byte(0xcc),
+            expected_witness_builder_id: B256::repeat_byte(0xdd),
+        }
+    }
+
+    fn matching_declaration() -> CompatibilityDeclaration {
+        CompatibilityDeclaration {
+            address: Address::repeat_byte(0x11),
+            chain_id: 196,
+            encoding_version: 1,
+            canonical_encoding_hash: B256::repeat_byte(0xcc),
+            witness_builder_id: B256::repeat_byte(0xdd),
+            provenance: DeclarationProvenance::AuthenticatedImmutable,
+        }
+    }
+
     #[test]
     fn production_gate_without_declaration_is_mismatch() {
-        let target = DeploymentTarget { address: Address::repeat_byte(0x11), chain_id: 196 };
-        let gate = LeafEncodingGate::new(target, None);
+        // Production supplies no declaration ⇒ unconditionally fail-closed.
+        let gate = LeafEncodingGate::new(strict_target(), None);
         assert!(matches!(gate.decision(), LeafEncodingDecision::LeafEncodingMismatch(_)));
     }
 
     #[test]
-    fn declaration_opens_gate_only_when_bound_to_the_deployment() {
-        let target = DeploymentTarget { address: Address::repeat_byte(0x11), chain_id: 196 };
-        // A declaration bound to a DIFFERENT deployment does not open the gate.
-        let wrong = CompatibilityDeclaration {
-            address: Address::repeat_byte(0x22),
-            chain_id: 196,
-            encoding_version: 1,
-        };
+    fn matches_all_criteria_opens_gate() {
+        // Only a declaration matching ALL six criteria (address, chain id, encoding version,
+        // canonical hash, WB identity, authenticated/immutable source) opens the gate.
+        assert!(matching_declaration().matches(&strict_target()));
         assert!(matches!(
-            LeafEncodingGate::new(target, Some(wrong)).decision(),
-            LeafEncodingDecision::LeafEncodingMismatch(_)
-        ));
-        // A declaration bound to a different chain id does not open the gate.
-        let wrong_chain = CompatibilityDeclaration {
-            address: Address::repeat_byte(0x11),
-            chain_id: 1,
-            encoding_version: 1,
-        };
-        assert!(matches!(
-            LeafEncodingGate::new(target, Some(wrong_chain)).decision(),
-            LeafEncodingDecision::LeafEncodingMismatch(_)
-        ));
-        // Only a declaration bound to this exact deployment opens it.
-        let matching = CompatibilityDeclaration {
-            address: Address::repeat_byte(0x11),
-            chain_id: 196,
-            encoding_version: 1,
-        };
-        assert!(matches!(
-            LeafEncodingGate::new(target, Some(matching)).decision(),
+            LeafEncodingGate::new(strict_target(), Some(matching_declaration())).decision(),
             LeafEncodingDecision::Proven
         ));
+    }
+
+    #[test]
+    fn matches_requires_all_criteria() {
+        // A declaration differing in ANY single criterion must NOT match, so the gate stays
+        // Blocked. Matching address + chain id alone can never release it.
+        let deviations = [
+            CompatibilityDeclaration { address: Address::repeat_byte(0x22), ..matching_declaration() },
+            CompatibilityDeclaration { chain_id: 1, ..matching_declaration() },
+            CompatibilityDeclaration { encoding_version: 2, ..matching_declaration() },
+            CompatibilityDeclaration {
+                canonical_encoding_hash: B256::repeat_byte(0xee),
+                ..matching_declaration()
+            },
+            CompatibilityDeclaration {
+                witness_builder_id: B256::repeat_byte(0xee),
+                ..matching_declaration()
+            },
+            CompatibilityDeclaration {
+                provenance: DeclarationProvenance::Unauthenticated,
+                ..matching_declaration()
+            },
+        ];
+        for d in deviations {
+            assert!(!d.matches(&strict_target()), "a single-criterion deviation must not match: {d:?}");
+            assert!(
+                matches!(
+                    LeafEncodingGate::new(strict_target(), Some(d)).decision(),
+                    LeafEncodingDecision::LeafEncodingMismatch(_)
+                ),
+                "a single-criterion deviation must keep the gate Blocked: {d:?}"
+            );
+        }
     }
 }

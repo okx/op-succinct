@@ -1836,4 +1836,43 @@ mod tests {
         assert!(witness.record_height_calls() >= 1, "the record-height path was reached");
         assert_eq!(cc.prove_calls().len(), 1, "prove_challenge was reached");
     }
+
+    #[tokio::test]
+    async fn version_mismatch_declaration_blocks_with_zero_calls() {
+        // A declaration matching deployment address + chain id but NOT encoding_version must not
+        // release the gate through strict `matches`: the challenge stays Blocked end-to-end with
+        // zero record-height / WB-proof-fetch / prove_challenge calls.
+        use crate::tz::defender::leaf_encoding_gate::{
+            CompatibilityDeclaration, DeclarationProvenance, DeploymentTarget,
+        };
+        let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
+        let addr = alloy_primitives::Address::repeat_byte(0x11);
+        let target = DeploymentTarget {
+            address: addr,
+            chain_id: CHAIN_ID,
+            expected_encoding_version: 1,
+            expected_canonical_encoding_hash: B256::repeat_byte(0xcc),
+            expected_witness_builder_id: B256::repeat_byte(0xdd),
+        };
+        let version_mismatch = CompatibilityDeclaration {
+            address: addr,
+            chain_id: CHAIN_ID,
+            encoding_version: 999, // matches address + chain id, but NOT the version
+            canonical_encoding_hash: B256::repeat_byte(0xcc),
+            witness_builder_id: B256::repeat_byte(0xdd),
+            provenance: DeclarationProvenance::AuthenticatedImmutable,
+        };
+        let gate = Arc::new(LeafEncodingGate::new(target, Some(version_mismatch)));
+        let h = handler_with_gate(cc.clone(), witness.clone(), rm, 3, gate);
+        let ig = InFlightGate::new();
+        let mut state = ChallengeState::Discovered;
+        h.drive(&ev, &mut state, &ig).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Blocked(_)),
+            "an address+chain-id-matching but version-mismatched declaration stays Blocked, got {state:?}"
+        );
+        assert_eq!(witness.record_height_calls(), 0, "zero record-height calls while blocked");
+        assert_eq!(witness.proof_calls(), 0, "zero WB proof-fetch calls while blocked");
+        assert!(cc.prove_calls().is_empty(), "zero prove_challenge calls while blocked");
+    }
 }

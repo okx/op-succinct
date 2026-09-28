@@ -33,8 +33,8 @@ pub use challenge_contract::{
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
 pub use leaf_encoding_gate::{
-    CompatibilityDeclaration, DeploymentTarget, EncodingMismatchSummary, LeafEncodingDecision,
-    LeafEncodingGate,
+    CompatibilityDeclaration, DeclarationProvenance, DeploymentTarget, EncodingMismatchSummary,
+    LeafEncodingDecision, LeafEncodingGate,
 };
 pub use leaf_locator::{DirectLeafLocator, LeafLocator, ReverseLookupLeafLocator};
 pub use supervisor::Supervisor;
