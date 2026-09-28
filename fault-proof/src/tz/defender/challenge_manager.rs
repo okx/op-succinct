@@ -82,18 +82,25 @@ sol! {
 sol! {
     // The ChallengeManager view + failure event that back the live status read and resolution
     // attribution. `activeWithdrawChallenge` returns the challengeId currently occupying a bridge's
-    // active withdraw-challenge slot (zero when none). `ChallengeFailed` carries the challengeId
-    // resolved against the challenger; matching it against our own confirmed proof receipt is how
-    // resolution is attributed. Both shapes MUST be re-confirmed against the deployed contract
-    // before LIVE responses are relied upon.
+    // active withdraw-challenge slot (zero when none). `ChallengeFailed` carries the resolved
+    // `challengeId` plus the contract's `treasury` address; matching the `challengeId` against our
+    // own confirmed proof receipt is how resolution is attributed. Both shapes MUST be re-confirmed
+    // against the deployed contract before LIVE responses are relied upon.
     #[allow(missing_docs)]
     #[sol(rpc)]
     interface IChallengeManager {
         function activeWithdrawChallenge(address bridge) external view returns (uint256);
     }
 
+    // The full contract event has TWO parameters. topic0 is derived from the complete ordered type
+    // list `(uint256,address)` — `keccak256("ChallengeFailed(uint256,address)")` — so a
+    // one-parameter binding would derive the wrong topic0 and never match a real receipt. `indexed`
+    // does not affect topic0, only whether a field is carried in a topic or in the data section.
+    // The exact `indexed` layout is unconfirmed (the contract source is unreachable), so the decode
+    // is fail-closed: `decode_log` skips a wrong-topic0 / arity-mismatched / non-decoding log rather
+    // than mis-parsing it, keeping an unresolved challenge in-flight instead of mis-attributing it.
     #[allow(missing_docs)]
-    event ChallengeFailed(uint256 indexed challengeId);
+    event ChallengeFailed(uint256 indexed challengeId, address treasury);
 }
 
 /// A decoded-but-unfiltered `ChallengeCreated` event. `tz_tx_hash` is the transaction-scoped
@@ -857,8 +864,12 @@ mod tests {
         let opened = adapter.watch_opened(window()).await.unwrap();
         let id = opened[0].challenge_id;
         let onchain_id = adapter.onchain_id_for(id).unwrap();
-        // A ChallengeFailed log for our on-chain id maps back to the opaque ChallengeId.
-        let failed = ChallengeFailed { challengeId: onchain_id };
+        // A real two-field ChallengeFailed log (challengeId + a populated, DISTINCT treasury)
+        // carrying the corrected topic0 keccak256("ChallengeFailed(uint256,address)") maps back to
+        // the opaque ChallengeId. (A one-parameter binding would derive the wrong topic0 and never
+        // match — the R6 Major-1 defect this pins.)
+        let treasury = Address::repeat_byte(0x7a);
+        let failed = ChallengeFailed { challengeId: onchain_id, treasury };
         let log = alloy_rpc_types_eth::Log {
             inner: alloy_primitives::Log { address: CONTRACT_ADDR, data: failed.encode_log_data() },
             ..Default::default()
@@ -866,10 +877,10 @@ mod tests {
         assert_eq!(
             adapter.resolved_ids_from_logs(std::slice::from_ref(&log)),
             vec![id],
-            "ChallengeFailed(onchain_id) maps to the opaque ChallengeId"
+            "a real two-field ChallengeFailed maps to the opaque ChallengeId"
         );
         // A ChallengeFailed for an id this adapter never decoded is ignored.
-        let other = ChallengeFailed { challengeId: U256::from(9_999u64) };
+        let other = ChallengeFailed { challengeId: U256::from(9_999u64), treasury };
         let other_log = alloy_rpc_types_eth::Log {
             inner: alloy_primitives::Log { address: CONTRACT_ADDR, data: other.encode_log_data() },
             ..Default::default()
@@ -892,7 +903,7 @@ mod tests {
         let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
         // A ChallengeFailed carrying OUR on-chain id but emitted by a DIFFERENT contract must be
         // ignored: resolution is attributed only from our own challenge manager's events.
-        let failed = ChallengeFailed { challengeId: onchain_id };
+        let failed = ChallengeFailed { challengeId: onchain_id, treasury: Address::repeat_byte(0x7a) };
         let foreign_log = alloy_rpc_types_eth::Log {
             inner: alloy_primitives::Log {
                 address: Address::repeat_byte(0xFE),
@@ -903,6 +914,44 @@ mod tests {
         assert!(
             adapter.resolved_ids_from_logs(std::slice::from_ref(&foreign_log)).is_empty(),
             "a ChallengeFailed emitted by another contract is not credited to us"
+        );
+    }
+
+    #[tokio::test]
+    async fn retired_one_param_challenge_failed_is_not_matched() {
+        // The RETIRED one-parameter signature has a different topic0 than the corrected two-field
+        // binding, so a log carrying it must be skipped (fail-closed) and never credited — guarding
+        // against reintroducing the wrong-topic0 regression that mis-classified proved challenges.
+        mod retired_cf {
+            alloy_sol_types::sol! {
+                #[allow(missing_docs)]
+                event ChallengeFailed(uint256 indexed challengeId);
+            }
+        }
+        assert_ne!(
+            retired_cf::ChallengeFailed::SIGNATURE_HASH,
+            ChallengeFailed::SIGNATURE_HASH,
+            "the retired one-parameter ChallengeFailed has a different topic0"
+        );
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
+        let retired = retired_cf::ChallengeFailed { challengeId: onchain_id };
+        let log = alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address: CONTRACT_ADDR,
+                data: retired.encode_log_data(),
+            },
+            ..Default::default()
+        };
+        assert!(
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&log)).is_empty(),
+            "a retired one-parameter ChallengeFailed log is not matched (fail-closed)"
         );
     }
 
