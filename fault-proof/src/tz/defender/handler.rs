@@ -25,7 +25,7 @@ use super::{
     cache::ProofCache,
     challenge_contract::{
         ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender, ChallengeStatus,
-        SenderError, SubmitOutcome, TxStatus,
+        ConfirmOutcome, SenderError, SubmitOutcome,
     },
     rootmanager_client::LatestRootSource,
     verifier::verify,
@@ -475,30 +475,27 @@ impl Handler {
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
         match self.sender.confirm(tx).await? {
-            TxStatus::Success => {
-                if !status.open {
-                    // A successful receipt plus a no-longer-open challenge is terminal, but only
-                    // OUR resolution is `Proved` — a challenge closed by
-                    // another responder is `Closed`, never credited to us (a
-                    // successful receipt alone does not prove we won).
+            ConfirmOutcome::Succeeded { resolved_challenge_ids } => {
+                // Attribution comes ONLY from our own confirmed receipt. Our id in the resolved set
+                // ⇒ Proved. A no-longer-open challenge whose id is NOT in our receipt was closed by
+                // another responder ⇒ Closed, never credited to us. Still open and not ours yet ⇒
+                // keep holding the gate and reconcile on a later tick.
+                if resolved_challenge_ids.contains(&ev.challenge_id) {
                     gate.release(ev.challenge_id);
-                    if status.resolved_by_us {
-                        Ok(ChallengeState::Proved(tx))
-                    } else {
-                        Ok(ChallengeState::Closed)
-                    }
+                    Ok(ChallengeState::Proved(tx))
+                } else if !status.open {
+                    gate.release(ev.challenge_id);
+                    Ok(ChallengeState::Closed)
                 } else if self.past_deadline(status) {
                     // Receipt success but still open past the L2-time deadline: stop holding the
                     // gate on a challenge we can no longer usefully act on.
                     gate.release(ev.challenge_id);
                     Ok(ChallengeState::Expired)
                 } else {
-                    // Receipt success but still open before the deadline: reconcile on a later tick
-                    // (keep the gate).
                     Ok(ChallengeState::Submitted { tx, attempts, root })
                 }
             }
-            TxStatus::Pending => {
+            ConfirmOutcome::Pending => {
                 // A not-yet-mined receipt is NON-TERMINAL: the broadcast tx may still be in the
                 // mempool or awaiting inclusion. Releasing the global in-flight gate now — merely
                 // because the challenge deadline passed — would let another challenge broadcast a
@@ -517,7 +514,7 @@ impl Handler {
                 }
                 Ok(ChallengeState::Submitted { tx, attempts, root })
             }
-            TxStatus::Reverted => {
+            ConfirmOutcome::Reverted => {
                 if !status.open {
                     gate.release(ev.challenge_id);
                     Ok(ChallengeState::Closed)
@@ -546,16 +543,16 @@ impl Handler {
         gate: &InFlightGate,
     ) -> Result<ChallengeState> {
         match self.sender.confirm(tx).await? {
-            TxStatus::Success => {
-                if !status.open {
-                    // Only OUR resolution is `Proved`; a challenge closed by another responder is
-                    // `Closed` even with a successful receipt for our tx.
+            ConfirmOutcome::Succeeded { resolved_challenge_ids } => {
+                // Same attribution rule as the confirmed-submit path: only our own confirmed
+                // receipt's resolved set credits us with `Proved`; a no-longer-open challenge that
+                // is not in our receipt is `Closed`.
+                if resolved_challenge_ids.contains(&ev.challenge_id) {
                     gate.release(ev.challenge_id);
-                    if status.resolved_by_us {
-                        Ok(ChallengeState::Proved(tx))
-                    } else {
-                        Ok(ChallengeState::Closed)
-                    }
+                    Ok(ChallengeState::Proved(tx))
+                } else if !status.open {
+                    gate.release(ev.challenge_id);
+                    Ok(ChallengeState::Closed)
                 } else if self.past_deadline(status) {
                     gate.release(ev.challenge_id);
                     Ok(ChallengeState::Expired)
@@ -563,7 +560,7 @@ impl Handler {
                     Ok(ChallengeState::ReconcileUnknownTx { tx, attempts, root })
                 }
             }
-            TxStatus::Pending => {
+            ConfirmOutcome::Pending => {
                 // Non-terminal receipt for a tx that may have broadcast: keep holding the gate and
                 // keep reconciling. A reached deadline is recorded but does NOT release the gate,
                 // because the tx may still be live in the mempool and releasing it would risk a
@@ -577,7 +574,7 @@ impl Handler {
                 }
                 Ok(ChallengeState::ReconcileUnknownTx { tx, attempts, root })
             }
-            TxStatus::Reverted => {
+            ConfirmOutcome::Reverted => {
                 if !status.open {
                     gate.release(ev.challenge_id);
                     Ok(ChallengeState::Closed)
@@ -653,7 +650,7 @@ mod tests {
     use super::*;
     use crate::tz::{
         defender::{
-            challenge_contract::{ChallengeStatus, MockChallengeContract},
+            challenge_contract::{ChallengeStatus, ConfirmOutcome, MockChallengeContract},
             rootmanager_client::MockRootManager,
             verifier::record_leaf_hash,
         },
@@ -800,9 +797,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline,
-                chain_timestamp: chain_ts,
-                resolved_by_us: false,
-            },
+                chain_timestamp: chain_ts,            },
         );
         let witness = Arc::new(MockWitness::ok(proof, 10));
         let rm = Arc::new(MockRootManager::new());
@@ -813,7 +808,6 @@ mod tests {
     #[tokio::test]
     async fn broadcast_gated_and_confirmed_submitted_then_proved() {
         let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
 
@@ -825,12 +819,15 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].count, 1);
 
-        // Confirmation requires a successful receipt AND a resolved on-chain status.
-        cc.mark_resolved_in_our_favor(ev.challenge_id);
+        // Confirmation requires our own confirmed receipt to resolve this challenge.
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![ev.challenge_id] },
+        );
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
             matches!(state, ChallengeState::Proved(_)),
-            "confirmed only after receipt + status"
+            "confirmed only after our receipt resolves it"
         );
         assert_eq!(gate.holder(), None, "gate released on Proved");
     }
@@ -982,11 +979,9 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 100_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Reverted);
+        cc.set_confirm_outcome(TxHash::repeat_byte(0x99), ConfirmOutcome::Reverted);
         cc.keep_open(ev.challenge_id);
         let witness = Arc::new(MockWitness::ok(p0, 10));
         let rm = Arc::new(MockRootManager::new());
@@ -1043,9 +1038,7 @@ mod tests {
             ChallengeStatus {
                 open: false,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -1094,9 +1087,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let witness = Arc::new(MockWitness::ok(other_proof, 10));
         let rm = Arc::new(MockRootManager::new());
@@ -1119,9 +1110,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let witness = Arc::new(MockWitness::ok(proof, 10));
         let rm = Arc::new(MockRootManager::new()); // never set
@@ -1166,8 +1155,11 @@ mod tests {
         // Our tx receipt succeeded and the challenge is no longer open, but the on-chain status
         // says it was NOT resolved by us ⇒ Closed, never Proved.
         let (cc, witness, rm, ev, root) = setup_ready(10_000, 0, 20);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
-        cc.mark_closed_by_other(ev.challenge_id);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
+        cc.mark_closed(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
         gate.try_acquire(ev.challenge_id);
@@ -1185,8 +1177,11 @@ mod tests {
     async fn unknown_then_success_closed_by_other_is_closed_not_proved() {
         // The reconcile-unknown path must apply the same ownership rule.
         let (cc, witness, rm, ev, root) = setup_ready(10_000, 0, 20);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
-        cc.mark_closed_by_other(ev.challenge_id);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
+        cc.mark_closed(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
         gate.try_acquire(ev.challenge_id);
@@ -1195,6 +1190,84 @@ mod tests {
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(matches!(state, ChallengeState::Closed), "closed-by-other ⇒ Closed, got {state:?}");
         assert_eq!(gate.holder(), None);
+    }
+
+    // ── Resolution attribution comes ONLY from our own confirmed prove receipt: the confirm
+    //    outcome's resolved-challenge-id set, never from the on-chain active-challenge read. ──
+
+    #[tokio::test]
+    async fn confirm_success_with_our_id_maps_to_proved() {
+        let (cc, witness, rm, ev, root) = setup_ready(10_000, 0, 20);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![ev.challenge_id] },
+        );
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+        gate.try_acquire(ev.challenge_id);
+        let mut state =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Proved(_)),
+            "our confirmed receipt resolves the challenge ⇒ Proved, got {state:?}"
+        );
+        assert_eq!(gate.holder(), None, "gate released on Proved");
+    }
+
+    #[tokio::test]
+    async fn confirm_success_without_our_id_maps_to_closed() {
+        // A no-longer-open challenge whose id is absent from our confirmed receipt was closed by
+        // another responder ⇒ Closed, never credited to us.
+        let (cc, witness, rm, ev, root) = setup_ready(10_000, 0, 20);
+        cc.set_status(
+            ev.challenge_id,
+            ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 },
+        );
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+        gate.try_acquire(ev.challenge_id);
+        let mut state =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Closed),
+            "no-longer-open and not in our receipt ⇒ Closed, got {state:?}"
+        );
+        assert_eq!(gate.holder(), None);
+    }
+
+    #[tokio::test]
+    async fn no_confirmed_receipt_stays_in_flight() {
+        // With no confirmed receipt yet (Pending) the challenge stays in flight — resolution is
+        // never inferred from the active-challenge read alone.
+        let (cc, witness, rm, ev, root) = setup_ready(10_000, 0, 20);
+        // No scripted confirm outcome ⇒ Pending.
+        let h = handler_with(cc.clone(), witness, rm, 3);
+        let gate = InFlightGate::new();
+        gate.try_acquire(ev.challenge_id);
+        let mut state =
+            ChallengeState::Submitted { tx: TxHash::repeat_byte(0x99), attempts: 0, root };
+        h.drive(&ev, &mut state, &gate).await.unwrap();
+        assert!(
+            matches!(state, ChallengeState::Submitted { .. }),
+            "a pending confirm stays in flight, got {state:?}"
+        );
+        assert_eq!(gate.holder(), Some(ev.challenge_id), "the in-flight gate is still held");
+    }
+
+    #[test]
+    fn get_challenge_exposes_no_attribution() {
+        // Compile-time + field-set assertion: ChallengeStatus carries only open / deadline /
+        // chain_timestamp — no resolution-attribution field.
+        let st = ChallengeStatus { open: true, deadline: 1, chain_timestamp: 2 };
+        assert!(st.open);
+        assert_eq!(st.deadline, 1);
+        assert_eq!(st.chain_timestamp, 2);
     }
 
     // ── Terminal-receipt gate release honours the L2-time deadline; a NON-terminal (Pending)
@@ -1229,8 +1302,10 @@ mod tests {
         // Once the receipt reaches a terminal state (success + our on-chain resolution), the gate
         // is released normally — the pending hold is not permanent, it just waits for a
         // real outcome.
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
-        cc.mark_resolved_in_our_favor(ev.challenge_id);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![ev.challenge_id] },
+        );
         h.drive(&ev, &mut state, &gate).await.unwrap();
         assert!(
             matches!(state, ChallengeState::Proved(_)),
@@ -1281,9 +1356,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let wit_b = Arc::new(MockWitness::ok(proof_b, 10));
         let rm_b = Arc::new(MockRootManager::new());
@@ -1306,7 +1379,10 @@ mod tests {
     async fn submitted_success_still_open_past_deadline_expires_and_releases_gate() {
         // Receipt succeeded but the challenge is still open and past its deadline ⇒ Expired.
         let (cc, witness, rm, ev, root) = setup_ready(1_000, 999, 20);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
         cc.keep_open(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -1407,7 +1483,7 @@ mod tests {
         // in a non-terminal `RetryableRevert { attempts: 0 }` (release), so it is a regression
         // lock.
         let (cc, witness, rm, ev, root) = setup_ready(100_000, 0, 20);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Reverted);
+        cc.set_confirm_outcome(TxHash::repeat_byte(0x99), ConfirmOutcome::Reverted);
         cc.keep_open(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, u32::MAX);
         let gate = InFlightGate::new();
@@ -1440,7 +1516,7 @@ mod tests {
             B256::ZERO,
             "the bound root must be non-zero for this assertion to be meaningful"
         );
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Reverted);
+        cc.set_confirm_outcome(TxHash::repeat_byte(0x99), ConfirmOutcome::Reverted);
         cc.keep_open(ev.challenge_id);
         let h = handler_with(cc.clone(), witness, rm, 3);
         let gate = InFlightGate::new();
@@ -1496,7 +1572,10 @@ mod tests {
     #[tokio::test]
     async fn proof_cache_survives_a_poisoned_lock() {
         let (cc, witness, rm, ev, _root) = setup_ready(10_000, 0, 20);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
         let h = handler_with(cc.clone(), witness, rm, 3);
         // Poison the proof-cache mutex: its guard's Drop marks it poisoned as the panic unwinds.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1525,9 +1604,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 100_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         (cc, ev, leaf)
     }
@@ -1640,9 +1717,7 @@ mod tests {
             ChallengeStatus {
                 open: false,
                 deadline: 100_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let (proof_a, root_a) = proof_for(&record, leaf, 0xD0);
         let (_proof_b, root_b) = proof_for(&record, leaf, 0xD1);
@@ -1673,9 +1748,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 1_000,
-                chain_timestamp: 999,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 999,            },
         );
         let (proof_a, root_a) = proof_for(&record, leaf, 0xE0);
         let (_proof_b, root_b) = proof_for(&record, leaf, 0xE1);

@@ -222,7 +222,9 @@ mod tests {
     use super::*;
     use crate::tz::{
         defender::{
-            challenge_contract::{ChallengeStatus, MockChallengeContract, ScanWindow, TxStatus},
+            challenge_contract::{
+                ChallengeStatus, ConfirmOutcome, MockChallengeContract, ScanWindow,
+            },
             handler::WitnessSource,
             rootmanager_client::MockRootManager,
             verifier::record_leaf_hash,
@@ -321,9 +323,7 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let witness = Arc::new(SwitchWitness::not_ready());
         let rm = Arc::new(MockRootManager::new());
@@ -346,12 +346,14 @@ mod tests {
         // Make the witness ready and prime a successful receipt; keep the challenge open so the
         // first re-drive broadcasts.
         witness.make_ready(proof);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![id] },
+        );
         sup.tick(200).await.unwrap(); // Submitted
         assert_eq!(sup.pending_len(), 1);
 
-        // The prove resolves the challenge on-chain; the next tick confirms and terminates it.
-        cc.mark_resolved_in_our_favor(id);
+        // Our confirmed receipt resolves the challenge; the next tick confirms and terminates it.
         sup.tick(200).await.unwrap(); // Submitted → Proved (terminal)
         assert_eq!(sup.pending_len(), 0, "terminal challenge is removed");
     }
@@ -412,18 +414,14 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         cc.set_status(
             b.challenge_id,
             ChallengeStatus {
                 open: true,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
@@ -511,18 +509,14 @@ mod tests {
             ChallengeStatus {
                 open: true,
                 deadline: 9_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         cc.set_status(
             b.challenge_id,
             ChallengeStatus {
                 open: true,
                 deadline: 5_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);
         let rm = Arc::new(MockRootManager::new());
@@ -578,9 +572,7 @@ mod tests {
             ChallengeStatus {
                 open: false,
                 deadline: 10_000,
-                chain_timestamp: 0,
-                resolved_by_us: false,
-            },
+                chain_timestamp: 0,            },
         );
 
         let witness = Arc::new(SwitchWitness::not_ready());
@@ -612,7 +604,7 @@ mod tests {
     }
 
     fn open_status() -> ChallengeStatus {
-        ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0, resolved_by_us: false }
+        ChallengeStatus { open: true, deadline: 10_000, chain_timestamp: 0 }
     }
 
     #[tokio::test]
@@ -653,7 +645,10 @@ mod tests {
         cc.inject_opened(c2.clone(), 10_000);
         cc.set_status(c2.challenge_id, open_status());
         witness.make_ready(proof);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
 
         sup.tick(200).await.unwrap(); // SAME head ⇒ discovery skipped
         assert!(
@@ -695,7 +690,10 @@ mod tests {
         // Head regresses; the witness becomes ready. The regressed tick must not produce a reversed
         // window (no scan), must preserve the frontier, and must still drive C1.
         witness.make_ready(proof);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
         sup.tick(300).await.unwrap();
         assert_eq!(
             cc.last_scan_window().unwrap().to_block,
@@ -792,7 +790,10 @@ mod tests {
 
         // The event RPC fails while the witness becomes ready; C1 must still advance to Submitted.
         witness.make_ready(proof);
-        cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+        cc.set_confirm_outcome(
+            TxHash::repeat_byte(0x99),
+            ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+        );
         cc.set_watch_failure();
         sup.tick(300).await.unwrap();
         assert!(
@@ -836,9 +837,7 @@ mod tests {
         let st = ChallengeStatus {
             open: true,
             deadline: 5_000,
-            chain_timestamp: 0,
-            resolved_by_us: false,
-        };
+            chain_timestamp: 0,        };
         cc.set_status(first.challenge_id, st);
         cc.set_status(second.challenge_id, st);
         let witness = leaf_witness(vec![(leaf_a, proof_a), (leaf_b, proof_b)]);

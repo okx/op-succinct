@@ -27,7 +27,7 @@ pub mod witness_wb;
 
 pub use challenge_contract::{
     ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
-    ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
+    ChallengeStatus, ConfirmOutcome, ScanWindow, SenderError, SubmitOutcome,
 };
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};

@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use super::{
     challenge_contract::{
         ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
-        ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
+        ChallengeStatus, ConfirmOutcome, ScanWindow, SenderError, SubmitOutcome,
     },
     leaf_locator::LeafLocator,
 };
@@ -163,8 +163,8 @@ struct AdapterState {
     /// path, driving the same exact-equality open/closed derivation the live path uses without a
     /// provider.
     scripted_active: HashMap<ChallengeId, (U256, u64)>,
-    /// Scripted receipt statuses (by tx hash) for the test path.
-    scripted_tx_status: HashMap<TxHash, TxStatus>,
+    /// Scripted confirm outcomes (by tx hash) for the test path.
+    scripted_confirm: HashMap<TxHash, ConfirmOutcome>,
     /// The most recent `submitWithdrawProof` calldata built (verbatim four fields; one slot, so a
     /// long-running adapter does not accumulate). Observability for tests and operators.
     last_submit: Option<SubmitWithdrawProofCall>,
@@ -329,19 +329,12 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
     /// Scripted/offline seam: set the status returned by `get_challenge` for a (discovered)
     /// challenge id. Used by tests (including cross-crate integration tests); hidden from docs.
     #[doc(hidden)]
-    pub fn script_status(
-        &self,
-        id: ChallengeId,
-        open: bool,
-        deadline: u64,
-        chain_timestamp: u64,
-        resolved_by_us: bool,
-    ) {
+    pub fn script_status(&self, id: ChallengeId, open: bool, deadline: u64, chain_timestamp: u64) {
         self.state
             .lock()
             .unwrap()
             .scripted_status
-            .insert(id, ChallengeStatus { open, deadline, chain_timestamp, resolved_by_us });
+            .insert(id, ChallengeStatus { open, deadline, chain_timestamp });
     }
 
     /// Scripted/offline seam: feed the `(active_withdraw_challenge_id, chain_timestamp)` the live
@@ -362,6 +355,32 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
     /// is a standing invariant, not runtime state.
     pub fn submitted_any_checkpoint_height(&self) -> bool {
         false
+    }
+
+    /// Scripted/offline seam: set the [`ConfirmOutcome`] returned by `confirm` for a tx hash. Used
+    /// by tests; hidden from docs.
+    #[doc(hidden)]
+    pub fn script_confirm(&self, tx: TxHash, outcome: ConfirmOutcome) {
+        self.state.lock().unwrap().scripted_confirm.insert(tx, outcome);
+    }
+
+    /// Map the `ChallengeFailed` logs in a transaction receipt to the opaque challenge ids this
+    /// adapter has discovered. On-chain ids the adapter never decoded are ignored — a challenge we
+    /// are not tracking is not ours to credit.
+    fn resolved_ids_from_logs(&self, logs: &[alloy_rpc_types_eth::Log]) -> Vec<ChallengeId> {
+        let state = self.state.lock().unwrap();
+        let mut resolved = Vec::new();
+        for log in logs {
+            let Ok(decoded) = ChallengeFailed::decode_log(&log.inner) else {
+                continue;
+            };
+            for (opaque, onchain) in state.id_map.iter() {
+                if *onchain == decoded.data.challengeId && !resolved.contains(opaque) {
+                    resolved.push(*opaque);
+                }
+            }
+        }
+        resolved
     }
 }
 
@@ -408,22 +427,35 @@ impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
         Err(SenderError::SafeToRetryPreBroadcast)
     }
 
-    async fn confirm(&self, tx: TxHash) -> anyhow::Result<TxStatus> {
-        // Scripted path: mirror the mock — scripted status, defaulting to Pending.
-        if self.provider.is_none() {
-            return Ok(self
-                .state
-                .lock()
-                .unwrap()
-                .scripted_tx_status
-                .get(&tx)
-                .copied()
-                .unwrap_or(TxStatus::Pending));
+    async fn confirm(&self, tx: TxHash) -> anyhow::Result<ConfirmOutcome> {
+        // Live path: fetch the receipt and, on success, attribute resolution by parsing the
+        // receipt's ChallengeFailed logs into the opaque challenge ids our own transaction
+        // resolved. No transaction is broadcast until a signer lands, so this path is exercised
+        // only once the sender is wired.
+        if let Some(provider) = self.provider.as_ref() {
+            let receipt = provider
+                .get_transaction_receipt(tx)
+                .await
+                .context("failed to fetch prove transaction receipt")?;
+            let Some(receipt) = receipt else {
+                return Ok(ConfirmOutcome::Pending);
+            };
+            if !receipt.status() {
+                return Ok(ConfirmOutcome::Reverted);
+            }
+            let logs = receipt.inner.logs().to_vec();
+            let resolved_challenge_ids = self.resolved_ids_from_logs(&logs);
+            return Ok(ConfirmOutcome::Succeeded { resolved_challenge_ids });
         }
-        // Live path: no transaction is broadcast this stage, so there is no receipt to confirm.
-        anyhow::bail!(
-            "live confirm is not wired (no transaction is broadcast until a signer lands)"
-        )
+        // Scripted path: the scripted outcome, defaulting to Pending.
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .scripted_confirm
+            .get(&tx)
+            .cloned()
+            .unwrap_or(ConfirmOutcome::Pending))
     }
 }
 
@@ -460,12 +492,7 @@ impl<L: LeafLocator> ChallengeReader for ChallengeManagerContract<L> {
         if let Some((active, chain_timestamp)) =
             self.state.lock().unwrap().scripted_active.get(&id).copied()
         {
-            return Ok(ChallengeStatus {
-                open: active == onchain_id,
-                deadline,
-                chain_timestamp,
-                resolved_by_us: false,
-            });
+            return Ok(ChallengeStatus { open: active == onchain_id, deadline, chain_timestamp });
         }
         // Live path: read the bridge's active withdraw-challenge id and the latest L2 block
         // timestamp through the provider, then derive open/closed by EXACT equality (a different or
@@ -490,11 +517,10 @@ impl<L: LeafLocator> ChallengeReader for ChallengeManagerContract<L> {
                 open: active == onchain_id,
                 deadline,
                 chain_timestamp: block.header.timestamp,
-                resolved_by_us: false,
             });
         }
         // A scripted adapter with no status for a known id defaults to closed (mirrors the mock).
-        Ok(ChallengeStatus { open: false, deadline: 0, chain_timestamp: 0, resolved_by_us: false })
+        Ok(ChallengeStatus { open: false, deadline: 0, chain_timestamp: 0 })
     }
 }
 
@@ -801,6 +827,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirm_parses_challenge_failed_logs_into_opaque_ids() {
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        let id = opened[0].challenge_id;
+        let onchain_id = adapter.onchain_id_for(id).unwrap();
+        // A ChallengeFailed log for our on-chain id maps back to the opaque ChallengeId.
+        let failed = ChallengeFailed { challengeId: onchain_id };
+        let log = alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address: CONTRACT_ADDR,
+                data: failed.encode_log_data(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&log)),
+            vec![id],
+            "ChallengeFailed(onchain_id) maps to the opaque ChallengeId"
+        );
+        // A ChallengeFailed for an id this adapter never decoded is ignored.
+        let other = ChallengeFailed { challengeId: U256::from(9_999u64) };
+        let other_log = alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address: CONTRACT_ADDR,
+                data: other.encode_log_data(),
+            },
+            ..Default::default()
+        };
+        assert!(
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&other_log)).is_empty(),
+            "an unknown on-chain id is ignored"
+        );
+    }
+
+    #[tokio::test]
     async fn get_challenge_maps_status_and_errors_on_unknown_id() {
         let adapter = ChallengeManagerContract::from_raw_events(
             vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
@@ -809,7 +875,7 @@ mod tests {
             CONTRACT_ADDR,
         );
         let opened = adapter.watch_opened(window()).await.unwrap();
-        adapter.script_status(opened[0].challenge_id, true, 1_700, 1_000, false);
+        adapter.script_status(opened[0].challenge_id, true, 1_700, 1_000);
         let st = adapter.get_challenge(opened[0].challenge_id).await.unwrap();
         assert!(st.open && st.deadline == 1_700 && st.chain_timestamp == 1_000);
         // An id the adapter never decoded returns a typed error (routed to a safe retry), not a
