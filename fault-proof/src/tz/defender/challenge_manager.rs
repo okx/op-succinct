@@ -135,6 +135,9 @@ struct AdapterState {
     id_map: HashMap<ChallengeId, U256>,
     /// On-chain `challengeId` → `responseDeadline` captured at discovery time.
     deadlines: HashMap<U256, u64>,
+    /// On-chain `challengeId` → `affectedBridge` captured at discovery time, consumed by the live
+    /// status read.
+    affected_bridge: HashMap<U256, Address>,
     /// Pre-decoded events for the scripted (test) path; `None` on the live path.
     scripted_events: Option<Vec<RawChallengeEvent>>,
     /// Scripted per-challenge status for the test path.
@@ -283,6 +286,7 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
                 let mut state = self.state.lock().unwrap();
                 state.id_map.insert(ev.challenge_id, raw.onchain_challenge_id);
                 state.deadlines.insert(raw.onchain_challenge_id, raw.response_deadline);
+                state.affected_bridge.insert(raw.onchain_challenge_id, raw.affected_bridge);
             }
             opened.push(ev);
         }
@@ -293,6 +297,12 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
     #[cfg(test)]
     pub fn onchain_id_for(&self, id: ChallengeId) -> Option<U256> {
         self.state.lock().unwrap().id_map.get(&id).copied()
+    }
+
+    /// The `affectedBridge` cached for an on-chain `challengeId`, if discovered (introspection).
+    #[cfg(test)]
+    pub fn affected_bridge_for(&self, onchain_id: U256) -> Option<Address> {
+        self.state.lock().unwrap().affected_bridge.get(&onchain_id).copied()
     }
 
     /// Scripted/offline seam: set the status returned by `get_challenge` for a (discovered)
@@ -608,6 +618,10 @@ mod tests {
         }
     }
 
+    /// A challenge-type discriminant that is not the withdraw type (models a force-transaction
+    /// challenge, which carries a zero leaf).
+    const FORCE_TX_DISCRIMINANT: u8 = 2;
+
     #[tokio::test]
     async fn only_withdraw_not_in_root_is_emitted() {
         let raws = vec![
@@ -620,8 +634,48 @@ mod tests {
             ChallengeManagerContract::from_raw_events(raws, DirectLeafLocator, 196, CONTRACT_ADDR);
         let opened = adapter.watch_opened(window()).await.unwrap();
         assert_eq!(opened.len(), 2, "only WithdrawNotInRoot events are emitted");
+        // The emitted leaf_hash is the event's leaf field, never its (distinct) tz_tx_hash.
         assert_eq!(opened[0].leaf_hash, B256::repeat_byte(0x01));
+        assert_ne!(opened[0].leaf_hash, B256::repeat_byte(0xF1), "leaf_hash is the leaf, not tzTxHash");
         assert_eq!(opened[1].leaf_hash, B256::repeat_byte(0x04));
+        assert_ne!(opened[1].leaf_hash, B256::repeat_byte(0xF4), "leaf_hash is the leaf, not tzTxHash");
+    }
+
+    #[tokio::test]
+    async fn force_tx_zero_leaf_is_dropped_by_type_filter() {
+        // A force-transaction challenge carries a zero leaf and a non-withdraw type; it must be
+        // dropped by the type filter BEFORE any leaf-locate/proof path, so no zero-leaf challenge
+        // is ever emitted.
+        let mut force = raw(ChallengeType::Other(FORCE_TX_DISCRIMINANT), B256::ZERO, 1);
+        force.leaf = B256::ZERO;
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![force],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        assert!(opened.is_empty(), "a non-withdraw (zero-leaf) challenge produces no ChallengeOpened");
+    }
+
+    #[tokio::test]
+    async fn affected_bridge_is_cached_per_challenge() {
+        let ev = raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1);
+        let onchain_id = ev.onchain_challenge_id;
+        let bridge = ev.affected_bridge;
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![ev],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(
+            adapter.affected_bridge_for(onchain_id),
+            Some(bridge),
+            "the event's affectedBridge is cached by on-chain challenge id"
+        );
     }
 
     /// Swapping the leaf-locator implementation leaves the emitted `ChallengeOpened` identical
