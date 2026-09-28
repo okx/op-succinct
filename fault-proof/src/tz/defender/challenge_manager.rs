@@ -341,7 +341,6 @@ impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
     async fn prove_challenge(
         &self,
         id: ChallengeId,
-        checkpoint_height: u64,
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
@@ -355,9 +354,7 @@ impl<L: LeafLocator> ChallengeSender for ChallengeManagerContract<L> {
                 return Err(SenderError::SafeToRetryPreBroadcast);
             }
         };
-        // Build the submitWithdrawProof calldata: the four contract fields, verbatim. The seam's
-        // legacy `checkpoint_height` is NOT a contract parameter and is intentionally dropped.
-        let _ = checkpoint_height;
+        // Build the submitWithdrawProof calldata: exactly the four contract fields, verbatim.
         self.state.lock().unwrap().last_submit = Some(SubmitWithdrawProofCall {
             challenge_id: onchain_id,
             leaf_index,
@@ -745,10 +742,7 @@ mod tests {
         let opened = adapter.watch_opened(window()).await.unwrap();
         let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
         let sibs = [B256::repeat_byte(0x07); 32];
-        // checkpoint_height (12345) is deliberately NOT part of submitWithdrawProof and must be
-        // dropped.
-        let outcome =
-            adapter.prove_challenge(opened[0].challenge_id, 12345, 7, 9, sibs).await.unwrap();
+        let outcome = adapter.prove_challenge(opened[0].challenge_id, 7, 9, sibs).await.unwrap();
         assert!(matches!(outcome, SubmitOutcome::Submitted(_)));
         let call = adapter.last_submit_call().unwrap();
         assert_eq!(call.challenge_id, onchain_id, "challengeId passed through verbatim");
