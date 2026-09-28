@@ -371,6 +371,12 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
         let state = self.state.lock().unwrap();
         let mut resolved = Vec::new();
         for log in logs {
+            // Attribution comes only from OUR challenge manager's events: ignore any log emitted by
+            // a different contract in the receipt (matches the live status read, which binds
+            // self.contract), so a colliding ChallengeFailed from elsewhere cannot be miscredited.
+            if log.inner.address != self.contract {
+                continue;
+            }
             let Ok(decoded) = ChallengeFailed::decode_log(&log.inner) else {
                 continue;
             };
@@ -871,6 +877,32 @@ mod tests {
         assert!(
             adapter.resolved_ids_from_logs(std::slice::from_ref(&other_log)).is_empty(),
             "an unknown on-chain id is ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolved_ids_ignores_challenge_failed_from_other_contract() {
+        let adapter = ChallengeManagerContract::from_raw_events(
+            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
+        let opened = adapter.watch_opened(window()).await.unwrap();
+        let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
+        // A ChallengeFailed carrying OUR on-chain id but emitted by a DIFFERENT contract must be
+        // ignored: resolution is attributed only from our own challenge manager's events.
+        let failed = ChallengeFailed { challengeId: onchain_id };
+        let foreign_log = alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address: Address::repeat_byte(0xFE),
+                data: failed.encode_log_data(),
+            },
+            ..Default::default()
+        };
+        assert!(
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&foreign_log)).is_empty(),
+            "a ChallengeFailed emitted by another contract is not credited to us"
         );
     }
 
