@@ -867,7 +867,7 @@ mod tests {
         // A real two-field ChallengeFailed log (challengeId + a populated, DISTINCT treasury)
         // carrying the corrected topic0 keccak256("ChallengeFailed(uint256,address)") maps back to
         // the opaque ChallengeId. (A one-parameter binding would derive the wrong topic0 and never
-        // match — the R6 Major-1 defect this pins.)
+        // match a real receipt — this pins that defect.)
         let treasury = Address::repeat_byte(0x7a);
         let failed = ChallengeFailed { challengeId: onchain_id, treasury };
         let log = alloy_rpc_types_eth::Log {
