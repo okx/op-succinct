@@ -23,8 +23,9 @@ pub trait LeafLocator: Send + Sync {
     async fn locate(&self, ev: &RawChallengeEvent) -> Result<B256, WbError>;
 }
 
-/// The event already carries the leaf hash in its identifier slot; return it verbatim. This is the
-/// implementation used once the event schema exposes the leaf key directly.
+/// Production locator: the challenge event carries the Merkle `leaf` directly, so return that field
+/// verbatim. The event's `tz_tx_hash` is deliberately ignored here — it is a transaction-scoped
+/// identifier, not the leaf.
 pub struct DirectLeafLocator;
 
 #[async_trait]
@@ -34,10 +35,11 @@ impl LeafLocator for DirectLeafLocator {
     }
 }
 
-/// The event carries a transaction-scoped identifier; resolve it to the leaf key via a
-/// [`TzTxToLeaf`] reverse lookup. Not-found / ambiguous errors from the lookup propagate unchanged
-/// (the adapter maps them to a witness-wait, never a panic). This is the implementation used while
-/// the event exposes only the identifier and not the leaf key.
+/// Labeled future-fallback locator ONLY: resolve the leaf from the event's `tz_tx_hash` via a
+/// [`TzTxToLeaf`] reverse lookup. It is NOT on the production path — production reads the leaf
+/// directly from the event ([`DirectLeafLocator`]) — and neither it nor the reverse-lookup service
+/// it depends on may gate the challenge-listening chain. Not-found / ambiguous errors from the
+/// lookup propagate unchanged (the adapter maps them to a witness-wait, never a panic).
 pub struct ReverseLookupLeafLocator<W: TzTxToLeaf> {
     wb: Arc<W>,
 }
