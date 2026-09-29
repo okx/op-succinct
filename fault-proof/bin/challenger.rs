@@ -36,6 +36,10 @@ async fn main() -> Result<()> {
 
     setup_logger();
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::resolve_protected_config_env()?;
+
     let challenger_config = ChallengerConfig::from_env()?;
     challenger_config.log();
 
