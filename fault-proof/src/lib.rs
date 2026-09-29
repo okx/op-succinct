@@ -118,7 +118,7 @@ pub trait L2ProviderTrait {
     }
 
     // for tz: the locally-configured TZ chain id (the single Host source for the guest's stdin item
-    // ③ `tz_chain_id`; spec §R3.2 chainId placement — NOT in any root/struct). xlayer returns None.
+    // ③ `tz_chain_id`; chainId placement — NOT in any root/struct). xlayer returns None.
     #[cfg(feature = "tz")]
     fn tz_chain_id(&self) -> Option<u64> {
         None
@@ -126,7 +126,7 @@ pub trait L2ProviderTrait {
 
     // for tz: the four-field CheckpointV2 preimage at `l2_block_number` (blockHash/appHash from the
     // confirmed block info, withdrawalRoot/forceRoot from the WB checkpoint, cross-checked). Feeds
-    // `handle_game_creation`'s 164-byte extraData (spec §R3.3). `parent_index` is left as the
+    // `handle_game_creation`'s 164-byte extraData. `parent_index` is left as the
     // `u32::MAX` "unset" sentinel — the Game caller supplies the real parent index. xlayer bails.
     #[cfg(feature = "tz")]
     async fn fetch_checkpoint_preimage_at_block(
@@ -355,15 +355,19 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::field_reassign_with_default)]
     async fn output_root_uses_header_withdrawals_root_post_isthmus() {
         let asserter = Asserter::new();
         let provider = mock_l2_provider(asserter.clone());
         let storage_root = B256::repeat_byte(0x33);
-        let mut header: Header = Header::default();
-        header.hash = B256::repeat_byte(0x11);
-        header.state_root = B256::repeat_byte(0x22);
-        header.withdrawals_root = Some(storage_root);
+        let header = Header {
+            hash: B256::repeat_byte(0x11),
+            inner: alloy::consensus::Header {
+                state_root: B256::repeat_byte(0x22),
+                withdrawals_root: Some(storage_root),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         asserter.push_success(&Some(header.clone()));
 
         let actual = provider.compute_output_root_at_block(U256::from(7)).await.unwrap();
@@ -376,16 +380,20 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::field_reassign_with_default)]
     async fn output_root_fetches_proof_when_withdrawals_root_is_unavailable() {
         for withdrawals_root in [None, Some(alloy_trie::EMPTY_ROOT_HASH)] {
             let asserter = Asserter::new();
             let provider = mock_l2_provider(asserter.clone());
             let storage_root = B256::repeat_byte(0x44);
-            let mut header: Header = Header::default();
-            header.hash = B256::repeat_byte(0x11);
-            header.state_root = B256::repeat_byte(0x22);
-            header.withdrawals_root = withdrawals_root;
+            let header = Header {
+                hash: B256::repeat_byte(0x11),
+                inner: alloy::consensus::Header {
+                    state_root: B256::repeat_byte(0x22),
+                    withdrawals_root,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
             let proof =
                 EIP1186AccountProofResponse { storage_hash: storage_root, ..Default::default() };
             asserter.push_success(&Some(header.clone()));

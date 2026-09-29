@@ -406,7 +406,7 @@ pub struct TzGameValidatorConfig {
     /// The fixed witness-builder endpoint used for all TZ claim validation.
     pub l2_rpc: Url,
     /// The locally-configured TZ chain id. Used to reject witness-builder responses that
-    /// belong to a different chain (spec §7.3 — "防查错链"); MUST be non-zero.
+    /// belong to a different chain (guards against wrong-chain responses); MUST be non-zero.
     pub chain_id: u64,
 }
 

@@ -166,7 +166,7 @@ struct TzRootClient {
     base_url: Url,
     client: reqwest::Client,
     /// Locally-configured TZ chain id; witness-builder responses that carry a different
-    /// `chainId` are rejected (spec §7.3 — guard against querying the wrong chain).
+    /// `chainId` are rejected (guard against querying the wrong chain).
     chain_id: u64,
 }
 
@@ -201,7 +201,7 @@ impl TzRootClient {
         url.query_pairs_mut()
             .append_pair("height", &height.to_string())
             .append_pair("format", "root")
-            // R2 #1: omitting schemaVersion makes the WB default to v1; the challenger requires v2.
+            // Omitting schemaVersion makes the WB default to v1; the challenger requires v2.
             .append_pair("schemaVersion", "2");
 
         let response =
@@ -263,7 +263,7 @@ impl TzRootClient {
 }
 
 fn validate_ready_response(data: RootResponse, configured_chain_id: u64) -> Result<B256> {
-    // R2 #1: the challenger always requests schemaVersion=2; a non-v2 (or absent) response means
+    // The challenger always requests schemaVersion=2; a non-v2 (or absent) response means
     // the request was not honored — reject rather than silently accept a v1 body.
     if data.schema_version != Some(2) {
         bail!(
@@ -271,8 +271,8 @@ fn validate_ready_response(data: RootResponse, configured_chain_id: u64) -> Resu
             data.schema_version
         );
     }
-    // R2 #3: chainId guard — a bare non-zero top-level field that must match the configured TZ
-    // chain (spec §7.3). Reject wrong-chain data (do not advance / do not challenge on it).
+    // chainId guard — a bare non-zero top-level field that must match the configured TZ
+    // chain. Reject wrong-chain data (do not advance / do not challenge on it).
     match data.chain_id {
         Some(chain_id) if chain_id != 0 => {
             if chain_id != configured_chain_id {
@@ -288,14 +288,14 @@ fn validate_ready_response(data: RootResponse, configured_chain_id: u64) -> Resu
         .canonical_block_hash
         .ok_or_else(|| anyhow!("ready response missing canonicalBlockHash"))?;
     let claim_root = data.claim_root.ok_or_else(|| anyhow!("ready response missing claimRoot"))?;
-    // R2 #1/#3: the four fields are FLAT top-level (no nested `components`).
+    // The four fields are FLAT top-level (no nested `components`).
     let app_hash = data.app_hash.ok_or_else(|| anyhow!("v2 ready response missing appHash"))?;
     let withdrawal_root =
         data.withdrawal_root.ok_or_else(|| anyhow!("v2 ready response missing withdrawalRoot"))?;
     let force_root =
         data.force_root.ok_or_else(|| anyhow!("v2 ready response missing forceRoot"))?;
     let components = RootComponents { block_hash, app_hash, withdrawal_root, force_root };
-    // Recompute the four-field claimRoot and compare (spec §5.3: equivalent to field-by-field since
+    // Recompute the four-field claimRoot and compare (equivalent to field-by-field since
     // the contract binds rootClaim == keccak256(blockHash‖appHash‖withdrawalRoot‖forceRoot)).
     if compute_v3_claim_root(&components) != claim_root {
         bail!("ready response four fields do not recompute to claimRoot");
@@ -333,8 +333,7 @@ struct ApiEnvelope<T> {
 struct RootResponse {
     height: u64,
     status: String,
-    // R2 #1/#3: flat v2 body — four roots + chainId are TOP-LEVEL; there is no nested
-    // `components`.
+    // Flat v2 body — four roots + chainId are TOP-LEVEL; there is no nested `components`.
     #[serde(default)]
     schema_version: Option<u16>,
     #[serde(default)]
@@ -876,8 +875,7 @@ mod tests {
     #[tokio::test]
     async fn mismatched_chain_id_is_rejected_not_challenged() {
         // A checkpoint that belongs to a different chain must NOT be trusted: reject as
-        // Unavailable (retry/alert) rather than silently passing or wrongly challenging (spec
-        // §7.3).
+        // Unavailable (retry/alert) rather than silently passing or wrongly challenging.
         let server = MockServer::start().await;
         mount_response(
             &server,
