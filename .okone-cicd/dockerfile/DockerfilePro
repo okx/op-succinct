@@ -36,6 +36,16 @@ RUN cargo build --release --bin proposer && \
     cargo build --release --bin challenger && \
     cargo build --release --bin fetch-fault-dispute-game-config
 
+# Guard: refuse to ship the offline KMS stub to production. The offline stub embeds
+# the OK_KMS_STUB marker; if it is ever linked into a release binary, fail the image
+# build instead of shipping a node that cannot resolve secrets.
+RUN set -e; for b in proposer challenger fetch-fault-dispute-game-config; do \
+      if grep -qa OK_KMS_STUB "target/release/$b"; then \
+        echo "OK_KMS_STUB marker found in $b: refusing to ship the offline KMS stub to production" >&2; \
+        exit 1; \
+      fi; \
+    done
+
 # Runtime stage - minimal image
 FROM office-registry-vpc.cn-hongkong.cr.aliyuncs.com/okbase/ubuntu:24.04-okg1-sec20251110 AS runtime
 
