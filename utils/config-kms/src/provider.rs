@@ -1,8 +1,11 @@
 //! Secret-backend access boundary.
 //!
-//! [`KmsSecretProvider`] is the single, mockable seam through which the resolver
-//! obtains plaintext for a reference. [`OkKmsProvider`] is the real adapter over
-//! `ok-kms-rust` v1.0.1; tests substitute an in-memory mock.
+//! [`KmsSecretProvider`] and [`KmsProviderError`] are always compiled — the pure
+//! resolver, the injectable seam, and the test mock use them in every build. The
+//! real `ok-kms-rust`-backed provider ([`OkKmsProvider`] / [`init_provider`]) is
+//! compiled only under `#[cfg(feature = "kms")]`; with the feature off there is no
+//! internal SDK in the build graph at all, and a `kms:<key>` reference fails closed
+//! at the resolver's factory.
 
 use crate::error::KmsConfigError;
 
@@ -17,16 +20,20 @@ pub enum KmsProviderError {
 }
 
 /// The single access boundary used by the resolver to fetch a secret by key.
-/// Mockable for tests; the production implementation is [`OkKmsProvider`].
+/// Mockable for tests; the production implementation is [`OkKmsProvider`], compiled
+/// only under the `kms` feature.
 pub trait KmsSecretProvider {
     fn get_secret_value(&self, key: &str) -> Result<String, KmsProviderError>;
 }
 
-/// Production provider backed by `ok-kms-rust` v1.0.1.
+/// Production provider backed by `ok-kms-rust` v1.0.1. Only compiled under the
+/// `kms` feature.
+#[cfg(feature = "kms")]
 pub struct OkKmsProvider {
     client: ok_kms_rust::KmsClient,
 }
 
+#[cfg(feature = "kms")]
 impl KmsSecretProvider for OkKmsProvider {
     fn get_secret_value(&self, key: &str) -> Result<String, KmsProviderError> {
         // Map every backend error to a payload-free class: the raw backend error
@@ -39,6 +46,7 @@ impl KmsSecretProvider for OkKmsProvider {
 
 /// A protected-set env var is considered "present" only if it holds a
 /// non-whitespace value.
+#[cfg(feature = "kms")]
 fn present(name: &str) -> bool {
     std::env::var(name)
         .map(|v| !v.trim().is_empty())
@@ -49,12 +57,11 @@ fn present(name: &str) -> bool {
 /// constructs the real provider. Returns a redacted [`KmsConfigError::KmsInitError`]
 /// on any problem — no value, key, or backend text is included.
 ///
-/// Preconditions (mirrors the backend's own contract, checked up-front so a
-/// misconfiguration yields a deterministic, redacted class before any FFI call):
-/// `KMS_ENABLED` must equal exactly `"true"`; `KMS_PROVIDER` is required; and
-/// `KMS_SECRET_NAME` is required, with `KMS_REGION` additionally required for the
-/// AWS provider. The backend additionally validates the dynamic library, region,
-/// secret name, and cloud access during construction.
+/// Preconditions: `KMS_ENABLED` must equal exactly `"true"`; `KMS_PROVIDER` is
+/// required; `KMS_SECRET_NAME` is required, with `KMS_REGION` additionally required
+/// for the AWS provider. The backend additionally validates the dynamic library,
+/// region, secret name, and cloud access during construction.
+#[cfg(feature = "kms")]
 pub fn init_provider() -> Result<OkKmsProvider, KmsConfigError> {
     if std::env::var("KMS_ENABLED").as_deref() != Ok("true") {
         return Err(KmsConfigError::KmsInitError);

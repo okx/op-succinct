@@ -145,6 +145,36 @@ fn invalid_reference_fails_closed_without_kms_env() {
     );
 }
 
+// ── Default build (no `kms` feature): the real path is compiled out ──
+//
+// When the crate is built without the `kms` feature, the default entry point's
+// provider factory fails closed the moment a reference is actually present. A
+// present reference must therefore abort startup with `KmsInitError` and leave
+// the value untouched, so a build that cannot resolve secrets can never silently
+// pass a `kms:` reference through as if it were plaintext.
+#[cfg(not(feature = "kms"))]
+#[test]
+fn feature_off_reference_fails_closed() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let snap = snapshot();
+    clear_all();
+    std::env::set_var("NETWORK_PRIVATE_KEY", "kms:whatever");
+
+    let result = resolve_protected_config_env();
+    let value_after = std::env::var("NETWORK_PRIVATE_KEY").ok();
+    restore(&snap);
+
+    assert!(
+        matches!(result, Err(KmsConfigError::KmsInitError)),
+        "default build must fail closed on a reference: {result:?}"
+    );
+    assert_eq!(
+        value_after.as_deref(),
+        Some("kms:whatever"),
+        "value must be left untouched when resolution fails closed"
+    );
+}
+
 // ── Integration matrix via the public injectable entry point + mock ──
 
 #[test]

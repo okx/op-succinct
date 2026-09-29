@@ -87,3 +87,5 @@ default = ["ethereum"]
 # celestia/eigenda excluded (DA backends not used by XLayer)
 ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
+# Enable the real KMS provider in op-succinct-config-kms (production: proposer, challenger).
+kms = ["op-succinct-config-kms/kms"]

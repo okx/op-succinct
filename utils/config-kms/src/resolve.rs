@@ -8,7 +8,7 @@
 
 use crate::classify::{classify, Classification};
 use crate::error::KmsConfigError;
-use crate::provider::{init_provider, KmsProviderError, KmsSecretProvider};
+use crate::provider::{KmsProviderError, KmsSecretProvider};
 use crate::PROTECTED_KEYS;
 
 /// Resolve the protected items' values without touching global state.
@@ -68,9 +68,18 @@ pub(crate) fn resolve_values(
 /// single-threaded at that moment (edition 2021 `set_var` is the safe API under
 /// that invariant).
 pub fn resolve_protected_config_env() -> Result<(), KmsConfigError> {
-    resolve_protected_config_env_with(
-        &mut || init_provider().map(|p| Box::new(p) as Box<dyn KmsSecretProvider>),
-    )
+    // With `kms` on, inject the real provider; with `kms` off, the factory fails
+    // closed. The factory is invoked lazily (only when a reference is present), so
+    // all-plaintext/absent startup is unaffected in both builds.
+    #[cfg(feature = "kms")]
+    let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
+        crate::provider::init_provider().map(|p| Box::new(p) as Box<dyn KmsSecretProvider>)
+    };
+    #[cfg(not(feature = "kms"))]
+    let mut factory =
+        || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> { Err(KmsConfigError::KmsInitError) };
+
+    resolve_protected_config_env_with(&mut factory)
 }
 
 /// Same as [`resolve_protected_config_env`], but the caller injects the provider
