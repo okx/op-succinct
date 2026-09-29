@@ -59,29 +59,39 @@ pub(crate) fn resolve_values(
     Ok(resolved)
 }
 
-/// Resolve all protected items in the process environment, in place, at startup.
-///
-/// Reads each of the six items via `std::env::var`, resolves any reference through
-/// the real backend, and — only when the whole set resolved successfully — writes
-/// each resolved plaintext back with `std::env::set_var`. Fail-closed: on any error
-/// it writes nothing and returns the error after emitting a single redacted
-/// diagnostic (item name + class only).
+/// Resolve all protected items in the process environment, in place, at startup,
+/// using the default backend provider. Thin wrapper over
+/// [`resolve_protected_config_env_with`] that injects the real `init_provider()`.
 ///
 /// Must be called as the first action of a process, before any other thread reads
 /// or writes the environment: it is the sole env-mutation point and relies on being
 /// single-threaded at that moment (edition 2021 `set_var` is the safe API under
 /// that invariant).
 pub fn resolve_protected_config_env() -> Result<(), KmsConfigError> {
+    resolve_protected_config_env_with(
+        &mut || init_provider().map(|p| Box::new(p) as Box<dyn KmsSecretProvider>),
+    )
+}
+
+/// Same as [`resolve_protected_config_env`], but the caller injects the provider
+/// factory. Reads each of the six items via `std::env::var`, resolves any reference
+/// through the injected provider, and — only when the whole set resolved
+/// successfully — writes each resolved plaintext back with `std::env::set_var`
+/// (all-or-nothing). On any error it writes nothing and returns the error after
+/// emitting a single redacted diagnostic (item name + class only).
+///
+/// Production calls [`resolve_protected_config_env`] (which injects the real
+/// provider); tests inject a mock factory to drive the complete success write-back
+/// and every fail-closed path through this public entry point.
+pub fn resolve_protected_config_env_with(
+    provider_factory: &mut dyn FnMut() -> Result<Box<dyn KmsSecretProvider>, KmsConfigError>,
+) -> Result<(), KmsConfigError> {
     let reads: Vec<(&'static str, Option<String>)> = PROTECTED_KEYS
         .iter()
         .map(|name| (*name, std::env::var(name).ok()))
         .collect();
 
-    let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
-        init_provider().map(|p| Box::new(p) as Box<dyn KmsSecretProvider>)
-    };
-
-    let resolved = match resolve_values(&reads, &mut factory) {
+    let resolved = match resolve_values(&reads, provider_factory) {
         Ok(resolved) => resolved,
         Err(err) => {
             // Redacted: Display carries only the item name (when applicable) and class.
@@ -274,5 +284,18 @@ mod tests {
         for leak in ["topsecret", "kms:", "prod/xlayer-secret"] {
             assert!(!shown.contains(leak), "must not leak {leak:?}: {shown}");
         }
+    }
+
+    #[test]
+    fn with_entry_point_forwards_factory_error() {
+        // With no protected var set, no reference exists, so the injected factory is
+        // never invoked and the wrapper returns Ok(()). Full write-back and error
+        // forwarding with references present are covered by the integration tests.
+        for name in PROTECTED_KEYS {
+            std::env::remove_var(name);
+        }
+        let mut factory =
+            || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> { Err(KmsConfigError::KmsInitError) };
+        assert!(resolve_protected_config_env_with(&mut factory).is_ok());
     }
 }

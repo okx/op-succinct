@@ -17,7 +17,7 @@ mod resolve;
 
 pub use error::KmsConfigError;
 pub use provider::{init_provider, KmsProviderError, KmsSecretProvider, OkKmsProvider};
-pub use resolve::resolve_protected_config_env;
+pub use resolve::{resolve_protected_config_env, resolve_protected_config_env_with};
 
 /// The exhaustive, hard-coded set of protected config item names, in the fixed
 /// order they are processed. No item outside this set is ever inspected.
