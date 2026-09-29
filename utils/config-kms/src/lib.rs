@@ -13,6 +13,7 @@
 mod classify;
 mod error;
 mod provider;
+mod resolve;
 
 pub use error::KmsConfigError;
 pub use provider::{init_provider, KmsProviderError, KmsSecretProvider, OkKmsProvider};
