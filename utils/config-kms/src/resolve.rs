@@ -8,7 +8,7 @@
 
 use crate::classify::{classify, Classification};
 use crate::error::KmsConfigError;
-use crate::provider::{KmsProviderError, KmsSecretProvider};
+use crate::provider::{init_provider, KmsProviderError, KmsSecretProvider};
 use crate::PROTECTED_KEYS;
 
 /// Resolve the protected items' values without touching global state.
@@ -57,6 +57,44 @@ pub(crate) fn resolve_values(
         }
     }
     Ok(resolved)
+}
+
+/// Resolve all protected items in the process environment, in place, at startup.
+///
+/// Reads each of the six items via `std::env::var`, resolves any reference through
+/// the real backend, and — only when the whole set resolved successfully — writes
+/// each resolved plaintext back with `std::env::set_var`. Fail-closed: on any error
+/// it writes nothing and returns the error after emitting a single redacted
+/// diagnostic (item name + class only).
+///
+/// Must be called as the first action of a process, before any other thread reads
+/// or writes the environment: it is the sole env-mutation point and relies on being
+/// single-threaded at that moment (edition 2021 `set_var` is the safe API under
+/// that invariant).
+pub fn resolve_protected_config_env() -> Result<(), KmsConfigError> {
+    let reads: Vec<(&'static str, Option<String>)> = PROTECTED_KEYS
+        .iter()
+        .map(|name| (*name, std::env::var(name).ok()))
+        .collect();
+
+    let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
+        init_provider().map(|p| Box::new(p) as Box<dyn KmsSecretProvider>)
+    };
+
+    let resolved = match resolve_values(&reads, &mut factory) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            // Redacted: Display carries only the item name (when applicable) and class.
+            tracing::error!(error = %err, "protected config secret resolution failed");
+            return Err(err);
+        }
+    };
+
+    // All-or-nothing: reached only when every item resolved successfully.
+    for (name, plaintext) in resolved {
+        std::env::set_var(name, plaintext);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
