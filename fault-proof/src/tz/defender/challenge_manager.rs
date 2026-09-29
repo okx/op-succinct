@@ -83,7 +83,7 @@ sol! {
     // The ChallengeManager view + failure event that back the live status read and resolution
     // attribution. `activeWithdrawChallenge` returns the challengeId currently occupying a bridge's
     // active withdraw-challenge slot (zero when none). `ChallengeFailed` carries the resolved
-    // `challengeId` plus the contract's `treasury` address; matching the `challengeId` against our
+    // `challengeId` plus the contract's `bondRecipient` address; matching the `challengeId` against our
     // own confirmed proof receipt is how resolution is attributed. Both shapes MUST be re-confirmed
     // against the deployed contract before LIVE responses are relied upon.
     #[allow(missing_docs)]
@@ -92,15 +92,17 @@ sol! {
         function activeWithdrawChallenge(address bridge) external view returns (uint256);
     }
 
-    // The full contract event has TWO parameters. topic0 is derived from the complete ordered type
-    // list `(uint256,address)` — `keccak256("ChallengeFailed(uint256,address)")` — so a
-    // one-parameter binding would derive the wrong topic0 and never match a real receipt. `indexed`
-    // does not affect topic0, only whether a field is carried in a topic or in the data section.
-    // The exact `indexed` layout is unconfirmed (the contract source is unreachable), so the decode
-    // is fail-closed: `decode_log` skips a wrong-topic0 / arity-mismatched / non-decoding log rather
-    // than mis-parsing it, keeping an unresolved challenge in-flight instead of mis-attributing it.
+    // The contract event has TWO parameters, BOTH `indexed`: `challengeId` is carried in topics[1]
+    // and `bondRecipient` in topics[2], and the log `data` section is empty. topic0 is derived from
+    // the complete ordered type list `(uint256,address)` —
+    // `keccak256("ChallengeFailed(uint256,address)")` — and is unaffected by indexed-ness. Declaring
+    // both fields `indexed` makes the generated `decode_log` read them from the topics. The decode
+    // stays fail-closed: a wrong-topic0 / arity- or layout-mismatched / non-decoding log — including
+    // the earlier non-indexed-data shape that carried the address in `data`, and the retired
+    // one-parameter signature — is skipped rather than mis-parsed, keeping an unresolved challenge
+    // in-flight instead of mis-attributing it.
     #[allow(missing_docs)]
-    event ChallengeFailed(uint256 indexed challengeId, address treasury);
+    event ChallengeFailed(uint256 indexed challengeId, address indexed bondRecipient);
 }
 
 /// A decoded-but-unfiltered `ChallengeCreated` event. `tz_tx_hash` is the transaction-scoped
@@ -853,8 +855,39 @@ mod tests {
         assert!(!adapter.get_challenge(id).await.unwrap().open, "a zero active id ⇒ closed");
     }
 
+    /// Build a `ChallengeFailed` receipt log from the RAW on-chain topic/data layout — NOT the Rust
+    /// binding's own `encode_log_data()`. Self-encoding round-trips whatever layout the binding
+    /// declares, so it cannot surface a topic-vs-data layout error; building the log from the
+    /// pinned raw layout (topic0 + indexed topics + data section) is what makes the decode
+    /// observable.
+    fn challenge_failed_log_raw(
+        address: Address,
+        topics: Vec<B256>,
+        data: alloy_primitives::Bytes,
+    ) -> alloy_rpc_types_eth::Log {
+        alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address,
+                data: alloy_primitives::LogData::new_unchecked(topics, data),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// The pinned on-chain `ChallengeFailed` topic0, computed from the canonical signature string
+    /// so the fixtures never borrow it from the binding under test. `indexed`-ness never
+    /// affects topic0.
+    fn challenge_failed_topic0() -> B256 {
+        alloy_primitives::keccak256("ChallengeFailed(uint256,address)")
+    }
+
+    /// A `uint256` value as a 32-byte big-endian topic word (an indexed `challengeId`).
+    fn u256_topic(v: U256) -> B256 {
+        B256::from(v.to_be_bytes::<32>())
+    }
+
     #[tokio::test]
-    async fn confirm_parses_challenge_failed_logs_into_opaque_ids() {
+    async fn confirm_success_with_real_dual_indexed_challenge_failed_maps_to_proved() {
         let adapter = ChallengeManagerContract::from_raw_events(
             vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
             DirectLeafLocator,
@@ -864,35 +897,45 @@ mod tests {
         let opened = adapter.watch_opened(window()).await.unwrap();
         let id = opened[0].challenge_id;
         let onchain_id = adapter.onchain_id_for(id).unwrap();
-        // A real two-field ChallengeFailed log (challengeId + a populated, DISTINCT treasury)
-        // carrying the corrected topic0 keccak256("ChallengeFailed(uint256,address)") maps back to
-        // the opaque ChallengeId. (A one-parameter binding would derive the wrong topic0 and never
-        // match a real receipt — this pins that defect.)
-        let treasury = Address::repeat_byte(0x7a);
-        let failed = ChallengeFailed { challengeId: onchain_id, treasury };
-        let log = alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log { address: CONTRACT_ADDR, data: failed.encode_log_data() },
-            ..Default::default()
-        };
+        // A REAL dual-indexed ChallengeFailed(uint256 indexed challengeId, address indexed
+        // bondRecipient) receipt log, built from the pinned raw layout: challengeId in topics[1],
+        // bondRecipient in topics[2], and an EMPTY data section. bondRecipient is populated and
+        // distinct from challengeId so a field-order/mapping slip cannot pass by coincidence. Built
+        // raw (not encode_log_data()) so the topic-vs-data layout is exercised for real.
+        let bond_recipient = Address::repeat_byte(0x7a);
+        let log = challenge_failed_log_raw(
+            CONTRACT_ADDR,
+            vec![challenge_failed_topic0(), u256_topic(onchain_id), bond_recipient.into_word()],
+            alloy_primitives::Bytes::new(),
+        );
+        // resolved_ids_from_logs decodes challengeId from topics[1] and maps it to the opaque id.
+        // The handler transitions a challenge to Proved iff its id is in resolved_challenge_ids
+        // (covered by the handler's confirm mapping and the end-to-end integration test); this is
+        // the id that mapping keys off.
         assert_eq!(
             adapter.resolved_ids_from_logs(std::slice::from_ref(&log)),
             vec![id],
-            "a real two-field ChallengeFailed maps to the opaque ChallengeId"
+            "a real dual-indexed ChallengeFailed (challengeId in topics[1]) maps to the opaque \
+             ChallengeId the handler proves"
         );
-        // A ChallengeFailed for an id this adapter never decoded is ignored.
-        let other = ChallengeFailed { challengeId: U256::from(9_999u64), treasury };
-        let other_log = alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log { address: CONTRACT_ADDR, data: other.encode_log_data() },
-            ..Default::default()
-        };
+        // A dual-indexed ChallengeFailed for an id this adapter never decoded is ignored.
+        let unknown_log = challenge_failed_log_raw(
+            CONTRACT_ADDR,
+            vec![
+                challenge_failed_topic0(),
+                u256_topic(U256::from(9_999u64)),
+                bond_recipient.into_word(),
+            ],
+            alloy_primitives::Bytes::new(),
+        );
         assert!(
-            adapter.resolved_ids_from_logs(std::slice::from_ref(&other_log)).is_empty(),
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&unknown_log)).is_empty(),
             "an unknown on-chain id is ignored"
         );
     }
 
     #[tokio::test]
-    async fn resolved_ids_ignores_challenge_failed_from_other_contract() {
+    async fn challenge_failed_negatives_are_skipped_fail_closed() {
         let adapter = ChallengeManagerContract::from_raw_events(
             vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
             DirectLeafLocator,
@@ -901,28 +944,25 @@ mod tests {
         );
         let opened = adapter.watch_opened(window()).await.unwrap();
         let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
-        // A ChallengeFailed carrying OUR on-chain id but emitted by a DIFFERENT contract must be
-        // ignored: resolution is attributed only from our own challenge manager's events.
-        let failed =
-            ChallengeFailed { challengeId: onchain_id, treasury: Address::repeat_byte(0x7a) };
-        let foreign_log = alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log {
-                address: Address::repeat_byte(0xFE),
-                data: failed.encode_log_data(),
-            },
-            ..Default::default()
-        };
-        assert!(
-            adapter.resolved_ids_from_logs(std::slice::from_ref(&foreign_log)).is_empty(),
-            "a ChallengeFailed emitted by another contract is not credited to us"
-        );
-    }
+        let bond_recipient = Address::repeat_byte(0x7a);
 
-    #[tokio::test]
-    async fn retired_one_param_challenge_failed_is_not_matched() {
-        // The RETIRED one-parameter signature has a different topic0 than the corrected two-field
-        // binding, so a log carrying it must be skipped (fail-closed) and never credited — guarding
-        // against reintroducing the wrong-topic0 regression that mis-classified proved challenges.
+        // (i) OLD non-indexed-`data` layout — the prior (wrong) shape: correct topic0 and
+        // challengeId in topics[1], but the address in the DATA section with NO topics[2].
+        // Against the dual-indexed binding this is an arity/layout mismatch, so decode_log
+        // skips it fail-closed. This guards against reintroducing that prior-binding regression.
+        let old_layout_log = challenge_failed_log_raw(
+            CONTRACT_ADDR,
+            vec![challenge_failed_topic0(), u256_topic(onchain_id)],
+            alloy_primitives::Bytes::from(bond_recipient.into_word().as_slice().to_vec()),
+        );
+        assert!(
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&old_layout_log)).is_empty(),
+            "the old non-indexed-data ChallengeFailed layout is skipped fail-closed, not resolved"
+        );
+
+        // (ii) RETIRED one-parameter signature — its topic0 differs from the corrected filter, so a
+        // log carrying it is never matched. The retired topic0 is derived from a nested binding
+        // (the retired_abi idiom) and the log built raw.
         mod retired_cf {
             alloy_sol_types::sol! {
                 #[allow(missing_docs)]
@@ -931,28 +971,31 @@ mod tests {
         }
         assert_ne!(
             retired_cf::ChallengeFailed::SIGNATURE_HASH,
-            ChallengeFailed::SIGNATURE_HASH,
+            challenge_failed_topic0(),
             "the retired one-parameter ChallengeFailed has a different topic0"
         );
-        let adapter = ChallengeManagerContract::from_raw_events(
-            vec![raw(ChallengeType::WithdrawNotInRoot, B256::repeat_byte(0x01), 1)],
-            DirectLeafLocator,
-            196,
+        let retired_log = challenge_failed_log_raw(
             CONTRACT_ADDR,
+            vec![retired_cf::ChallengeFailed::SIGNATURE_HASH, u256_topic(onchain_id)],
+            alloy_primitives::Bytes::new(),
         );
-        let opened = adapter.watch_opened(window()).await.unwrap();
-        let onchain_id = adapter.onchain_id_for(opened[0].challenge_id).unwrap();
-        let retired = retired_cf::ChallengeFailed { challengeId: onchain_id };
-        let log = alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log {
-                address: CONTRACT_ADDR,
-                data: retired.encode_log_data(),
-            },
-            ..Default::default()
-        };
         assert!(
-            adapter.resolved_ids_from_logs(std::slice::from_ref(&log)).is_empty(),
-            "a retired one-parameter ChallengeFailed log is not matched (fail-closed)"
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&retired_log)).is_empty(),
+            "a retired one-parameter ChallengeFailed topic0 is not matched (fail-closed)"
+        );
+
+        // (iii) FOREIGN contract — a correctly-shaped dual-indexed ChallengeFailed carrying OUR
+        // on-chain id but emitted by a DIFFERENT contract address is ignored by the
+        // own-contract-only filter: resolution is attributed only from our own challenge
+        // manager's events.
+        let foreign_log = challenge_failed_log_raw(
+            Address::repeat_byte(0xFE),
+            vec![challenge_failed_topic0(), u256_topic(onchain_id), bond_recipient.into_word()],
+            alloy_primitives::Bytes::new(),
+        );
+        assert!(
+            adapter.resolved_ids_from_logs(std::slice::from_ref(&foreign_log)).is_empty(),
+            "a ChallengeFailed emitted by another contract is not credited to us"
         );
     }
 
