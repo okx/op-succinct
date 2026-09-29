@@ -10,8 +10,20 @@
 //! Diagnostics carry only the config-item name and a fixed error class — never the
 //! raw value, the reference, the key, the plaintext, or backend error text.
 
+mod classify;
 mod error;
 mod provider;
 
 pub use error::KmsConfigError;
 pub use provider::{init_provider, KmsProviderError, KmsSecretProvider, OkKmsProvider};
+
+/// The exhaustive, hard-coded set of protected config item names, in the fixed
+/// order they are processed. No item outside this set is ever inspected.
+pub const PROTECTED_KEYS: [&str; 6] = [
+    "NETWORK_PRIVATE_KEY",
+    "XLAYER_ACCESS_KEY",
+    "XLAYER_SECRET_KEY",
+    "SP1_GATEWAY_TOKEN",
+    "SP1_GATEWAY_S3_TOKEN",
+    "CLI_REDIS_NODES",
+];
