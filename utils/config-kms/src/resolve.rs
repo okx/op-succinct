@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn redis_nodes_multinode_string_verbatim() {
-        let nodes = "redis-1:6379,redis-2:6379,redis-3:6379";
+        let nodes = "host1:6379,host2:6379,host3:6379";
         let r = reads(&[("CLI_REDIS_NODES", Some("kms:redis"))]);
         let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
             Ok(Box::new(MockProvider::new(&[("redis", nodes)])))
