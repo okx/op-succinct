@@ -7,6 +7,9 @@
 //! internal SDK in the build graph at all, and a `kms:<key>` reference fails closed
 //! at the resolver's factory.
 
+// `KmsConfigError` is referenced only from the real (`kms`-gated) provider surface;
+// gate the import so a default (kms-off) build carries no unused import.
+#[cfg(feature = "kms")]
 use crate::error::KmsConfigError;
 #[cfg(feature = "kms")]
 use std::sync::OnceLock;

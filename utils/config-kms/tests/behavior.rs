@@ -375,6 +375,41 @@ fn error_display_redacted_via_public_entry() {
 }
 
 #[test]
+fn partial_failure_leaves_earlier_resolution_unwritten() {
+    // Review Focus #5 (all-or-nothing): item #1 resolves, item #2 fails => NO env var is
+    // mutated, including the one that resolved successfully. NETWORK_PRIVATE_KEY is processed
+    // before XLAYER_ACCESS_KEY (PROTECTED_KEYS order), so the first reference is already
+    // buffered when the second one fails.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let snap = snapshot();
+    clear_all();
+    std::env::set_var("NETWORK_PRIVATE_KEY", "kms:k1"); // resolvable (processed first)
+    std::env::set_var("XLAYER_ACCESS_KEY", "kms:missing"); // NotFound (processed second)
+
+    let mock = MockProvider::new(&[("k1", "p1")]); // only k1 present
+    let result = {
+        let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
+            Ok(Box::new(SharedMock(Rc::clone(&mock))))
+        };
+        resolve_protected_config_env_with(&mut factory)
+    };
+    let net = std::env::var("NETWORK_PRIVATE_KEY").ok();
+    let acc = std::env::var("XLAYER_ACCESS_KEY").ok();
+    restore(&snap);
+
+    assert!(
+        matches!(result, Err(KmsConfigError::SecretNotFound { item }) if item == "XLAYER_ACCESS_KEY"),
+        "mid-set failure must fail closed: {result:?}"
+    );
+    assert_eq!(
+        net.as_deref(),
+        Some("kms:k1"),
+        "an earlier-resolved reference must NOT be written back when a later one fails (all-or-nothing)"
+    );
+    assert_eq!(acc.as_deref(), Some("kms:missing"), "the failing reference is left unchanged");
+}
+
+#[test]
 fn provider_receives_key_verbatim() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let snap = snapshot();
