@@ -112,7 +112,7 @@ impl KmsSecretProvider for SharedMock {
     }
 }
 
-// ── Delivered Round-1 behavior tests (default entry point; no provider needed) ──
+// ── Baseline behavior tests (default entry point; no provider needed) ──
 
 #[test]
 fn all_plaintext_starts_and_leaves_values_untouched() {
@@ -145,7 +145,7 @@ fn invalid_reference_fails_closed_without_kms_env() {
     );
 }
 
-// ── Round-2 integration matrix via the public injectable entry point + mock ──
+// ── Integration matrix via the public injectable entry point + mock ──
 
 #[test]
 fn full_success_write_back() {
