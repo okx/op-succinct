@@ -73,7 +73,9 @@ impl ChallengeOpened {
     }
 }
 
-/// On-chain status of a challenge, read at a single L2 view.
+/// On-chain status of a challenge, read at a single L2 view. It reports only liveness and timing;
+/// resolution attribution is never carried here — that comes solely from our own confirmed prove
+/// receipt (see [`ConfirmOutcome`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChallengeStatus {
     /// Whether the challenge is still open and can be responded to.
@@ -82,15 +84,6 @@ pub struct ChallengeStatus {
     pub deadline: u64,
     /// The L2 chain timestamp observed in the same read, used for deadline decisions.
     pub chain_timestamp: u64,
-    /// Resolution ownership, meaningful only once the challenge is no longer `open`: `true` iff
-    /// the on-chain state attributes the resolution to THIS defender's response, `false` if it
-    /// was resolved/closed by another responder (or otherwise). It lets the handler
-    /// distinguish "our prove resolved it" (→ `Proved`) from "someone else closed it" (→
-    /// `Closed`) instead of assuming any `open == false` after a successful receipt is our
-    /// win. The real challenge ABI is not yet delivered; this field fixes the seam semantics
-    /// and the mock models it (a future adapter maps the delivered resolver/result field onto
-    /// it — no ABI is assumed here).
-    pub resolved_by_us: bool,
 }
 
 /// A finality-bounded L2 block scan window `[from_block, to_block]`. Finality is applied exactly
@@ -117,13 +110,19 @@ pub trait ChallengeReader: Send + Sync {
     async fn get_challenge(&self, id: ChallengeId) -> Result<ChallengeStatus>;
 }
 
-/// The confirmation status of a broadcast transaction. A broadcast tx is only `Submitted`; the
-/// outcome requires a receipt (`Success`/`Reverted`) plus the challenge's on-chain status, and an
-/// ambiguous/not-yet-mined receipt (`Pending`) is reconciled on a later tick, never blind-resent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TxStatus {
-    Success,
+/// The outcome of confirming a broadcast prove transaction via its receipt. A mined success
+/// carries the set of challenge ids whose resolution the receipt attributes to THIS transaction
+/// (parsed from its `ChallengeFailed` logs), so the handler credits only challenges our own proof
+/// actually resolved. `Reverted` is a confirmed on-chain revert; `Pending` is a not-yet-mined /
+/// ambiguous receipt reconciled on a later tick, never blind-resent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfirmOutcome {
+    /// The transaction mined successfully; `resolved_challenge_ids` are the challenges its receipt
+    /// resolved (empty when none of them are ours).
+    Succeeded { resolved_challenge_ids: Vec<ChallengeId> },
+    /// The transaction is a confirmed on-chain revert.
     Reverted,
+    /// The receipt is not yet available / ambiguous; reconcile on a later tick.
     Pending,
 }
 
@@ -164,21 +163,21 @@ pub trait ChallengeSender: Send + Sync {
     async fn prove_challenge(
         &self,
         id: ChallengeId,
-        checkpoint_height: u64,
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
     ) -> Result<SubmitOutcome, SenderError>;
 
-    /// Confirm a previously-broadcast transaction via its receipt.
-    async fn confirm(&self, tx: TxHash) -> Result<TxStatus>;
+    /// Confirm a previously-broadcast transaction via its receipt, returning the resolved-challenge
+    /// set on success so the handler attributes resolution to our own proof.
+    async fn confirm(&self, tx: TxHash) -> Result<ConfirmOutcome>;
 }
 
-/// Recorded `prove_challenge` calldata (for test assertions).
+/// Recorded `prove_challenge` calldata (for test assertions). Carries exactly the four
+/// `submitWithdrawProof` fields; the covering-root height is not part of the call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProveCall {
     pub challenge_id: ChallengeId,
-    pub checkpoint_height: u64,
     pub leaf_index: u32,
     pub count: u32,
     pub siblings: [B256; 32],
@@ -193,8 +192,8 @@ struct MockState {
     opened: Vec<ChallengeOpened>,
     status: std::collections::HashMap<ChallengeId, ChallengeStatus>,
     prove_calls: Vec<ProveCall>,
-    /// Scripted transaction receipt statuses, keyed by tx hash.
-    tx_status: std::collections::HashMap<TxHash, TxStatus>,
+    /// Scripted confirm outcomes, keyed by tx hash.
+    confirm_outcomes: std::collections::HashMap<TxHash, ConfirmOutcome>,
     /// Scripted typed sender errors, keyed by challenge id. When present, the next
     /// `prove_challenge` for that id returns the error instead of `Submitted`.
     sender_errors: std::collections::HashMap<ChallengeId, SenderError>,
@@ -221,7 +220,7 @@ impl MockChallengeContract {
                 opened: Vec::new(),
                 status: std::collections::HashMap::new(),
                 prove_calls: Vec::new(),
-                tx_status: std::collections::HashMap::new(),
+                confirm_outcomes: std::collections::HashMap::new(),
                 sender_errors: std::collections::HashMap::new(),
                 fail_status: std::collections::HashSet::new(),
                 fail_watch: false,
@@ -233,10 +232,8 @@ impl MockChallengeContract {
     /// Inject an already-built opened challenge and default its status to open (by its id).
     pub fn inject_opened(&self, ev: ChallengeOpened, deadline: u64) {
         let mut s = self.inner.lock().unwrap();
-        s.status.insert(
-            ev.challenge_id,
-            ChallengeStatus { open: true, deadline, chain_timestamp: 0, resolved_by_us: false },
-        );
+        s.status
+            .insert(ev.challenge_id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
         s.opened.push(ev);
     }
 
@@ -275,26 +272,17 @@ impl MockChallengeContract {
         self.inner.lock().unwrap().sender_errors.remove(&id);
     }
 
-    /// Script the receipt status returned by `confirm` for a transaction hash.
-    pub fn set_tx_status(&self, tx: TxHash, status: TxStatus) {
-        self.inner.lock().unwrap().tx_status.insert(tx, status);
+    /// Script the outcome returned by `confirm` for a transaction hash.
+    pub fn set_confirm_outcome(&self, tx: TxHash, outcome: ConfirmOutcome) {
+        self.inner.lock().unwrap().confirm_outcomes.insert(tx, outcome);
     }
 
-    /// Mark a challenge resolved in OUR favor (no longer open, attributed to our response) — used
-    /// to model our prove transaction resolving it.
-    pub fn mark_resolved_in_our_favor(&self, id: ChallengeId) {
+    /// Mark a challenge no longer open (used to model a challenge that was resolved/closed while
+    /// our tx was in flight). Attribution is not modeled here — it comes from the confirm
+    /// outcome.
+    pub fn mark_closed(&self, id: ChallengeId) {
         if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
             st.open = false;
-            st.resolved_by_us = true;
-        }
-    }
-
-    /// Mark a challenge closed by ANOTHER responder (no longer open, NOT attributed to us) — used
-    /// to model a challenge that was resolved/closed by someone else while our tx was in flight.
-    pub fn mark_closed_by_other(&self, id: ChallengeId) {
-        if let Some(st) = self.inner.lock().unwrap().status.get_mut(&id) {
-            st.open = false;
-            st.resolved_by_us = false;
         }
     }
 
@@ -365,7 +353,6 @@ impl ChallengeReader for MockChallengeContract {
             open: false,
             deadline: 0,
             chain_timestamp: 0,
-            resolved_by_us: false,
         }))
     }
 }
@@ -375,7 +362,6 @@ impl ChallengeSender for MockChallengeContract {
     async fn prove_challenge(
         &self,
         id: ChallengeId,
-        checkpoint_height: u64,
         leaf_index: u32,
         count: u32,
         siblings: [B256; 32],
@@ -384,19 +370,20 @@ impl ChallengeSender for MockChallengeContract {
         if let Some(err) = s.sender_errors.get(&id).copied() {
             return Err(err);
         }
-        s.prove_calls.push(ProveCall {
-            challenge_id: id,
-            checkpoint_height,
-            leaf_index,
-            count,
-            siblings,
-        });
+        s.prove_calls.push(ProveCall { challenge_id: id, leaf_index, count, siblings });
         Ok(SubmitOutcome::Submitted(TxHash::repeat_byte(0x99)))
     }
 
-    async fn confirm(&self, tx: TxHash) -> Result<TxStatus> {
+    async fn confirm(&self, tx: TxHash) -> Result<ConfirmOutcome> {
         // Default to Pending (not yet mined / ambiguous) so callers reconcile rather than resend.
-        Ok(self.inner.lock().unwrap().tx_status.get(&tx).copied().unwrap_or(TxStatus::Pending))
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .confirm_outcomes
+            .get(&tx)
+            .cloned()
+            .unwrap_or(ConfirmOutcome::Pending))
     }
 }
 
@@ -480,12 +467,12 @@ mod tests {
         );
         m.set_sender_error(id, SenderError::SafeToRetryPreBroadcast);
         assert!(matches!(
-            m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
+            m.prove_challenge(id, 0, 1, [B256::ZERO; 32]).await,
             Err(SenderError::SafeToRetryPreBroadcast)
         ));
         m.clear_sender_error(id);
         assert!(matches!(
-            m.prove_challenge(id, 20, 0, 1, [B256::ZERO; 32]).await,
+            m.prove_challenge(id, 0, 1, [B256::ZERO; 32]).await,
             Ok(SubmitOutcome::Submitted(_))
         ));
     }
@@ -504,12 +491,7 @@ mod tests {
         );
         mock.set_status(
             id,
-            ChallengeStatus {
-                open: true,
-                deadline: 5_000,
-                chain_timestamp: 4_200,
-                resolved_by_us: false,
-            },
+            ChallengeStatus { open: true, deadline: 5_000, chain_timestamp: 4_200 },
         );
         assert_eq!(mock.get_challenge(id).await.unwrap().chain_timestamp, 4_200);
     }
@@ -527,18 +509,12 @@ mod tests {
             5_000,
         );
         let sibs = [B256::repeat_byte(0x07); 32];
-        mock.prove_challenge(id, 20, 3, 5, sibs).await.unwrap();
+        mock.prove_challenge(id, 3, 5, sibs).await.unwrap();
         let calls = mock.prove_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            ProveCall {
-                challenge_id: id,
-                checkpoint_height: 20,
-                leaf_index: 3,
-                count: 5,
-                siblings: sibs
-            }
+            ProveCall { challenge_id: id, leaf_index: 3, count: 5, siblings: sibs }
         );
     }
 

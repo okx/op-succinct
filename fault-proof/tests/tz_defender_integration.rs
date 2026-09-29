@@ -20,16 +20,18 @@ use alloy_primitives::{Address, TxHash, B256, U256};
 use fault_proof::tz::{
     defender::{
         challenge_contract::{
-            ChallengeEventSource, ChallengeOpened, ChallengeStatus, MockChallengeContract,
-            ScanWindow, TxStatus,
+            ChallengeEventSource, ChallengeOpened, ChallengeStatus, ConfirmOutcome,
+            MockChallengeContract, ScanWindow,
         },
+        challenge_manager::{ChallengeManagerContract, ChallengeType, RawChallengeEvent},
         handler::{ChallengeState, Handler, InFlightGate, WitnessSource},
         rootmanager_client::MockRootManager,
         supervisor::Supervisor,
         verifier::record_leaf_hash,
         watcher::Watcher,
         witness_wb::WbWitnessSource,
-        ChallengeId,
+        ChallengeId, CompatibilityDeclaration, DeclarationProvenance, DeploymentTarget,
+        DirectLeafLocator, LeafEncodingGate,
     },
     withdraw::{
         tree_adapter::{business_root, root_from_frontier, zero_hashes, WITHDRAWAL_TAG},
@@ -142,12 +144,53 @@ fn witness_for(server: &MockServer) -> Arc<dyn WitnessSource> {
     Arc::new(WbWitnessSource::new(wb))
 }
 
+/// The expected encoding identity this test deployment is bound to (arbitrary fixed values; the
+/// matching declaration below reproduces all of them).
+fn gate_target() -> DeploymentTarget {
+    DeploymentTarget {
+        address: Address::repeat_byte(CONTRACT),
+        chain_id: CHAIN_ID,
+        expected_encoding_version: 1,
+        expected_canonical_encoding_hash: B256::repeat_byte(0xcc),
+        expected_witness_builder_id: B256::repeat_byte(0xdd),
+    }
+}
+
+/// A gate that is `Proven` for this test deployment (a declaration matching every criterion), so
+/// the proof-path tests exercise the full flow.
+fn proven_gate() -> Arc<LeafEncodingGate> {
+    let target = gate_target();
+    let declaration = CompatibilityDeclaration {
+        address: target.address,
+        chain_id: target.chain_id,
+        encoding_version: target.expected_encoding_version,
+        canonical_encoding_hash: target.expected_canonical_encoding_hash,
+        witness_builder_id: target.expected_witness_builder_id,
+        provenance: DeclarationProvenance::AuthenticatedImmutable,
+    };
+    Arc::new(LeafEncodingGate::new(target, Some(declaration)))
+}
+
+/// A gate with no compatibility declaration ⇒ `LeafEncodingMismatch` for this test deployment.
+fn mismatch_gate() -> Arc<LeafEncodingGate> {
+    Arc::new(LeafEncodingGate::new(gate_target(), None))
+}
+
+fn handler_with_gate(
+    server: &MockServer,
+    rm: Arc<MockRootManager>,
+    cc: Arc<MockChallengeContract>,
+    gate: Arc<LeafEncodingGate>,
+) -> Handler {
+    Handler::new(cc.clone(), cc, witness_for(server), rm, gate, CHAIN_ID, 16, SAFETY, MAX_RESEND)
+}
+
 fn handler(
     server: &MockServer,
     rm: Arc<MockRootManager>,
     cc: Arc<MockChallengeContract>,
 ) -> Handler {
-    Handler::new(cc.clone(), cc, witness_for(server), rm, CHAIN_ID, 16, SAFETY, MAX_RESEND)
+    handler_with_gate(server, rm, cc, proven_gate())
 }
 
 fn opened(tx_seed: u8, leaf: B256, block: u64) -> ChallengeOpened {
@@ -171,10 +214,7 @@ fn inject(
     let ev = opened(tx_seed, leaf, block);
     let id = ev.challenge_id;
     cc.inject_opened(ev, deadline);
-    cc.set_status(
-        id,
-        ChallengeStatus { open: true, deadline, chain_timestamp: 0, resolved_by_us: false },
-    );
+    cc.set_status(id, ChallengeStatus { open: true, deadline, chain_timestamp: 0 });
     id
 }
 
@@ -208,12 +248,13 @@ async fn full_pipeline_covering_gate_submits_then_proved() {
     let calls = cc.prove_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].challenge_id, id);
-    assert_eq!(calls[0].checkpoint_height, CHECKPOINT_HEIGHT);
     assert_eq!(calls[0].count, 1);
     assert_eq!(calls[0].leaf_index, 0);
 
-    cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
-    cc.mark_resolved_in_our_favor(id);
+    cc.set_confirm_outcome(
+        TxHash::repeat_byte(0x99),
+        ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![id] },
+    );
     h.drive(&ev, &mut state, &gate).await.unwrap();
     assert!(matches!(state, ChallengeState::Proved(_)));
     assert_eq!(gate.holder(), None, "gate released on Proved");
@@ -418,7 +459,10 @@ async fn supervisor_single_finality_scan_and_redrive() {
     rm.set_latest(CHECKPOINT_HEIGHT, root);
     let cc = Arc::new(MockChallengeContract::new());
     inject(&cc, 0x02, leaf, 100, 10_000); // event at block 100
-    cc.set_tx_status(TxHash::repeat_byte(0x99), TxStatus::Success);
+    cc.set_confirm_outcome(
+        TxHash::repeat_byte(0x99),
+        ConfirmOutcome::Succeeded { resolved_challenge_ids: vec![] },
+    );
     let h = handler(&server, rm, cc.clone());
     // finality_blocks = 32, startup_lookback = 1000.
     let mut sup = Supervisor::new(
@@ -484,15 +528,7 @@ async fn restart_rescan_reconciles_status_only() {
     let cc = Arc::new(MockChallengeContract::new());
     let open_id = inject(&cc, 0x10, leaf, 100, 10_000);
     let closed_id = inject(&cc, 0x11, leaf, 100, 10_000);
-    cc.set_status(
-        closed_id,
-        ChallengeStatus {
-            open: false,
-            deadline: 10_000,
-            chain_timestamp: 0,
-            resolved_by_us: false,
-        },
-    );
+    cc.set_status(closed_id, ChallengeStatus { open: false, deadline: 10_000, chain_timestamp: 0 });
 
     let h = handler(&server, rm, cc.clone());
     let mut sup =
@@ -504,4 +540,169 @@ async fn restart_rescan_reconciles_status_only() {
     sup.reconcile_on_startup(&rediscovered).await.unwrap();
     assert!(sup.is_pending(open_id), "still-open ⇒ best-effort re-drive");
     assert!(!sup.is_pending(closed_id), "closed ⇒ skipped (no old-receipt lookup)");
+}
+
+/// A decoded challenge event for the real adapter's scripted/offline event source.
+fn raw_event(
+    onchain_id: U256,
+    challenge_type: ChallengeType,
+    leaf: B256,
+    tx_seed: u8,
+    log_index: u64,
+) -> RawChallengeEvent {
+    RawChallengeEvent {
+        onchain_challenge_id: onchain_id,
+        challenge_type,
+        // Keep tz_tx_hash distinct from leaf so a field-order/mapping bug cannot pass by
+        // coincidence.
+        tz_tx_hash: B256::repeat_byte(0xF0 | tx_seed),
+        leaf,
+        affected_bridge: Address::repeat_byte(0xB0),
+        response_deadline: 10_000,
+        block_number: 100,
+        chain_id: CHAIN_ID,
+        contract: Address::repeat_byte(CONTRACT),
+        tx_hash: B256::repeat_byte(tx_seed),
+        log_index,
+    }
+}
+
+/// End-to-end with the REAL `ChallengeManagerContract`: a mixed-type batch in one scan window is
+/// filtered to exactly the `WithdrawNotInRoot` challenge, driven through the real `WbClient`
+/// (wiremock) → `WbWitnessSource` → `Handler`, and the resulting submit carries the WB proof's four
+/// fields verbatim. This exercises the real adapter across the whole stack (not the mock seam).
+#[tokio::test]
+async fn end_to_end_real_adapter_answers_only_withdraw_not_in_root() {
+    let r = valid_record(0x42);
+    let leaf = leaf_of(&r);
+    let (root, siblings) = build_proof(leaf);
+    let server = MockServer::start().await;
+    mount_record(&server, &r, leaf, RECORD_HEIGHT).await;
+    mount_proof(&server, &r, leaf, root, &siblings).await;
+
+    let rm = Arc::new(MockRootManager::new());
+    rm.set_latest(CHECKPOINT_HEIGHT, root);
+
+    // One WithdrawNotInRoot (identifier == leaf, via DirectLeafLocator) interleaved with other
+    // types that must be ignored — no event emitted, no witness query, no transaction for them.
+    let onchain_id = U256::from(4242u64);
+    let raws = vec![
+        raw_event(onchain_id, ChallengeType::WithdrawNotInRoot, leaf, 0xAA, 1),
+        raw_event(U256::from(7u64), ChallengeType::Other(3), B256::repeat_byte(0x02), 0xBB, 2),
+        raw_event(U256::from(9u64), ChallengeType::Other(8), B256::repeat_byte(0x03), 0xCC, 3),
+        // A force-transaction challenge carrying a zero leaf: dropped by the type filter, never a
+        // zero-leaf proof attempt.
+        raw_event(U256::from(11u64), ChallengeType::Other(2), B256::ZERO, 0xDD, 4),
+    ];
+    let adapter = Arc::new(ChallengeManagerContract::from_raw_events(
+        raws,
+        DirectLeafLocator,
+        CHAIN_ID,
+        Address::repeat_byte(CONTRACT),
+    ));
+
+    let opened = ChallengeEventSource::watch_opened(
+        &*adapter,
+        ScanWindow { from_block: 0, to_block: 10_000 },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        opened.len(),
+        1,
+        "only the WithdrawNotInRoot challenge is emitted from the mixed batch"
+    );
+    let ev = opened[0].clone();
+    adapter.script_status(ev.challenge_id, true, 10_000, 0);
+
+    let witness = witness_for(&server);
+    let h = Handler::new(
+        adapter.clone(),
+        adapter.clone(),
+        witness,
+        rm,
+        proven_gate(),
+        CHAIN_ID,
+        16,
+        SAFETY,
+        MAX_RESEND,
+    );
+    let gate = InFlightGate::new();
+    let mut state = ChallengeState::Discovered;
+    h.drive(&ev, &mut state, &gate).await.unwrap();
+    assert!(
+        matches!(state, ChallengeState::Submitted { .. }),
+        "the WithdrawNotInRoot challenge is answered, got {state:?}"
+    );
+
+    // The recorded submit carries the WB proof's four fields, verbatim.
+    let call = adapter.last_submit_call().expect("a submit was recorded");
+    assert_eq!(call.challenge_id, onchain_id, "on-chain challengeId passed through verbatim");
+    assert_eq!(call.leaf_index, 0);
+    assert_eq!(call.leaf_count, 1);
+    assert_eq!(call.proof, siblings);
+}
+
+/// End-to-end with a MISMATCHED leaf-encoding gate: a `WithdrawNotInRoot` challenge driven through
+/// the real adapter lands in `Blocked` with ZERO Witness-Builder calls and ZERO submit calls. No
+/// record/proof endpoints are mounted, so the absence of any wiremock endpoint proves the proof
+/// flow was never entered. A force-transaction challenge (zero leaf) in the same batch is dropped
+/// by the type filter before it could reach any proof path.
+#[tokio::test]
+async fn end_to_end_blocked_leaf_encoding_mismatch_makes_zero_wb_and_zero_sender_calls() {
+    let r = valid_record(0x42);
+    let leaf = leaf_of(&r);
+    // Deliberately mount NO record/proof endpoints: a mismatched gate must block BEFORE any WB
+    // call, so the absence of endpoints is itself the zero-WB-call proof.
+    let server = MockServer::start().await;
+    let rm = Arc::new(MockRootManager::new());
+    rm.set_latest(CHECKPOINT_HEIGHT, B256::repeat_byte(0x33));
+
+    let onchain_id = U256::from(4242u64);
+    let raws = vec![
+        raw_event(onchain_id, ChallengeType::WithdrawNotInRoot, leaf, 0xAA, 1),
+        // A force-transaction challenge with a zero leaf: dropped by the type filter.
+        raw_event(U256::from(7u64), ChallengeType::Other(2), B256::ZERO, 0xDD, 2),
+    ];
+    let adapter = Arc::new(ChallengeManagerContract::from_raw_events(
+        raws,
+        DirectLeafLocator,
+        CHAIN_ID,
+        Address::repeat_byte(CONTRACT),
+    ));
+
+    let opened = ChallengeEventSource::watch_opened(
+        &*adapter,
+        ScanWindow { from_block: 0, to_block: 10_000 },
+    )
+    .await
+    .unwrap();
+    assert_eq!(opened.len(), 1, "the zero-leaf force-tx challenge is dropped by the type filter");
+    let ev = opened[0].clone();
+    assert_eq!(ev.leaf_hash, leaf, "the emitted leaf_hash is the event's leaf");
+    adapter.script_status(ev.challenge_id, true, 10_000, 0);
+
+    let h = Handler::new(
+        adapter.clone(),
+        adapter.clone(),
+        witness_for(&server),
+        rm,
+        mismatch_gate(),
+        CHAIN_ID,
+        16,
+        SAFETY,
+        MAX_RESEND,
+    );
+    let gate = InFlightGate::new();
+    let mut state = ChallengeState::Discovered;
+    h.drive(&ev, &mut state, &gate).await.unwrap();
+    assert!(
+        matches!(state, ChallengeState::Blocked(_)),
+        "a mismatched leaf-encoding gate blocks the challenge, got {state:?}"
+    );
+    assert!(
+        adapter.last_submit_call().is_none(),
+        "no submitWithdrawProof calldata is built while blocked"
+    );
+    assert_eq!(gate.holder(), None, "no in-flight gate is held while blocked");
 }

@@ -27,9 +27,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use fault_proof::tz::{
     defender::{
-        challenge_contract::{ChallengeEventSource, MockChallengeContract, ScanWindow},
+        challenge_contract::{ChallengeEventSource, ScanWindow},
+        challenge_manager::ChallengeManagerContract,
         config::DefenderConfig,
         handler::{Handler, InFlightGate},
+        leaf_encoding_gate::{DeploymentTarget, LeafEncodingGate},
+        leaf_locator::DirectLeafLocator,
         rootmanager_client::RootManagerClient,
         supervisor::Supervisor,
         watcher::Watcher,
@@ -107,13 +110,45 @@ async fn run() -> Result<()> {
         .connect_http(l2_rpc.parse().context("DEFENDER_L2_RPC must be a URL")?);
     let root_manager = Arc::new(RootManagerClient::new(config.root_manager, l2_provider.clone()));
 
-    // Challenge-contract seam: mock until the real X Layer ABI is wired.
-    tracing::warn!(
-        "tz-defender is running against the in-memory MockChallengeContract seam: the real X \
-         Layer Withdraw-challenge ABI is not yet wired. Watcher/handler/verification are final; \
-         only the challenge event-source/reader/sender implementations will be swapped in."
+    // Challenge-contract seam: the real ChallengeManager adapter (WithdrawNotInRoot only), wired
+    // with the direct leaf-locator — the event carries the Merkle leaf explicitly, so the leaf is
+    // read straight from it. There is no reverse lookup, and nothing about a reverse-lookup service
+    // gates the challenge-listening chain. One honest limitation remains: no transaction signer is
+    // wired in this stage, so submitWithdrawProof calldata is built but not broadcast.
+    let locator = DirectLeafLocator;
+    let challenge = Arc::new(ChallengeManagerContract::new(
+        l2_provider.clone(),
+        config.challenge_contract,
+        config.chain_id,
+        locator,
+    ));
+
+    // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
+    // flow, bound to the deployed challenge contract + chain id. Production passes no compatibility
+    // declaration — none is published yet and none is constructible from local config/env/flags —
+    // so the gate is unconditionally mismatched and every proof path is withheld with an observable
+    // Blocked status; there is no local re-encode shim to mask it. The expected encoding
+    // version / canonical hash / Witness-Builder identity are placeholders here: with no
+    // declaration to match, they are never compared. Lifting fail-closed is a separate
+    // contract/WB prerequisite (publish an authenticated, immutable declaration + wire an
+    // authenticated read).
+    let leaf_encoding_gate = Arc::new(LeafEncodingGate::new(
+        DeploymentTarget {
+            address: config.challenge_contract,
+            chain_id: config.chain_id,
+            expected_encoding_version: 0,
+            expected_canonical_encoding_hash: alloy_primitives::B256::ZERO,
+            expected_witness_builder_id: alloy_primitives::B256::ZERO,
+        },
+        None,
+    ));
+    tracing::info!(
+        challenge_contract = %config.challenge_contract,
+        "tz-defender wired the real ChallengeManager adapter (WithdrawNotInRoot only) with the \
+         direct event-leaf locator; the Witness-Builder proof flow stays behind the leaf-encoding \
+         compatibility gate until the contract and Witness-Builder encodings are declared \
+         compatible for this deployment, and no transaction signer is wired yet"
     );
-    let challenge = Arc::new(MockChallengeContract::new());
 
     // Global single-process in-flight gate (at most one broadcast in flight); lost on restart.
     let gate = InFlightGate::new();
@@ -123,6 +158,7 @@ async fn run() -> Result<()> {
         challenge.clone(),
         witness,
         root_manager,
+        leaf_encoding_gate,
         config.chain_id,
         config.cache_capacity,
         config.deadline_safety_margin.as_secs(),

@@ -15,8 +15,11 @@
 
 pub mod cache;
 pub mod challenge_contract;
+pub mod challenge_manager;
 pub mod config;
 pub mod handler;
+pub mod leaf_encoding_gate;
+pub mod leaf_locator;
 pub mod rootmanager_client;
 pub mod supervisor;
 pub mod verifier;
@@ -25,8 +28,13 @@ pub mod witness_wb;
 
 pub use challenge_contract::{
     ChallengeEventSource, ChallengeId, ChallengeOpened, ChallengeReader, ChallengeSender,
-    ChallengeStatus, ScanWindow, SenderError, SubmitOutcome, TxStatus,
+    ChallengeStatus, ConfirmOutcome, ScanWindow, SenderError, SubmitOutcome,
 };
 pub use config::DefenderConfig;
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
+pub use leaf_encoding_gate::{
+    CompatibilityDeclaration, DeclarationProvenance, DeploymentTarget, EncodingMismatchSummary,
+    LeafEncodingDecision, LeafEncodingGate,
+};
+pub use leaf_locator::{DirectLeafLocator, LeafLocator, ReverseLookupLeafLocator};
 pub use supervisor::Supervisor;
