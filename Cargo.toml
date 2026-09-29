@@ -3,6 +3,7 @@ members = [
     "utils/client",
     "utils/host",
     "utils/build",
+    "utils/config-kms",
     # "utils/celestia/client",  # Not used by XLayer; excluded to avoid hana dependency
     # "utils/celestia/host",
     # "utils/eigenda/client",   # Not used by XLayer; excluded to avoid hokulea dependency
@@ -115,6 +116,7 @@ op-succinct-prove = { path = "scripts/prove" }
 op-succinct-client-utils = { path = "utils/client" }
 op-succinct-host-utils = { path = "utils/host" }
 op-succinct-build-utils = { path = "utils/build" }
+op-succinct-config-kms = { path = "utils/config-kms" }
 op-succinct-elfs = { path = "utils/elfs" }
 op-succinct-validity = { path = "validity" }
 op-succinct-fp = { path = "fault-proof" }
@@ -206,6 +208,7 @@ c-kzg = { version = "2.0.0", default-features = false }
 
 # Cloud dependencies
 gcloud-sdk = { version = "0.29", default-features = false, features = ["google-cloud-kms-v1", "google-longrunning", "tls-webpki-roots"] }
+ok-kms-rust = { git = "https://gitlab.okg.com/okcoin-commons/ok-kms-rust", tag = "v1.0.1" }
 
 [profile.release-client-lto]
 inherits = "release"

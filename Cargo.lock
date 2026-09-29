@@ -6576,6 +6576,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ok-kms-rust"
+version = "1.0.1"
+source = "git+https://gitlab.okg.com/okcoin-commons/ok-kms-rust?tag=v1.0.1#698a016388f0ce6b618ce492b142ef77f73a22bf"
+dependencies = [
+ "libloading",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6751,6 +6760,15 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "spin 0.10.0",
+ "tracing",
+]
+
+[[package]]
+name = "op-succinct-config-kms"
+version = "4.3.0"
+dependencies = [
+ "ok-kms-rust",
+ "thiserror 2.0.18",
  "tracing",
 ]
 

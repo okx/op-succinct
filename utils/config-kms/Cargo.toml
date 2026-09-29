@@ -1,0 +1,10 @@
+[package]
+name = "op-succinct-config-kms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+ok-kms-rust.workspace = true
