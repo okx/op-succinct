@@ -72,6 +72,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 # local
+op-succinct-config-kms.workspace = true
 op-succinct-host-utils.workspace = true
 op-succinct-client-utils.workspace = true
 op-succinct-proof-utils.workspace = true

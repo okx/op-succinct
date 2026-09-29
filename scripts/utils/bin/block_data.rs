@@ -116,6 +116,10 @@ async fn main() -> Result<()> {
     dotenv::from_path(&args.env_file).ok();
     utils::setup_logger();
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::resolve_protected_config_env()?;
+
     let fetcher = OPSuccinctDataFetcher::default();
     let l2_chain_id = fetcher.get_l2_chain_id().await?;
 

@@ -12,11 +12,18 @@ struct Args {
     output: PathBuf,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, at startup. Uniform fail-closed behavior across every entrypoint (this
+    // tool reads none of the protected items, so it is a no-op unless one is set).
+    op_succinct_config_kms::resolve_protected_config_env()?;
+
     let args = Args::parse();
 
     let elf = get_range_elf_embedded();
     fs::write(&args.output, elf).expect("Failed to write program.bin");
 
     println!("Saved program.bin to {}", args.output.display());
+
+    Ok(())
 }
