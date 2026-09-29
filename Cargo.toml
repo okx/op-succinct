@@ -153,13 +153,14 @@ op-succinct-signer-gcp-utils = { path = "utils/signer-gcp" }
 op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
-# tradezone (range guest + witness-builder deps) — migrated to the tradezone GitLab repo at the
-# v2.11.0 release tag (upstream dependency migration). SSH transport so the CI runner authenticates
-# via SSH keys. tz-witness carries the Withdraw/Force witness-builder support.
-tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0", features = ["tee"] }
-tz-dex = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0", features = ["zkvm"] }
-tz-primitives = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0" }
-tz-witness = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", tag = "v2.11.0" }
+# tradezone (range guest + witness-builder deps) — migrated to the tradezone GitLab repo (the
+# upstream dependency migration moved these off the previous source). Pinned to the fixed rev that
+# contains all four crates including tz-witness; the v2.11.0 release tag does not publish the
+# witness crate. SSH transport so the CI runner authenticates via SSH keys.
+tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562", features = ["tee"] }
+tz-dex = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562", features = ["zkvm"] }
+tz-primitives = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562" }
+tz-witness = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
