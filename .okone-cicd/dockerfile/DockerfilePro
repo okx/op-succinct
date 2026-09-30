@@ -31,10 +31,29 @@ RUN cargo chef cook --release --bin proposer --bin challenger --bin fetch-fault-
 # Copy source code and build binaries
 COPY . .
 
+# Production-only overlay: repoint ok-kms-rust from the committed local stub path
+# to the real git SDK (pinned revision), for this image build only. The committed
+# default keeps the stub path so credential-less/offline checkouts resolve with no
+# private git source. If this step is skipped, --features kms links the stub and the
+# OK_KMS_STUB guard below fails the build (fail-closed).
+RUN bash .okone-cicd/scripts/inject-real-kms.sh
+
 # Build all binaries (dependencies already built, only project code will compile)
-RUN cargo build --release --bin proposer && \
-    cargo build --release --bin challenger && \
-    cargo build --release --bin fetch-fault-dispute-game-config
+# Production enables the real KMS path via --features kms (each bin's owning crate
+# declares a passthrough kms feature enabling op-succinct-config-kms/kms).
+RUN cargo build --release --features kms --bin proposer && \
+    cargo build --release --features kms --bin challenger && \
+    cargo build --release --features kms --bin fetch-fault-dispute-game-config
+
+# Guard: refuse to ship the offline KMS stub to production. The offline stub embeds
+# the OK_KMS_STUB marker; if it is ever linked into a release binary, fail the image
+# build instead of shipping a node that cannot resolve secrets.
+RUN set -e; for b in proposer challenger fetch-fault-dispute-game-config; do \
+      if grep -qa OK_KMS_STUB "target/release/$b"; then \
+        echo "OK_KMS_STUB marker found in $b: refusing to ship the offline KMS stub to production" >&2; \
+        exit 1; \
+      fi; \
+    done
 
 # Runtime stage - minimal image
 FROM office-registry-vpc.cn-hongkong.cr.aliyuncs.com/okbase/ubuntu:24.04-okg1-sec20251110 AS runtime

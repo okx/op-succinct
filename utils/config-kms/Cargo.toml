@@ -1,0 +1,17 @@
+[package]
+name = "op-succinct-config-kms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+ok-kms-rust = { workspace = true, optional = true }
+
+[features]
+# Off by default: offline/external builds compile with no internal KMS SDK in the
+# build graph. A kms-off build still fails closed on a `kms:<key>` reference.
+default = []
+# Enables the real KMS provider path (production builds with --features kms).
+kms = ["dep:ok-kms-rust"]

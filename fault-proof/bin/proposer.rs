@@ -36,6 +36,10 @@ async fn main() -> Result<()> {
 
     setup_logger();
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::init_startup_config()?;
+
     let proposer_config = ProposerConfig::from_env()?;
     proposer_config.log();
 

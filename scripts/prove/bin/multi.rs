@@ -36,6 +36,10 @@ async fn main() -> Result<()> {
         .context(format!("Environment file not found: {}", args.env_file.display()))?;
     utils::setup_logger();
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::init_startup_config()?;
+
     let data_fetcher = OPSuccinctDataFetcher::new_with_rollup_config().await?;
 
     let host = initialize_host(Arc::new(data_fetcher.clone()));
