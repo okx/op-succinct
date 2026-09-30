@@ -1,40 +1,19 @@
-//! Secret-backend access boundary.
+//! Real `ok-kms-rust`-backed provider and the process-wide KMS client singleton.
 //!
-//! [`KmsSecretProvider`] and [`KmsProviderError`] are always compiled — the pure
-//! resolver, the injectable seam, and the test mock use them in every build. The
-//! real `ok-kms-rust`-backed provider ([`OkKmsProvider`] / [`init_provider`]) is
-//! compiled only under `#[cfg(feature = "kms")]`; with the feature off there is no
-//! internal SDK in the build graph at all, and a `kms:<key>` reference fails closed
-//! at the resolver's factory.
+//! This whole module is compiled only under `#[cfg(feature = "kms")]` — the gate
+//! lives on its `mod real;` declaration in the parent, so no per-item `#[cfg]` is
+//! needed here. The boundary types ([`KmsProviderError`], [`KmsSecretProvider`])
+//! live in the always-compiled parent module. Every SDK error is mapped to a
+//! payload-free class at the boundary so no backend text can be cached or surfaced
+//! (redaction invariant).
 
-// `KmsConfigError` is referenced only from the real (`kms`-gated) provider surface;
-// gate the import so a default (kms-off) build carries no unused import.
-#[cfg(feature = "kms")]
+use super::{KmsProviderError, KmsSecretProvider};
 use crate::error::KmsConfigError;
-#[cfg(feature = "kms")]
 use std::sync::OnceLock;
-
-/// Payload-free provider error. Intentionally carries no message so that no
-/// underlying/backend text can flow into a diagnostic (redaction invariant).
-#[derive(Debug)]
-pub enum KmsProviderError {
-    /// The requested key was not present in the backend.
-    NotFound,
-    /// Any other failure while fetching the secret (transport, backend, decode).
-    Fetch,
-}
-
-/// The single access boundary used by the resolver to fetch a secret by key.
-/// Mockable for tests; the production implementation is [`OkKmsProvider`], compiled
-/// only under the `kms` feature.
-pub trait KmsSecretProvider {
-    fn get_secret_value(&self, key: &str) -> Result<String, KmsProviderError>;
-}
 
 /// Payload-free marker that backend initialization failed. Carries no message so
 /// that no backend/SDK error text can ever be cached or surfaced (redaction
 /// invariant). It is what the process-wide cache stores on the failure path.
-#[cfg(feature = "kms")]
 #[derive(Clone, Copy)]
 pub(crate) struct KmsInitFailed;
 
@@ -45,14 +24,12 @@ pub(crate) struct KmsInitFailed;
 /// payload-free [`KmsInitFailed`] so every later access fails closed without
 /// re-invoking the backend. `KmsClient` is already `Send + Sync`, so the
 /// `OnceLock` is stored directly with no newtype and no `unsafe impl`.
-#[cfg(feature = "kms")]
 static KMS_CLIENT: OnceLock<Result<ok_kms_rust::KmsClient, KmsInitFailed>> = OnceLock::new();
 
 /// Generic init-once seam: initialize `cell` at most once via `ctor`, cache the
 /// outcome for the process lifetime, and map a cached failure to the redacted
 /// [`KmsConfigError::KmsInitError`]. Generic over the stored value so the singleton
 /// can be exercised in tests without the SDK (e.g. `T = u32`).
-#[cfg(feature = "kms")]
 pub(crate) fn init_once<T>(
     cell: &OnceLock<Result<T, KmsInitFailed>>,
     ctor: impl FnOnce() -> Result<T, KmsInitFailed>,
@@ -65,22 +42,19 @@ pub(crate) fn init_once<T>(
 /// The process-wide real backend client, constructed at most once. The SDK
 /// `KmsError` is mapped to the payload-free [`KmsInitFailed`] **at this boundary**
 /// so its text is dropped before it can be cached.
-#[cfg(feature = "kms")]
 fn process_kms_client() -> Result<&'static ok_kms_rust::KmsClient, KmsConfigError> {
     init_once(&KMS_CLIENT, || {
         ok_kms_rust::KmsClient::new().map_err(|_| KmsInitFailed)
     })
 }
 
-/// Production provider backed by `ok-kms-rust` v1.0.1. Only compiled under the
-/// `kms` feature. Holds a shared reference to the never-dropped process-wide
-/// client rather than owning it, so every provider instance shares one client.
-#[cfg(feature = "kms")]
+/// Production provider backed by `ok-kms-rust` v1.0.1. Holds a shared reference to
+/// the never-dropped process-wide client rather than owning it, so every provider
+/// instance shares one client.
 pub struct OkKmsProvider {
     client: &'static ok_kms_rust::KmsClient,
 }
 
-#[cfg(feature = "kms")]
 impl OkKmsProvider {
     /// Wrap the process-wide client borrowed from the singleton.
     fn from_static(client: &'static ok_kms_rust::KmsClient) -> Self {
@@ -88,7 +62,6 @@ impl OkKmsProvider {
     }
 }
 
-#[cfg(feature = "kms")]
 impl KmsSecretProvider for OkKmsProvider {
     fn get_secret_value(&self, key: &str) -> Result<String, KmsProviderError> {
         // Map every backend error to a payload-free class: the raw backend error
@@ -101,7 +74,6 @@ impl KmsSecretProvider for OkKmsProvider {
 
 /// A protected-set env var is considered "present" only if it holds a
 /// non-whitespace value.
-#[cfg(feature = "kms")]
 fn present(name: &str) -> bool {
     std::env::var(name)
         .map(|v| !v.trim().is_empty())
@@ -117,7 +89,6 @@ fn present(name: &str) -> bool {
 /// required; `KMS_SECRET_NAME` is required, with `KMS_REGION` additionally required
 /// for the AWS provider. The backend additionally validates the dynamic library,
 /// region, secret name, and cloud access during construction.
-#[cfg(feature = "kms")]
 pub fn init_provider() -> Result<OkKmsProvider, KmsConfigError> {
     if std::env::var("KMS_ENABLED").as_deref() != Ok("true") {
         return Err(KmsConfigError::KmsInitError);
@@ -136,7 +107,7 @@ pub fn init_provider() -> Result<OkKmsProvider, KmsConfigError> {
     Ok(OkKmsProvider::from_static(process_kms_client()?))
 }
 
-#[cfg(all(test, feature = "kms"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
