@@ -82,6 +82,18 @@ pub fn resolve_protected_config_env() -> Result<(), KmsConfigError> {
     resolve_protected_config_env_with(&mut factory)
 }
 
+/// The single startup entry point every service binary must call.
+///
+/// Call this as the **first action** of `main()`, after logger/env setup and
+/// **before** the first configuration read (any `*::from_env(...)`): it resolves
+/// every protected config item in place and fails the process closed on any
+/// problem. It is a thin, stable alias for [`resolve_protected_config_env`] so
+/// that a single shared call site can be enforced across all entrypoints; its
+/// `Result` is returned unchanged.
+pub fn init_startup_config() -> Result<(), KmsConfigError> {
+    resolve_protected_config_env()
+}
+
 /// Same as [`resolve_protected_config_env`], but the caller injects the provider
 /// factory. Reads each of the six items via `std::env::var`, resolves any reference
 /// through the injected provider, and — only when the whole set resolved
