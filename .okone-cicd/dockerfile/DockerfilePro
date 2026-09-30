@@ -15,6 +15,11 @@ RUN apt-get update && apt-get install -y \
 COPY rust-toolchain.toml ./
 RUN rustup show  # This will install the toolchain and components from rust-toolchain.toml
 
+# Private KMS SDK access is supplied by CI at build time with --build-arg
+# GIT_TOKEN="$CI_JOB_TOKEN". The token is used only in the builder stage.
+ARG GIT_TOKEN
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+
 # Planner stage: Generate recipe.json
 FROM chef AS planner
 COPY . .
@@ -39,7 +44,15 @@ COPY . .
 # default keeps the stub path so credential-less/offline checkouts resolve with no
 # private git source. If this step is skipped, --features kms links the stub and the
 # OK_KMS_STUB guard below fails the build (fail-closed).
-RUN bash .okone-cicd/scripts/inject-real-kms.sh
+RUN test -n "$GIT_TOKEN" && \
+    git config --global \
+      url."https://gitlab-ci-token:${GIT_TOKEN}@gitlab.okg.com/".insteadOf \
+      "https://gitlab.okg.com/" && \
+    bash .okone-cicd/scripts/inject-real-kms.sh; \
+    result=$?; \
+    git config --global --unset-all \
+      url."https://gitlab-ci-token:${GIT_TOKEN}@gitlab.okg.com/".insteadOf || true; \
+    exit "$result"
 
 # Build all binaries (dependencies already built, only project code will compile)
 # Production enables the real KMS path via --features kms (each bin's owning crate
