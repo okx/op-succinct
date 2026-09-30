@@ -105,3 +105,6 @@ pnpm-debug.log*
 .claude/
 
 docs/superpowers/
+# Offline KMS stub build artifacts (standalone crate; its own target/lockfile)
+/stubs/ok-kms-rust/target
+/stubs/ok-kms-rust/Cargo.lock

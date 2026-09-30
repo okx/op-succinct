@@ -39,6 +39,11 @@ fn main() {
         std::process::exit(1);
     }
 
+    op_succinct_config_kms::init_startup_config().unwrap_or_else(|e| {
+        eprintln!("error: startup config resolution failed: {e}");
+        std::process::exit(1);
+    });
+
     // for tz: parse TzConfig (sync) before tokio starts so set_var is single-threaded safe
     let tz_config = TzConfig::from_env().unwrap_or_else(|e| {
         eprintln!("error: invalid tz config: {e}");

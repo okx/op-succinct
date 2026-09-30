@@ -33,6 +33,7 @@ required-features = ["tz"]
 [dependencies]
 # local
 op-succinct-client-utils.workspace = true
+op-succinct-config-kms.workspace = true
 op-succinct-elfs.workspace = true
 op-succinct-ethereum-host-utils.workspace = true
 op-succinct-host-utils.workspace = true
@@ -108,4 +109,4 @@ ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
 # for tz: gates the TradeZone (tz) custom L2 chain support module + binaries.
 tz = ["dep:reqwest", "dep:thiserror", "op-succinct-proof-utils/tz"]
-kms = ["op-succinct-signer-utils/kms"]
+kms = ["op-succinct-signer-utils/kms", "op-succinct-config-kms/kms"]

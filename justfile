@@ -576,7 +576,7 @@ forge-build *ARGS:
 # Swap the in-tree stub for a real ok-kms-rust checkout. IDEMPOTENT / re-entrant (Spec §5.2):
 # "obtain source" (Step 1) is skippable/cached, but "install libs/*.so" (Step 2) runs EVERY time,
 # so libs/*.so are present after every invocation — including a 2nd run after kms-crate-restore.
-kms-crate url="ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git" tag="v1.0.0":
+kms-crate url="ssh://git@gitlab.okg.com/okcoin-commons/ok-kms-rust.git" tag="v1.0.1":
     #!/usr/bin/env bash
     set -euo pipefail
     DEST="stubs/ok-kms-rust"

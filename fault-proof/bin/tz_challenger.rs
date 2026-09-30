@@ -34,6 +34,11 @@ fn main() {
         std::process::exit(1);
     }
 
+    op_succinct_config_kms::init_startup_config().unwrap_or_else(|e| {
+        eprintln!("error: startup config resolution failed: {e}");
+        std::process::exit(1);
+    });
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

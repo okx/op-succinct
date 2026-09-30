@@ -7449,7 +7449,7 @@ dependencies = [
 
 [[package]]
 name = "ok-kms-rust"
-version = "1.0.0"
+version = "1.0.1"
 
 [[package]]
 name = "once_cell"
@@ -7763,6 +7763,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "op-succinct-config-kms"
+version = "4.4.0"
+dependencies = [
+ "ok-kms-rust",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "op-succinct-eigenda-client-utils"
 version = "0.1.0"
 dependencies = [
@@ -7883,6 +7892,7 @@ dependencies = [
  "op-alloy-rpc-types",
  "op-succinct-bindings",
  "op-succinct-client-utils",
+ "op-succinct-config-kms",
  "op-succinct-elfs",
  "op-succinct-ethereum-host-utils",
  "op-succinct-host-utils",
@@ -8011,6 +8021,7 @@ dependencies = [
  "kona-preimage",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
+ "op-succinct-config-kms",
  "op-succinct-elfs",
  "op-succinct-fp",
  "op-succinct-host-utils",
@@ -8061,6 +8072,7 @@ dependencies = [
  "log",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
+ "op-succinct-config-kms",
  "op-succinct-elfs",
  "op-succinct-fp",
  "op-succinct-host-utils",
@@ -8127,6 +8139,7 @@ dependencies = [
  "futures-util",
  "op-succinct-build-utils",
  "op-succinct-client-utils",
+ "op-succinct-config-kms",
  "op-succinct-elfs",
  "op-succinct-host-utils",
  "op-succinct-proof-utils",

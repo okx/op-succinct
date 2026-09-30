@@ -1,11 +1,8 @@
-//! In-tree stub of the OKG-internal `ok-kms-rust` SDK.
-//!
-//! Mirrors exactly the public surface that `op-succinct-signer-utils`
-//! (`utils/signer/src/kms.rs`) compiles against, so a workspace path
-//! dependency substitutes for the real SDK without touching the committed
-//! manifest. `KmsClient::new` succeeds so the existing `OnceLock` init path
-//! stays exercised; every secret lookup fails at runtime with a plain error
-//! directing the operator to `just kms-crate`. Bare-minimum: no grep marker.
+//! Offline KMS stub supporting both signer and startup configuration consumers.
+//! Every secret lookup fails; the marker prevents shipping the stub in production.
+
+#[used]
+static OK_KMS_STUB_MARKER: [u8; 11] = *b"OK_KMS_STUB";
 
 use std::fmt;
 
@@ -31,16 +28,20 @@ impl std::error::Error for KmsError {}
 pub struct KmsClient {}
 
 impl KmsClient {
+    /// Always fails: the offline stub cannot provide secrets.
+    pub fn get_secret_value(&self, _key: &str) -> Result<String, KmsError> {
+        Err(KmsError::Backend("OK_KMS_STUB: offline stub cannot resolve secrets".to_string()))
+    }
+
     /// Constructs successfully so the existing OnceLock init path stays exercised.
     pub fn new() -> Result<KmsClient, KmsError> {
         Ok(KmsClient {})
     }
 
-    /// Bare-minimum stub: always fails at runtime with a plain error directing the
-    /// operator to run `just kms-crate` for a real build. (No grep-able marker.)
+    /// Always fails: the offline stub cannot provide secrets.
     pub fn get_all_secrets(&self) -> Result<String, KmsError> {
         Err(KmsError::Backend(
-            "ok-kms-rust stub in use — run `just kms-crate` to link the real SDK for a KMS build"
+            "OK_KMS_STUB: ok-kms-rust stub in use — run `just kms-crate` to link the real SDK for a KMS build"
                 .to_string(),
         ))
     }
