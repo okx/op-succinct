@@ -40,6 +40,11 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
+
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::init_startup_config()?;
+
     let args = Args::parse();
 
     let prover = ProverClient::builder().network().build().await;

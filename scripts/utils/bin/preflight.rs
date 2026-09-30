@@ -123,6 +123,10 @@ async fn main() -> Result<()> {
     dotenv::from_path(&args.env_file)
         .context(format!("Environment file not found: {}", args.env_file.display()))?;
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::init_startup_config()?;
+
     let wallet = PrivateKeySigner::from_str(env::var("PRIVATE_KEY")?.as_str())
         .context("failed to parse private key")?;
 

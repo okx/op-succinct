@@ -65,3 +65,7 @@ copilot.pem
 # Claude Code local settings
 settings.local.json
 .claude/settings.json
+
+# Offline KMS stub build artifacts (standalone crate; its own target/lockfile)
+/stubs/ok-kms-rust/target
+/stubs/ok-kms-rust/Cargo.lock
