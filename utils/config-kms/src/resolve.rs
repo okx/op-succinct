@@ -6,10 +6,12 @@
 //! entry point that wires it to the process environment is added on top of this
 //! core.
 
-use crate::classify::{classify, Classification};
-use crate::error::KmsConfigError;
-use crate::provider::{KmsProviderError, KmsSecretProvider};
-use crate::PROTECTED_KEYS;
+use crate::{
+    classify::{classify, Classification},
+    error::KmsConfigError,
+    provider::{KmsProviderError, KmsSecretProvider},
+    PROTECTED_KEYS,
+};
 
 /// Resolve the protected items' values without touching global state.
 ///
@@ -26,10 +28,7 @@ pub(crate) fn resolve_values(
     let mut resolved: Vec<(&'static str, String)> = Vec::new();
 
     for name in PROTECTED_KEYS {
-        let raw = reads
-            .iter()
-            .find(|(n, _)| *n == name)
-            .and_then(|(_, v)| v.as_deref());
+        let raw = reads.iter().find(|(n, _)| *n == name).and_then(|(_, v)| v.as_deref());
         // Absent or empty: not processed by this feature (existing validation applies).
         let value = match raw {
             Some(v) if !v.is_empty() => v,
@@ -76,8 +75,9 @@ pub fn resolve_protected_config_env() -> Result<(), KmsConfigError> {
         crate::provider::init_provider().map(|p| Box::new(p) as Box<dyn KmsSecretProvider>)
     };
     #[cfg(not(feature = "kms"))]
-    let mut factory =
-        || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> { Err(KmsConfigError::KmsInitError) };
+    let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
+        Err(KmsConfigError::KmsInitError)
+    };
 
     resolve_protected_config_env_with(&mut factory)
 }
@@ -107,10 +107,8 @@ pub fn init_startup_config() -> Result<(), KmsConfigError> {
 pub fn resolve_protected_config_env_with(
     provider_factory: &mut dyn FnMut() -> Result<Box<dyn KmsSecretProvider>, KmsConfigError>,
 ) -> Result<(), KmsConfigError> {
-    let reads: Vec<(&'static str, Option<String>)> = PROTECTED_KEYS
-        .iter()
-        .map(|name| (*name, std::env::var(name).ok()))
-        .collect();
+    let reads: Vec<(&'static str, Option<String>)> =
+        PROTECTED_KEYS.iter().map(|name| (*name, std::env::var(name).ok())).collect();
 
     let resolved = match resolve_values(&reads, provider_factory) {
         Ok(resolved) => resolved,
@@ -131,8 +129,7 @@ pub fn resolve_protected_config_env_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-    use std::collections::HashMap;
+    use std::{cell::Cell, collections::HashMap};
 
     /// In-memory provider: maps keys to secrets, or fails every fetch.
     struct MockProvider {
@@ -182,7 +179,10 @@ mod tests {
         let out = resolve_values(&r, &mut factory).unwrap();
         assert_eq!(
             out,
-            vec![("NETWORK_PRIVATE_KEY", "p1".to_string()), ("XLAYER_ACCESS_KEY", "p2".to_string())]
+            vec![
+                ("NETWORK_PRIVATE_KEY", "p1".to_string()),
+                ("XLAYER_ACCESS_KEY", "p2".to_string())
+            ]
         );
     }
 
@@ -236,8 +236,9 @@ mod tests {
     #[test]
     fn init_failure_fails_closed() {
         let r = reads(&[("NETWORK_PRIVATE_KEY", Some("kms:k"))]);
-        let mut factory =
-            || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> { Err(KmsConfigError::KmsInitError) };
+        let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
+            Err(KmsConfigError::KmsInitError)
+        };
         let err = resolve_values(&r, &mut factory).unwrap_err();
         assert!(matches!(err, KmsConfigError::KmsInitError));
     }
@@ -315,8 +316,9 @@ mod tests {
         for name in PROTECTED_KEYS {
             std::env::remove_var(name);
         }
-        let mut factory =
-            || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> { Err(KmsConfigError::KmsInitError) };
+        let mut factory = || -> Result<Box<dyn KmsSecretProvider>, KmsConfigError> {
+            Err(KmsConfigError::KmsInitError)
+        };
         assert!(resolve_protected_config_env_with(&mut factory).is_ok());
     }
 }

@@ -45,10 +45,10 @@ impl KmsConfigError {
     /// The config item this error refers to, if it is item-specific.
     fn item(&self) -> Option<&'static str> {
         match self {
-            KmsConfigError::InvalidReferenceFormat { item }
-            | KmsConfigError::SecretFetchError { item }
-            | KmsConfigError::SecretNotFound { item }
-            | KmsConfigError::EmptySecretValue { item } => Some(item),
+            KmsConfigError::InvalidReferenceFormat { item } |
+            KmsConfigError::SecretFetchError { item } |
+            KmsConfigError::SecretNotFound { item } |
+            KmsConfigError::EmptySecretValue { item } => Some(item),
             KmsConfigError::KmsInitError | KmsConfigError::UnsupportedPlatform => None,
         }
     }

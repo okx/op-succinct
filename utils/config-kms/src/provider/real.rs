@@ -34,18 +34,14 @@ pub(crate) fn init_once<T>(
     cell: &OnceLock<Result<T, KmsInitFailed>>,
     ctor: impl FnOnce() -> Result<T, KmsInitFailed>,
 ) -> Result<&T, KmsConfigError> {
-    cell.get_or_init(ctor)
-        .as_ref()
-        .map_err(|_| KmsConfigError::KmsInitError)
+    cell.get_or_init(ctor).as_ref().map_err(|_| KmsConfigError::KmsInitError)
 }
 
 /// The process-wide real backend client, constructed at most once. The SDK
 /// `KmsError` is mapped to the payload-free [`KmsInitFailed`] **at this boundary**
 /// so its text is dropped before it can be cached.
 fn process_kms_client() -> Result<&'static ok_kms_rust::KmsClient, KmsConfigError> {
-    init_once(&KMS_CLIENT, || {
-        ok_kms_rust::KmsClient::new().map_err(|_| KmsInitFailed)
-    })
+    init_once(&KMS_CLIENT, || ok_kms_rust::KmsClient::new().map_err(|_| KmsInitFailed))
 }
 
 /// Production provider backed by `ok-kms-rust` v1.0.1. Holds a shared reference to
@@ -66,18 +62,14 @@ impl KmsSecretProvider for OkKmsProvider {
     fn get_secret_value(&self, key: &str) -> Result<String, KmsProviderError> {
         // Map every backend error to a payload-free class: the raw backend error
         // text must never reach a diagnostic.
-        self.client
-            .get_secret_value(key)
-            .map_err(|_| KmsProviderError::Fetch)
+        self.client.get_secret_value(key).map_err(|_| KmsProviderError::Fetch)
     }
 }
 
 /// A protected-set env var is considered "present" only if it holds a
 /// non-whitespace value.
 fn present(name: &str) -> bool {
-    std::env::var(name)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
+    std::env::var(name).map(|v| !v.trim().is_empty()).unwrap_or(false)
 }
 
 /// On-demand backend initialization. Validates the runtime preconditions and

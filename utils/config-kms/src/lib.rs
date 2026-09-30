@@ -20,7 +20,9 @@ pub use provider::{KmsProviderError, KmsSecretProvider};
 // The real KMS provider surface is compiled only under the `kms` feature.
 #[cfg(feature = "kms")]
 pub use provider::{init_provider, OkKmsProvider};
-pub use resolve::{init_startup_config, resolve_protected_config_env, resolve_protected_config_env_with};
+pub use resolve::{
+    init_startup_config, resolve_protected_config_env, resolve_protected_config_env_with,
+};
 
 /// The exhaustive, hard-coded set of protected config item names, in the fixed
 /// order they are processed. No item outside this set is ever inspected.

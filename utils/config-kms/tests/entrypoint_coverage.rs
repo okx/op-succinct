@@ -6,12 +6,8 @@
 //! entrypoints are added. zkVM guest programs and test binaries are out of scope.
 
 // In-scope resolver-consuming bin dirs (workspace-root-relative); zkVM guests + tests/* excluded.
-const IN_SCOPE_BIN_DIRS: &[&str] = &[
-    "validity/bin",
-    "fault-proof/bin",
-    "scripts/prove/bin",
-    "scripts/utils/bin",
-];
+const IN_SCOPE_BIN_DIRS: &[&str] =
+    &["validity/bin", "fault-proof/bin", "scripts/prove/bin", "scripts/utils/bin"];
 
 #[test]
 fn every_in_scope_entrypoint_calls_startup_resolver_before_first_config_read() {
@@ -28,7 +24,10 @@ fn every_in_scope_entrypoint_calls_startup_resolver_before_first_config_read() {
                 .find("init_startup_config")
                 .unwrap_or_else(|| panic!("{p:?} missing init_startup_config"));
             if let Some(first_from_env) = src.find("from_env(") {
-                assert!(call < first_from_env, "{p:?}: startup resolver must precede first from_env(");
+                assert!(
+                    call < first_from_env,
+                    "{p:?}: startup resolver must precede first from_env("
+                );
             }
             checked += 1;
         }

@@ -10,10 +10,12 @@ use op_succinct_config_kms::{
     resolve_protected_config_env, resolve_protected_config_env_with, KmsConfigError,
     KmsProviderError, KmsSecretProvider,
 };
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Mutex;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+    sync::Mutex,
+};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -29,11 +31,7 @@ const PROTECTED: [&str; 6] = [
 const KMS_RUNTIME: [&str; 4] = ["KMS_ENABLED", "KMS_PROVIDER", "KMS_SECRET_NAME", "KMS_REGION"];
 
 fn snapshot() -> Vec<(&'static str, Option<String>)> {
-    PROTECTED
-        .iter()
-        .chain(KMS_RUNTIME.iter())
-        .map(|k| (*k, std::env::var(k).ok()))
-        .collect()
+    PROTECTED.iter().chain(KMS_RUNTIME.iter()).map(|k| (*k, std::env::var(k).ok())).collect()
 }
 
 fn restore(snap: &[(&'static str, Option<String>)]) {
@@ -185,7 +183,7 @@ fn full_success_write_back() {
     std::env::set_var("NETWORK_PRIVATE_KEY", "kms:k1");
     std::env::set_var("XLAYER_ACCESS_KEY", "kms:k2");
     std::env::set_var("XLAYER_SECRET_KEY", "0xraw"); // plaintext -> untouched
-    // SP1_GATEWAY_TOKEN, SP1_GATEWAY_S3_TOKEN, CLI_REDIS_NODES absent -> untouched
+                                                     // SP1_GATEWAY_TOKEN, SP1_GATEWAY_S3_TOKEN, CLI_REDIS_NODES absent -> untouched
 
     let mock = MockProvider::new(&[("k1", "p1"), ("k2", "p2")]);
     let init_count = Cell::new(0usize);
@@ -273,7 +271,10 @@ fn init_failure_is_atomic() {
     let acc = std::env::var("XLAYER_ACCESS_KEY").ok();
     restore(&snap);
 
-    assert!(matches!(result, Err(KmsConfigError::KmsInitError)), "init failure fails closed: {result:?}");
+    assert!(
+        matches!(result, Err(KmsConfigError::KmsInitError)),
+        "init failure fails closed: {result:?}"
+    );
     assert_eq!(net.as_deref(), Some("kms:k1"), "no env mutation on failure (reference item)");
     assert_eq!(acc.as_deref(), Some("0xplain"), "no env mutation on failure (plaintext item)");
 }
