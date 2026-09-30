@@ -1,0 +1,9 @@
+[package]
+name = "ok-kms-rust"
+version = "1.0.1"
+edition = "2021"
+description = "Fail-fast offline stub for ok-kms-rust v1.0.1 — NOT for production"
+
+# Standalone: this offline stub is deliberately NOT a member of the op-succinct
+# workspace. It is pulled in only via an opt-in `[patch]` for offline builds.
+[workspace]
