@@ -14,7 +14,7 @@ use op_succinct_host_utils::{
     metrics::{init_metrics, MetricsGauge},
     setup_logger,
 };
-use op_succinct_signer_utils::{ComponentRole, SignerLock};
+use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
@@ -53,7 +53,7 @@ async fn run() -> Result<()> {
     let validator_config = TzGameValidatorConfig::from_env()?;
     validator_config.log();
 
-    let challenger_signer = SignerLock::from_env_with_role(ComponentRole::Challenger).await?;
+    let challenger_signer = SignerLock::from_env().await?;
     // Best-effort: start the asset-management verify server if XLAYER_SIGNER_VERIFY_ADDR is set.
     challenger_signer.maybe_spawn_xlayer_verify_server().await;
     let l1_provider = ProviderBuilder::default().connect_http(challenger_config.l1_rpc.clone());

@@ -31,7 +31,6 @@ pub enum XLayerSignerError {
     NetworkError(String),
 
     #[error("Configuration error: {0}")]
-    #[allow(dead_code)]
     ConfigError(String),
 }
 
@@ -52,39 +51,39 @@ const HTTP_STATUS_SUCCESS: u16 = 200;
 /// so a companion verify-server can answer asset-management callbacks.
 const REF_ORDER_CACHE_CAPACITY: usize = 1000;
 
-/// Which component this signer serves. Set once at process start.
-/// There is no reachable "unknown" role: this is a closed two-variant set
-/// fixed at startup, so an unrecognised role is unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ComponentRole {
-    #[default]
-    Proposer,
-    Challenger,
-}
-
-/// refOrderID prefix for a component role.
-fn ref_order_id_prefix(role: ComponentRole) -> &'static str {
-    match role {
-        ComponentRole::Proposer => "PROPOSER_TZ_",
-        ComponentRole::Challenger => "CHALLENGER_TZ_",
+/// Validates an ops-supplied refOrderID prefix (`XLAYER_SIGNER_REF_ORDER_PREFIX`):
+/// non-empty, ASCII letters/digits/underscore only. This crate does not know
+/// or care which component (proposer, challenger, or any future service)
+/// is running it — the prefix is opaque, ops-owned identity. Validated once
+/// at the `Signer::from_env` boundary so a misconfigured prefix fails at
+/// startup instead of silently producing a refOrderID that the downstream
+/// asset-management service cannot attribute or parse.
+pub fn validate_ref_order_prefix(prefix: &str) -> Result<()> {
+    if prefix.is_empty() {
+        return Err(XLayerSignerError::ConfigError(
+            "XLAYER_SIGNER_REF_ORDER_PREFIX must not be empty".to_string(),
+        )
+        .into());
     }
+    if !prefix.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(XLayerSignerError::ConfigError(format!(
+            "XLAYER_SIGNER_REF_ORDER_PREFIX {prefix:?} must contain only ASCII letters, \
+             digits, or underscores"
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 /// Builds a refOrderID of the form `{prefix}{op}_{unix_ms}_{rand8hex}`.
-/// The prefix is role-dependent (`PROPOSER_TZ_` / `CHALLENGER_TZ_`); the 32
-/// bits of randomness come from a v4 UUID to avoid pulling in a separate
-/// `rand` dependency.
-fn generate_ref_order_id(role: ComponentRole, op: OperateType) -> String {
+/// `prefix` is ops-supplied configuration (`XLAYER_SIGNER_REF_ORDER_PREFIX`),
+/// not a role baked into this crate; the 32 bits of randomness come from a
+/// v4 UUID to avoid pulling in a separate `rand` dependency.
+fn generate_ref_order_id(prefix: &str, op: OperateType) -> String {
     let ts_ms = chrono::Utc::now().timestamp_millis();
     let uuid = uuid::Uuid::new_v4();
     let rand_bytes = &uuid.as_bytes()[..4];
-    format!(
-        "{prefix}{op}_{ts}_{rand}",
-        prefix = ref_order_id_prefix(role),
-        op = op as i32,
-        ts = ts_ms,
-        rand = hex::encode(rand_bytes),
-    )
+    format!("{prefix}{op}_{ts}_{rand}", op = op as i32, ts = ts_ms, rand = hex::encode(rand_bytes),)
 }
 
 /// Wire-level operation type recognised by the XLayer remote signer.
@@ -304,8 +303,12 @@ pub struct XLayerConfig {
     pub access_key: String,
     pub secret_key: String,
     pub timeout: Duration,
-    /// Component role driving the refOrderID prefix. Not sensitive.
-    pub role: ComponentRole,
+    /// Ops-supplied refOrderID prefix (`XLAYER_SIGNER_REF_ORDER_PREFIX`), embedded
+    /// verbatim in every ID this client issues. Not sensitive. This crate has no
+    /// notion of "proposer" or "challenger" — the prefix is opaque, deployment-owned
+    /// identity, validated once via [`validate_ref_order_prefix`] at the
+    /// `Signer::from_env` boundary.
+    pub ref_order_prefix: String,
     /// Verify-server listen address; empty ⇒ the verify server is disabled. Not sensitive.
     pub verify_addr: String,
 }
@@ -326,7 +329,7 @@ impl std::fmt::Debug for XLayerConfig {
             .field("access_key", &"***REDACTED***")
             .field("secret_key", &"***REDACTED***")
             .field("timeout", &self.timeout)
-            .field("role", &self.role)
+            .field("ref_order_prefix", &self.ref_order_prefix)
             .field("verify_addr", &self.verify_addr)
             .finish()
     }
@@ -348,7 +351,7 @@ impl Default for XLayerConfig {
             access_key: String::new(),
             secret_key: String::new(),
             timeout: Duration::from_secs(30),
-            role: ComponentRole::Proposer,
+            ref_order_prefix: String::new(),
             verify_addr: String::new(),
         }
     }
@@ -401,9 +404,9 @@ impl XLayerRemoteClient {
         cache.put(id.to_string(), ());
     }
 
-    /// The component role this client issues refOrderIDs for.
-    pub fn role(&self) -> ComponentRole {
-        self.config.role
+    /// The refOrderID prefix this client embeds in every issued ID.
+    pub fn ref_order_prefix(&self) -> &str {
+        &self.config.ref_order_prefix
     }
 
     /// The verify-server listen address (empty ⇒ verify server disabled).
@@ -435,7 +438,7 @@ impl XLayerRemoteClient {
         // Register the refOrderID before sending so the verify-server can
         // answer asset-management callbacks even if the response is delayed
         // or lost.
-        let ref_order_id = generate_ref_order_id(self.config.role, operate_type);
+        let ref_order_id = generate_ref_order_id(&self.config.ref_order_prefix, operate_type);
         {
             let mut cache = self.ref_order_cache.lock().await;
             cache.put(ref_order_id.clone(), ());
@@ -1365,7 +1368,7 @@ mod tests {
             access_key: "secret-access-key".to_string(),
             secret_key: "super-secret-key".to_string(),
             timeout: Duration::from_secs(30),
-            role: ComponentRole::Proposer,
+            ref_order_prefix: "PROPOSER_TZ_".to_string(),
             verify_addr: String::new(),
         };
 
@@ -1389,14 +1392,14 @@ mod tests {
         assert_eq!(XLayerConfig::default().verify_addr, "");
     }
 
-    /// The client exposes its role and verify address for the startup wiring.
+    /// The client exposes its refOrderID prefix and verify address for the startup wiring.
     #[tokio::test]
-    async fn test_client_exposes_role_and_verify_addr() {
+    async fn test_client_exposes_ref_order_prefix_and_verify_addr() {
         let mut cfg = XLayerConfig::default();
-        cfg.role = ComponentRole::Challenger;
+        cfg.ref_order_prefix = "CHALLENGER_TZ_".to_string();
         cfg.verify_addr = "127.0.0.1:18081".to_string();
         let client = XLayerRemoteClient::new(cfg);
-        assert_eq!(client.role(), ComponentRole::Challenger);
+        assert_eq!(client.ref_order_prefix(), "CHALLENGER_TZ_");
         assert_eq!(client.verify_addr(), "127.0.0.1:18081");
     }
 
@@ -1558,17 +1561,30 @@ mod tests {
         assert_eq!(recovered_req.from, Some(expected_from));
     }
 
-    /// Prefix is role-driven: Proposer -> PROPOSER_TZ_, Challenger -> CHALLENGER_TZ_.
+    /// Prefix is ops-configured, not role-driven: whatever string
+    /// `XLAYER_SIGNER_REF_ORDER_PREFIX` resolves to is used verbatim.
     #[test]
-    fn test_ref_order_id_prefix_by_role() {
-        assert_eq!(ref_order_id_prefix(ComponentRole::Proposer), "PROPOSER_TZ_");
-        assert_eq!(ref_order_id_prefix(ComponentRole::Challenger), "CHALLENGER_TZ_");
+    fn test_validate_ref_order_prefix_accepts_expected_values() {
+        assert!(validate_ref_order_prefix("PROPOSER_TZ_").is_ok());
+        assert!(validate_ref_order_prefix("CHALLENGER_TZ_").is_ok());
+        assert!(validate_ref_order_prefix("ZKPROPOSER_TZ_PRE_").is_ok());
     }
 
-    /// A Challenger emits CHALLENGER_TZ_, keeping the {prefix}{op}_{ts}_{8hex} shape.
+    /// Empty and non-ASCII-alphanumeric-or-underscore prefixes must be
+    /// rejected — this is what turns an ops typo into a startup failure
+    /// instead of a silently malformed refOrderID.
+    #[test]
+    fn test_validate_ref_order_prefix_rejects_invalid_values() {
+        assert!(validate_ref_order_prefix("").is_err());
+        assert!(validate_ref_order_prefix("PROPOSER TZ_").is_err(), "space not allowed");
+        assert!(validate_ref_order_prefix("PROPOSER-TZ_").is_err(), "hyphen not allowed");
+        assert!(validate_ref_order_prefix("PROPOSER_TZ_\n").is_err(), "control char not allowed");
+    }
+
+    /// A configured CHALLENGER_TZ_ prefix keeps the {prefix}{op}_{ts}_{8hex} shape.
     #[test]
     fn test_generate_ref_order_id_challenger_prefix() {
-        let id = generate_ref_order_id(ComponentRole::Challenger, OperateType::Challenge);
+        let id = generate_ref_order_id("CHALLENGER_TZ_", OperateType::Challenge);
         assert!(id.starts_with("CHALLENGER_TZ_"), "expected CHALLENGER_TZ_ prefix, got: {id}");
         let tail = id.trim_start_matches("CHALLENGER_TZ_");
         let parts: Vec<&str> = tail.split('_').collect();
@@ -1579,10 +1595,10 @@ mod tests {
         assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    /// refOrderID shape: `PROPOSER_TZ_{operateType}_{ms}_{8 hex}`.
+    /// refOrderID shape: `{configured prefix}{operateType}_{ms}_{8 hex}`.
     #[test]
     fn test_generate_ref_order_id_shape() {
-        let id = generate_ref_order_id(ComponentRole::Proposer, OperateType::Create);
+        let id = generate_ref_order_id("PROPOSER_TZ_", OperateType::Create);
         // Prefix
         assert!(id.starts_with("PROPOSER_TZ_"), "expected PROPOSER_TZ_ prefix, got: {id}");
         // Three underscore-separated chunks after the prefix:
@@ -1600,8 +1616,8 @@ mod tests {
     /// the same millisecond — the random suffix is what saves us.
     #[test]
     fn test_generate_ref_order_id_unique() {
-        let a = generate_ref_order_id(ComponentRole::Proposer, OperateType::Resolve);
-        let b = generate_ref_order_id(ComponentRole::Proposer, OperateType::Resolve);
+        let a = generate_ref_order_id("PROPOSER_TZ_", OperateType::Resolve);
+        let b = generate_ref_order_id("PROPOSER_TZ_", OperateType::Resolve);
         assert_ne!(a, b);
     }
 
@@ -1612,7 +1628,7 @@ mod tests {
     async fn test_has_ref_order_id_roundtrip() {
         let client = XLayerRemoteClient::new(XLayerConfig::default());
 
-        let id = generate_ref_order_id(ComponentRole::Proposer, OperateType::Create);
+        let id = generate_ref_order_id("PROPOSER_TZ_", OperateType::Create);
         assert!(!client.has_ref_order_id(&id).await);
 
         {
