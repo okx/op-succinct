@@ -22,6 +22,10 @@ members = [
     "fault-proof",
     "bindings",
 ]
+# The default `ok-kms-rust` source is the local `stubs/ok-kms-rust` fail-fast stub, which
+# is a standalone crate (its own `[workspace]`). Exclude it so it is a path dependency, not
+# a member of this workspace, and resolving it does not report multiple workspace roots.
+exclude = ["stubs/ok-kms-rust"]
 resolver = "2"
 
 [workspace.package]
@@ -208,7 +212,7 @@ c-kzg = { version = "2.0.0", default-features = false }
 
 # Cloud dependencies
 gcloud-sdk = { version = "0.29", default-features = false, features = ["google-cloud-kms-v1", "google-longrunning", "tls-webpki-roots"] }
-ok-kms-rust = { git = "https://gitlab.okg.com/okcoin-commons/ok-kms-rust", tag = "v1.0.1" }
+ok-kms-rust = { path = "stubs/ok-kms-rust" }
 
 [profile.release-client-lto]
 inherits = "release"

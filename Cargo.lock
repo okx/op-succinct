@@ -6578,11 +6578,6 @@ dependencies = [
 [[package]]
 name = "ok-kms-rust"
 version = "1.0.1"
-source = "git+https://gitlab.okg.com/okcoin-commons/ok-kms-rust?tag=v1.0.1#698a016388f0ce6b618ce492b142ef77f73a22bf"
-dependencies = [
- "libloading",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "once_cell"
