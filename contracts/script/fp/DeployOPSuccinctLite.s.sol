@@ -26,14 +26,7 @@ import {SP1Verifier as SP1VerifierGroth16} from "../../lib/sp1-contracts/contrac
 import {SP1VerifierGateway} from "../../lib/sp1-contracts/contracts/src/SP1VerifierGateway.sol";
 
 contract DeployOPSuccinctLite is Script, Utils {
-    function run()
-        public
-        returns (
-            address gameImplementation,
-            address sp1Verifier,
-            address accessManager
-        )
-    {
+    function run() public returns (address gameImplementation, address sp1Verifier, address accessManager) {
         vm.startBroadcast();
 
         // Load configuration from JSON file (priority)
@@ -54,10 +47,7 @@ contract DeployOPSuccinctLite is Script, Utils {
 
         // Step 5: Deploy or get SP1 verifier
         SP1Config memory sp1Config = deploySP1Verifier(
-            config.useSp1MockVerifier,
-            config.rollupConfigHash,
-            config.aggregationVkey,
-            config.rangeVkeyCommitment
+            config.useSp1MockVerifier, config.rollupConfigHash, config.aggregationVkey, config.rangeVkeyCommitment
         );
 
         // Step 6: Deploy OPSuccinctFaultDisputeGame implementation
@@ -76,15 +66,9 @@ contract DeployOPSuccinctLite is Script, Utils {
         // Step 7: Configure factory with initial bond and game implementation
         configureFactory(factoryAddress, config.gameType, config.initialBondWei, address(gameImpl));
 
-
-
         vm.stopBroadcast();
 
-        return (
-            address(gameImpl),
-            sp1Config.verifierAddress,
-            address(accessManagerContract)
-        );
+        return (address(gameImpl), sp1Config.verifierAddress, address(accessManagerContract));
     }
 
     function configureFactory(
@@ -95,18 +79,15 @@ contract DeployOPSuccinctLite is Script, Utils {
     ) internal {
         // Note: Factory owner is a Transactor contract, we need to use CALL through it
         address transactorAddress = vm.envAddress("TRANSACTOR");
-        
+
         Transactor transactor = Transactor(transactorAddress);
         GameType gameType = GameType.wrap(gameTypeValue);
-        
+
         // Call setInitBond through Transactor's CALL
         // CALL executes Factory code with msg.sender = Transactor address
-        bytes memory setInitBondData = abi.encodeWithSelector(
-            DisputeGameFactory.setInitBond.selector,
-            gameType,
-            initialBondWei
-        );
-        
+        bytes memory setInitBondData =
+            abi.encodeWithSelector(DisputeGameFactory.setInitBond.selector, gameType, initialBondWei);
+
         // Note: Transactor.CALL will revert if the call fails, so we use try-catch
         // to get better error messages
         try transactor.CALL(factoryAddress, setInitBondData, 0) returns (bool success1, bytes memory) {
@@ -116,15 +97,12 @@ contract DeployOPSuccinctLite is Script, Utils {
         } catch (bytes memory) {
             revert("Failed to set initial bond via Transactor: low-level call reverted");
         }
-        
+
         // Call setImplementation through Transactor's CALL
         // Use explicit signature for overloaded function (setImplementation has multiple overloads)
-        bytes memory setImplementationData = abi.encodeWithSignature(
-            "setImplementation(uint32,address)",
-            GameType.unwrap(gameType),
-            gameImplAddress
-        );
-        
+        bytes memory setImplementationData =
+            abi.encodeWithSignature("setImplementation(uint32,address)", GameType.unwrap(gameType), gameImplAddress);
+
         try transactor.CALL(factoryAddress, setImplementationData, 0) returns (bool success2, bytes memory) {
             require(success2, "Transactor.CALL returned false for setImplementation");
         } catch Error(string memory reason) {
@@ -144,10 +122,7 @@ contract DeployOPSuccinctLite is Script, Utils {
         address[] memory challengerAddresses
     ) internal returns (AccessManager) {
         // Deploy the access manager contract
-        AccessManager accessManager = new AccessManager(
-            fallbackTimeoutFpSecs,
-            IDisputeGameFactory(factoryAddress)
-        );
+        AccessManager accessManager = new AccessManager(fallbackTimeoutFpSecs, IDisputeGameFactory(factoryAddress));
         console.log("Access manager deployed at:", address(accessManager));
         console.log("Permissionless fallback timeout (seconds):", fallbackTimeoutFpSecs);
 
