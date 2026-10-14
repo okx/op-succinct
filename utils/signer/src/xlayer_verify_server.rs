@@ -109,9 +109,11 @@ fn method_not_allowed_without_body() -> Response {
 /// the query string.
 #[cfg(feature = "xlayer-verify")]
 async fn guard_method(request: Request, next: Next) -> Response {
-    match request.method() {
-        &Method::GET => next.run(request).await,
-        &Method::HEAD => method_not_allowed_without_body(),
+    // Matching on the dereferenced method keeps the arms free of reference
+    // patterns; the `&`-prefixed form trips `clippy::match_ref_pats`.
+    match *request.method() {
+        Method::GET => next.run(request).await,
+        Method::HEAD => method_not_allowed_without_body(),
         _ => method_not_allowed(),
     }
 }
