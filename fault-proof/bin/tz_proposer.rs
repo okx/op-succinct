@@ -72,6 +72,11 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(TzL2Provider { tz_client });
 
     let proposer_signer = SignerLock::from_env().await?;
+    // Start the refOrderId lookup endpoint before any signing work begins, so
+    // the asset-management callback is answerable from the moment the proposer
+    // starts issuing order IDs. No-op for non-XLayer signers or when no lookup
+    // address is configured.
+    proposer_signer.maybe_spawn_xlayer_verify_server().await;
     let l1_provider = ProviderBuilder::new().connect_http(proposer_config.l1_rpc.clone());
 
     let anchor_state_registry = AnchorStateRegistry::new(
