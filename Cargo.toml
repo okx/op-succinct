@@ -154,13 +154,15 @@ op-succinct-range-utils = { path = "programs/range/utils" }
 op-succinct-bindings = { path = "bindings" }
 
 # tradezone (range guest + witness-builder deps) — migrated to the tradezone GitLab repo (the
-# upstream dependency migration moved these off the previous source). Pinned to the fixed rev that
-# contains all four crates including tz-witness; the v2.11.0 release tag does not publish the
-# witness crate. SSH transport so the CI runner authenticates via SSH keys.
-tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562", features = ["tee"] }
-tz-dex = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562", features = ["zkvm"] }
-tz-primitives = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562" }
-tz-witness = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "bb695f3a6d96ad65ba3148c373dec18d4e176562" }
+# upstream dependency migration moved these off the previous source). Pinned to the witness-builder
+# rev that contains all four crates including tz-witness, the chain-id-from-genesis withdrawal
+# support (feature branch feature/witness-builder-withdraw-v1), and the tz-primitives requirement of
+# alloy-primitives ^1.7.1; the v2.11.0 release tag does not publish the witness crate. SSH transport
+# so the CI runner authenticates via SSH keys.
+tz-block-processor = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "94862436bbe508a0c0e5c34fb2717256db414ef5", features = ["tee"] }
+tz-dex = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "94862436bbe508a0c0e5c34fb2717256db414ef5", features = ["zkvm"] }
+tz-primitives = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "94862436bbe508a0c0e5c34fb2717256db414ef5" }
+tz-witness = { git = "ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git", rev = "94862436bbe508a0c0e5c34fb2717256db414ef5" }
 
 # Alloy (Network)
 alloy-signer-local = { version = "1.6.3" }
@@ -197,11 +199,12 @@ alloy = { version = "1.6.3", features = [
 ] }
 
 # Keccak with the SHA3 patch is more efficient than the default Keccak.
-# NOTE: pinned at 1.6.1 to satisfy the tradezone tz-primitives requirement of alloy-primitives
-# ^1.6.1. The alloy-core family is kept consistent in the lockfile (alloy-dyn-abi/alloy-core aligned
-# to 1.6.1 alongside alloy-sol-types/json-abi at 1.6.1), which builds without any change to the
-# git-pinned kona/sp1/reth stack.
-alloy-primitives = { version = "1.6.1", default-features = false, features = [
+# Upgraded to 1.7.1 to satisfy the tradezone witness-builder rev requirement of alloy-primitives
+# ^1.7.1. alloy-sol-types and alloy-sol-macro stay at 1.6.1 to avoid the alloy-dyn-abi Decoder
+# lifetime mismatch (E0107). The targeted cargo update preserves the existing lockfile versions of
+# sol-types/sol-macro/dyn-abi/json-abi/core, which keeps the change independent of the git-pinned
+# kona/sp1/reth stack.
+alloy-primitives = { version = "1.7.1", default-features = false, features = [
     "sha3-keccak",
 ] }
 alloy-sol-types = { version = "1.6.1", default-features = false }

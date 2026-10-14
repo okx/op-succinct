@@ -518,9 +518,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-primitives"
-version = "1.6.1"
+version = "1.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f007e257069855bdf21d27762fd3f3705a613f805c9a08309bf353503f081d71"
+checksum = "d5e9dbd49258ac3ab893a481d46be29b58be7f734dcac46cd80b6b13ee36566c"
 dependencies = [
  "alloy-rlp",
  "bytes",
@@ -14724,7 +14724,7 @@ checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 [[package]]
 name = "tz-block-processor"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=94862436bbe508a0c0e5c34fb2717256db414ef5#94862436bbe508a0c0e5c34fb2717256db414ef5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14745,7 +14745,7 @@ dependencies = [
 [[package]]
 name = "tz-dex"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=94862436bbe508a0c0e5c34fb2717256db414ef5#94862436bbe508a0c0e5c34fb2717256db414ef5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -14772,7 +14772,7 @@ dependencies = [
 [[package]]
 name = "tz-macros"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=94862436bbe508a0c0e5c34fb2717256db414ef5#94862436bbe508a0c0e5c34fb2717256db414ef5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14782,7 +14782,7 @@ dependencies = [
 [[package]]
 name = "tz-primitives"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=94862436bbe508a0c0e5c34fb2717256db414ef5#94862436bbe508a0c0e5c34fb2717256db414ef5"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14806,7 +14806,7 @@ dependencies = [
 [[package]]
 name = "tz-witness"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=bb695f3a6d96ad65ba3148c373dec18d4e176562#bb695f3a6d96ad65ba3148c373dec18d4e176562"
+source = "git+ssh://git@gitlab.okg.com/xlayer-dex/tradezone.git?rev=94862436bbe508a0c0e5c34fb2717256db414ef5#94862436bbe508a0c0e5c34fb2717256db414ef5"
 dependencies = [
  "thiserror 2.0.18",
  "tz-primitives",
