@@ -428,7 +428,9 @@ impl SignerLock {
         if let Some((addr, client)) = target {
             tokio::spawn(async move {
                 if let Err(e) = crate::xlayer_verify_server::serve(addr, client).await {
-                    tracing::warn!("refOrderId lookup endpoint exited: {e}. Continuing without it.");
+                    tracing::warn!(
+                        "refOrderId lookup endpoint exited: {e}. Continuing without it."
+                    );
                 }
             });
         }

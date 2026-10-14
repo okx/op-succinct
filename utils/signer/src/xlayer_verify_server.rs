@@ -66,10 +66,7 @@ async fn get_handler(
             }
         }
         // Absent parameter and empty parameter are reported identically.
-        _ => (
-            StatusCode::BAD_REQUEST,
-            Json(VerifyResponse::new(400, 1, "refOrderId is required")),
-        ),
+        _ => (StatusCode::BAD_REQUEST, Json(VerifyResponse::new(400, 1, "refOrderId is required"))),
     }
 }
 
@@ -77,10 +74,7 @@ async fn get_handler(
 /// the documented envelope instead of an empty default body.
 #[cfg(feature = "xlayer-verify")]
 async fn method_not_allowed() -> (StatusCode, Json<VerifyResponse>) {
-    (
-        StatusCode::METHOD_NOT_ALLOWED,
-        Json(VerifyResponse::new(405, 1, "method not allowed")),
-    )
+    (StatusCode::METHOD_NOT_ALLOWED, Json(VerifyResponse::new(405, 1, "method not allowed")))
 }
 
 /// Exposes `GET /signer/get?refOrderId=<id>` for the asset-management callback.
@@ -95,7 +89,10 @@ pub fn app(client: Arc<XLayerRemoteClient>) -> Router {
 /// Starts the verify server on `addr`. Returns on serve error so the caller can
 /// log it and continue.
 #[cfg(feature = "xlayer-verify")]
-pub async fn serve(addr: std::net::SocketAddr, client: Arc<XLayerRemoteClient>) -> anyhow::Result<()> {
+pub async fn serve(
+    addr: std::net::SocketAddr,
+    client: Arc<XLayerRemoteClient>,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("refOrderId lookup endpoint listening on {addr}");
     axum::serve(listener, app(client)).await?;
@@ -106,8 +103,10 @@ pub async fn serve(addr: std::net::SocketAddr, client: Arc<XLayerRemoteClient>) 
 mod tests {
     use std::sync::Arc;
 
-    use axum::body::Body;
-    use axum::http::{Method, Request};
+    use axum::{
+        body::Body,
+        http::{Method, Request},
+    };
     use tower::ServiceExt;
 
     use super::*;
@@ -152,7 +151,8 @@ mod tests {
         let id = "PROPOSER_TZ_27_1000_a1b2c3d4";
         client.seed_ref_order_id(id).await;
 
-        let (status, body) = call(client, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
+        let (status, body) =
+            call(client, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_contract(&body, 200, 0, "success");
@@ -227,7 +227,8 @@ mod tests {
             call(client_a, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
         assert_eq!(body_a["code"], 0);
 
-        let (_, body_b) = call(client_b, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
+        let (_, body_b) =
+            call(client_b, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
         assert_contract(&body_b, 200, 1, "not found");
     }
 
@@ -250,16 +251,14 @@ mod tests {
         drop(handle);
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        let found = reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId={id}"))
-            .await
-            .unwrap();
+        let found =
+            reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId={id}")).await.unwrap();
         assert_eq!(found.status(), 200);
         let found_body: serde_json::Value = found.json().await.unwrap();
         assert_contract(&found_body, 200, 0, "success");
 
-        let unknown = reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId=nope"))
-            .await
-            .unwrap();
+        let unknown =
+            reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId=nope")).await.unwrap();
         assert_eq!(unknown.status(), 200);
         let unknown_body: serde_json::Value = unknown.json().await.unwrap();
         assert_contract(&unknown_body, 200, 1, "not found");
