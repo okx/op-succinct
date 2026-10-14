@@ -1631,21 +1631,21 @@ mod tests {
     }
 
     /// Once the cache is full, the oldest issued ID is evicted and the lookup
-    /// for it reports "unknown".
+    /// for it reports "unknown". Runs at the capacity production uses, so the
+    /// boundary that ships is the boundary that is tested.
     #[tokio::test]
-    async fn test_cache_eviction_over_capacity() {
-        let capacity = 100;
-        let client = XLayerRemoteClient::test_client_with_capacity(capacity);
+    async fn test_cache_eviction_at_production_capacity() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
         let first_id = "FIRST_ID_1_1000_aaaaaaaa";
         client.seed_ref_order_id(first_id).await;
         assert!(client.has_ref_order_id(first_id).await);
 
-        for i in 0..capacity {
+        for i in 0..REF_ORDER_CACHE_CAPACITY {
             client.seed_ref_order_id(&format!("ID_{i}")).await;
         }
 
         assert!(!client.has_ref_order_id(first_id).await, "first ID should be evicted");
         assert!(client.has_ref_order_id("ID_0").await);
-        assert!(client.has_ref_order_id(&format!("ID_{}", capacity - 1)).await);
+        assert!(client.has_ref_order_id(&format!("ID_{}", REF_ORDER_CACHE_CAPACITY - 1)).await);
     }
 }
