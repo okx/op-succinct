@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "xlayer-verify")]
 use axum::{
-    extract::{Query, State},
-    http::{Method, StatusCode},
+    extract::{Query, Request, State},
+    http::{header, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::any,
     Router,
@@ -55,11 +56,16 @@ struct VerifyQuery {
 #[cfg(feature = "xlayer-verify")]
 const METHOD_NOT_ALLOWED_MSG: &str = "method not allowed";
 
+/// The only method the endpoint serves. Reported in `Allow` on a 405, which a
+/// 405 response is required to carry.
+#[cfg(feature = "xlayer-verify")]
+const ALLOWED_METHOD: &str = "GET";
+
 /// Answers `GET /signer/get?refOrderId=<id>`.
 #[cfg(feature = "xlayer-verify")]
 async fn get_handler(
-    client: Arc<XLayerRemoteClient>,
-    params: VerifyQuery,
+    State(client): State<Arc<XLayerRemoteClient>>,
+    Query(params): Query<VerifyQuery>,
 ) -> (StatusCode, Json<VerifyResponse>) {
     match params.ref_order_id {
         Some(id) if !id.is_empty() => {
@@ -74,27 +80,39 @@ async fn get_handler(
     }
 }
 
-/// Single entry point of the route.
-///
-/// The method is inspected before the lookup is served because axum's `get()`
-/// router also matches `HEAD`: routing through it would answer `HEAD` with the
-/// GET status instead of the documented 405. `HEAD` therefore returns the
-/// status alone — a HEAD response never carries a body — while every other
-/// unsupported method answers with the same envelope as the lookup itself.
+/// The answer every unsupported method receives: the documented envelope plus
+/// the `Allow` header a 405 has to carry.
 #[cfg(feature = "xlayer-verify")]
-async fn dispatch(
-    method: Method,
-    State(client): State<Arc<XLayerRemoteClient>>,
-    Query(params): Query<VerifyQuery>,
-) -> Response {
-    match method {
-        Method::GET => get_handler(client, params).await.into_response(),
-        Method::HEAD => StatusCode::METHOD_NOT_ALLOWED.into_response(),
-        _ => (
-            StatusCode::METHOD_NOT_ALLOWED,
-            Json(VerifyResponse::new(405, 1, METHOD_NOT_ALLOWED_MSG)),
-        )
-            .into_response(),
+fn method_not_allowed() -> Response {
+    let mut response =
+        (StatusCode::METHOD_NOT_ALLOWED, Json(VerifyResponse::new(405, 1, METHOD_NOT_ALLOWED_MSG)))
+            .into_response();
+    response.headers_mut().insert(header::ALLOW, HeaderValue::from_static(ALLOWED_METHOD));
+    response
+}
+
+/// The answer a `HEAD` request receives: status and `Allow` only. A HEAD
+/// response never carries a body.
+#[cfg(feature = "xlayer-verify")]
+fn method_not_allowed_without_body() -> Response {
+    let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+    response.headers_mut().insert(header::ALLOW, HeaderValue::from_static(ALLOWED_METHOD));
+    response
+}
+
+/// Refuses every method the endpoint does not serve, before the lookup handler
+/// and its extractors run.
+///
+/// This has to sit in front of the handler: axum's `get()` route also matches
+/// `HEAD`, and an extractor answers a request it cannot read before the handler
+/// ever sees the method. Guarding here keeps the method contract independent of
+/// the query string.
+#[cfg(feature = "xlayer-verify")]
+async fn guard_method(request: Request, next: Next) -> Response {
+    match request.method() {
+        &Method::GET => next.run(request).await,
+        &Method::HEAD => method_not_allowed_without_body(),
+        _ => method_not_allowed(),
     }
 }
 
@@ -102,7 +120,10 @@ async fn dispatch(
 /// Read-only: only reads the client's issued-ID cache via `has_ref_order_id`.
 #[cfg(feature = "xlayer-verify")]
 pub fn app(client: Arc<XLayerRemoteClient>) -> Router {
-    Router::new().route("/signer/get", any(dispatch)).with_state(client)
+    Router::new()
+        .route("/signer/get", any(get_handler))
+        .route_layer(middleware::from_fn(guard_method))
+        .with_state(client)
 }
 
 /// Starts the verify server on `addr`. Returns on serve error so the caller can
@@ -247,6 +268,53 @@ mod tests {
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
         let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         assert!(bytes.is_empty(), "HEAD response must have no body, got {bytes:?}");
+    }
+
+    /// A 405 has to advertise the methods the route serves.
+    #[tokio::test]
+    async fn test_verify_method_not_allowed_reports_allow_header() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let request =
+            Request::builder().method(Method::POST).uri("/signer/get").body(Body::empty()).unwrap();
+        let response = app(client).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            response.headers().get(header::ALLOW).and_then(|value| value.to_str().ok()),
+            Some("GET"),
+            "a 405 must carry the methods the route serves"
+        );
+    }
+
+    /// The method contract does not depend on the query string: a request whose
+    /// query cannot be read is still answered by the method guard, not by the
+    /// query extractor.
+    #[tokio::test]
+    async fn test_verify_head_with_unreadable_query_returns_405_without_body() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let request = Request::builder()
+            .method(Method::HEAD)
+            .uri("/signer/get?refOrderId=a&refOrderId=b")
+            .body(Body::empty())
+            .unwrap();
+        let response = app(client).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert!(bytes.is_empty(), "HEAD response must have no body, got {bytes:?}");
+    }
+
+    #[tokio::test]
+    async fn test_verify_post_with_unreadable_query_returns_405_envelope() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let (status, body) =
+            call(client, Method::POST, "/signer/get?refOrderId=a&refOrderId=b").await;
+
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_contract(&body, 405, 1, "method not allowed");
     }
 
     /// An ID that was never issued must not be reported as found even when the
