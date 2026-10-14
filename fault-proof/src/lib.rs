@@ -11,9 +11,9 @@ pub mod prover;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{address, keccak256, Address, FixedBytes, B256, U256};
 use alloy_provider::{Provider, RootProvider};
-use alloy_rpc_types_eth::Block;
+use alloy_rpc_types_eth::{Block, Header, TransactionRequest};
 use alloy_sol_types::SolValue;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use op_alloy_network::Optimism;
 use op_alloy_rpc_types::Transaction;
@@ -211,6 +211,17 @@ where
 /// Prefix used for transaction revert errors.
 pub const TX_REVERTED_PREFIX: &str = "transaction reverted:";
 
+/// Builds a bond claim using the node's gas estimate without adjustment.
+/// Returns an error before submission if estimation fails.
+pub(crate) async fn claim_credit_transaction<P: Provider + Clone>(
+    contract: &OPSuccinctFaultDisputeGame::OPSuccinctFaultDisputeGameInstance<P>,
+    claimant: Address,
+) -> Result<TransactionRequest> {
+    let call = contract.claimCredit(claimant).from(claimant);
+    let estimate = call.estimate_gas().await.context("Failed to estimate claimCredit gas")?;
+    Ok(call.gas(estimate).into_transaction_request())
+}
+
 /// Extension trait for checking transaction error types.
 pub trait TxErrorExt {
     /// Returns true if this error indicates a transaction revert (definitive failure).
@@ -220,5 +231,109 @@ pub trait TxErrorExt {
 impl TxErrorExt for anyhow::Error {
     fn is_revert(&self) -> bool {
         self.to_string().starts_with(TX_REVERTED_PREFIX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::{rpc::client::RpcClient, transports::mock::Asserter};
+    use alloy_rpc_types_eth::EIP1186AccountProofResponse;
+
+    fn mock_l2_provider(asserter: Asserter) -> L2Provider {
+        RootProvider::new(RpcClient::mocked(asserter))
+    }
+
+    fn expected_output_root(header: &Header, storage_root: B256) -> B256 {
+        keccak256(
+            L2Output {
+                zero: 0,
+                l2_state_root: header.state_root.0.into(),
+                l2_storage_hash: storage_root.0.into(),
+                l2_claim_hash: header.hash.0.into(),
+            }
+            .abi_encode(),
+        )
+    }
+
+    #[tokio::test]
+    async fn claim_credit_transaction_uses_estimate_without_adjustment() {
+        let claimant = Address::repeat_byte(0x22);
+        for estimate in [100_000u64, 223_960, 224_251, u64::MAX] {
+            let asserter = Asserter::new();
+            let provider = RootProvider::new(RpcClient::mocked(asserter.clone()));
+            let contract = OPSuccinctFaultDisputeGame::new(Address::repeat_byte(0x11), provider);
+            asserter.push_success(&format!("{estimate:#x}"));
+
+            let request = claim_credit_transaction(&contract, claimant).await.unwrap();
+            assert_eq!(request.from, Some(claimant));
+            assert_eq!(request.gas, Some(estimate));
+            assert!(asserter.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_credit_transaction_returns_estimation_errors_without_fallback() {
+        let asserter = Asserter::new();
+        let provider = RootProvider::new(RpcClient::mocked(asserter.clone()));
+        let contract = OPSuccinctFaultDisputeGame::new(Address::repeat_byte(0x11), provider);
+        asserter.push_failure_msg("estimate RPC unavailable");
+
+        let error =
+            claim_credit_transaction(&contract, Address::repeat_byte(0x22)).await.unwrap_err();
+        assert!(format!("{error:#}").contains("estimate RPC unavailable"));
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn output_root_uses_header_withdrawals_root_post_isthmus() {
+        let asserter = Asserter::new();
+        let provider = mock_l2_provider(asserter.clone());
+        let storage_root = B256::repeat_byte(0x33);
+        let header = Header {
+            hash: B256::repeat_byte(0x11),
+            inner: alloy::consensus::Header {
+                state_root: B256::repeat_byte(0x22),
+                withdrawals_root: Some(storage_root),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        asserter.push_success(&Some(header.clone()));
+
+        let actual = provider.compute_output_root_at_block(U256::from(7)).await.unwrap();
+
+        assert_eq!(actual, expected_output_root(&header, storage_root));
+        assert!(
+            asserter.read_q().is_empty(),
+            "post-Isthmus output root should only consume the header response"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_root_fetches_proof_when_withdrawals_root_is_unavailable() {
+        for withdrawals_root in [None, Some(alloy_trie::EMPTY_ROOT_HASH)] {
+            let asserter = Asserter::new();
+            let provider = mock_l2_provider(asserter.clone());
+            let storage_root = B256::repeat_byte(0x44);
+            let header = Header {
+                hash: B256::repeat_byte(0x11),
+                inner: alloy::consensus::Header {
+                    state_root: B256::repeat_byte(0x22),
+                    withdrawals_root,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let proof =
+                EIP1186AccountProofResponse { storage_hash: storage_root, ..Default::default() };
+            asserter.push_success(&Some(header.clone()));
+            asserter.push_success(&proof);
+
+            let actual = provider.compute_output_root_at_block(U256::from(7)).await.unwrap();
+
+            assert_eq!(actual, expected_output_root(&header, storage_root));
+            assert!(asserter.read_q().is_empty(), "pre-Isthmus proof response was not consumed");
+        }
     }
 }
