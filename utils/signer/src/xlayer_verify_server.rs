@@ -350,6 +350,24 @@ mod tests {
         assert_contract(&body_b, 200, 1, "not found");
     }
 
+    /// Waits until the detached server accepts connections, bounded by a
+    /// deadline — a readiness signal rather than a fixed sleep.
+    async fn get_until_ready(url: &str) -> reqwest::Response {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match reqwest::get(url).await {
+                Ok(response) => return response,
+                Err(error) => {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the detached server never became reachable: {error}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+    }
+
     /// The documented endpoint is reachable over a real socket, and the task
     /// keeps serving after its join handle is dropped.
     #[tokio::test]
@@ -367,16 +385,15 @@ mod tests {
         });
         // The server task must outlive the handle that started it.
         drop(handle);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let found =
-            reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId={id}")).await.unwrap();
+            get_until_ready(&format!("http://{bound_addr}/signer/get?refOrderId={id}")).await;
         assert_eq!(found.status(), 200);
         let found_body: serde_json::Value = found.json().await.unwrap();
         assert_contract(&found_body, 200, 0, "success");
 
         let unknown =
-            reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId=nope")).await.unwrap();
+            get_until_ready(&format!("http://{bound_addr}/signer/get?refOrderId=nope")).await;
         assert_eq!(unknown.status(), 200);
         let unknown_body: serde_json::Value = unknown.json().await.unwrap();
         assert_contract(&unknown_body, 200, 1, "not found");
