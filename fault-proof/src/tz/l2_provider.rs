@@ -159,11 +159,10 @@ impl L2ProviderTrait for TzL2Provider {
             Err(_) => return Ok(None),
         };
         let confirmed = U256::from(info.height);
-        let target = canonical_head.saturating_add(U256::from(proposal_interval));
-        if confirmed < target {
+        if confirmed.saturating_sub(canonical_head) < U256::from(proposal_interval) {
             return Ok(None);
         }
-        Ok(Some(target))
+        Ok(Some(confirmed))
     }
 
     fn evict_cache_below(&self, anchor_height: u64) {
@@ -353,7 +352,7 @@ mod tests {
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
         let provider = TzL2Provider { tz_client: client, wb: None };
         let result = provider.get_next_proposal_block(U256::from(1000u64), 100).await.unwrap();
-        assert_eq!(result, Some(U256::from(1100u64)));
+        assert_eq!(result, Some(U256::from(1200u64)));
     }
 
     #[tokio::test]
