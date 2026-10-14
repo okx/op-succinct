@@ -52,18 +52,33 @@ const HTTP_STATUS_SUCCESS: u16 = 200;
 /// so a companion verify-server can answer asset-management callbacks.
 const REF_ORDER_CACHE_CAPACITY: usize = 1000;
 
-const REF_ORDER_ID_PREFIX: &str = "PROPOSER_TZ_";
+/// Validates a refOrderId prefix. Rejects empty values and any character other
+/// than ASCII alphanumeric or underscore. Callers invoke this during startup so
+/// a misconfigured prefix blocks the process instead of silently producing
+/// unusable order IDs.
+pub fn validate_ref_order_prefix(prefix: &str) -> Result<()> {
+    if prefix.is_empty() {
+        anyhow::bail!("XLAYER_SIGNER_REF_ORDER_PREFIX must not be empty");
+    }
+    if !prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        anyhow::bail!(
+            "XLAYER_SIGNER_REF_ORDER_PREFIX contains invalid characters; \
+             only ASCII alphanumeric and underscore allowed"
+        );
+    }
+    Ok(())
+}
 
-/// Builds a refOrderID of the form `PROPOSER_TZ_{op}_{unix_ms}_{rand8hex}`.
+/// Builds a refOrderID of the form `{prefix}{op}_{unix_ms}_{rand8hex}`.
 /// The 32 bits of randomness come from a v4 UUID to avoid pulling in a
 /// separate `rand` dependency.
-fn generate_ref_order_id(op: OperateType) -> String {
+fn generate_ref_order_id(op: OperateType, prefix: &str) -> String {
     let ts_ms = chrono::Utc::now().timestamp_millis();
     let uuid = uuid::Uuid::new_v4();
     let rand_bytes = &uuid.as_bytes()[..4];
     format!(
         "{prefix}{op}_{ts}_{rand}",
-        prefix = REF_ORDER_ID_PREFIX,
+        prefix = prefix,
         op = op as i32,
         ts = ts_ms,
         rand = hex::encode(rand_bytes),
@@ -287,6 +302,11 @@ pub struct XLayerConfig {
     pub access_key: String,
     pub secret_key: String,
     pub timeout: Duration,
+    /// Prefix prepended to every generated refOrderID. Required for the remote
+    /// signer and validated at startup.
+    pub ref_order_prefix: String,
+    /// SocketAddr the refOrderId lookup endpoint binds to. Empty disables it.
+    pub verify_addr: String,
 }
 
 impl std::fmt::Debug for XLayerConfig {
@@ -305,6 +325,8 @@ impl std::fmt::Debug for XLayerConfig {
             .field("access_key", &"***REDACTED***")
             .field("secret_key", &"***REDACTED***")
             .field("timeout", &self.timeout)
+            .field("ref_order_prefix", &self.ref_order_prefix)
+            .field("verify_addr", &self.verify_addr)
             .finish()
     }
 }
@@ -325,6 +347,8 @@ impl Default for XLayerConfig {
             access_key: String::new(),
             secret_key: String::new(),
             timeout: Duration::from_secs(30),
+            ref_order_prefix: String::new(),
+            verify_addr: String::new(),
         }
     }
 }
@@ -360,6 +384,12 @@ impl XLayerRemoteClient {
         Self { config, client, signing_lock: Mutex::new(()), ref_order_cache: Mutex::new(cache) }
     }
 
+    /// Address the companion lookup endpoint should bind to. Empty means the
+    /// endpoint is disabled.
+    pub fn verify_addr(&self) -> &str {
+        &self.config.verify_addr
+    }
+
     /// Reports whether this client has issued the given `refOrderID`.
     /// Used by asset-management callbacks to vouch for a transfer
     /// initiated by the remote signer.
@@ -392,7 +422,7 @@ impl XLayerRemoteClient {
         // Register the refOrderID before sending so the verify-server can
         // answer asset-management callbacks even if the response is delayed
         // or lost.
-        let ref_order_id = generate_ref_order_id(operate_type);
+        let ref_order_id = generate_ref_order_id(operate_type, &self.config.ref_order_prefix);
         {
             let mut cache = self.ref_order_cache.lock().await;
             cache.put(ref_order_id.clone(), ());
@@ -1068,6 +1098,28 @@ impl XLayerRemoteClient {
 }
 
 #[cfg(test)]
+impl XLayerRemoteClient {
+    /// Test-only constructor with a caller-chosen cache capacity, so the
+    /// cache-boundary behaviour can be exercised without issuing 1000 orders.
+    pub(crate) fn test_client_with_capacity(capacity: usize) -> Self {
+        let config = XLayerConfig::default();
+        let client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .build()
+            .expect("Failed to create HTTP client");
+        let cache = LruCache::new(
+            NonZeroUsize::new(capacity).expect("cache capacity must be greater than zero"),
+        );
+        Self { config, client, signing_lock: Mutex::new(()), ref_order_cache: Mutex::new(cache) }
+    }
+
+    /// Test-only: records `id` as issued by this client.
+    pub(crate) async fn seed_ref_order_id(&self, id: &str) {
+        self.ref_order_cache.lock().await.put(id.to_string(), ());
+    }
+}
+
+#[cfg(test)]
 // Test fixtures build TransactionRequest/XLayerConfig step-by-step from `default()`
 // for readability; the newer CI nightly denies clippy::field_reassign_with_default.
 // Scope the allow to the test module — no production code is affected.
@@ -1078,6 +1130,9 @@ mod tests {
     use alloy_rpc_types_eth::TransactionRequest;
     use serde::Serialize;
     use std::time::Duration;
+
+    /// Prefix used by the fixtures below; matches what production ships.
+    const TEST_REF_ORDER_PREFIX: &str = "PROPOSER_TZ_";
 
     /// `DisputeGameFactory.create` -> `OperateType::Create`.
     #[test]
@@ -1322,6 +1377,8 @@ mod tests {
             access_key: "secret-access-key".to_string(),
             secret_key: "super-secret-key".to_string(),
             timeout: Duration::from_secs(30),
+            ref_order_prefix: TEST_REF_ORDER_PREFIX.to_string(),
+            verify_addr: String::new(),
         };
 
         let debug_str = format!("{:?}", config);
@@ -1496,15 +1553,18 @@ mod tests {
         assert_eq!(recovered_req.from, Some(expected_from));
     }
 
-    /// refOrderID shape: `PROPOSER_TZ_{operateType}_{ms}_{8 hex}`.
+    /// refOrderID shape: `{prefix}{operateType}_{ms}_{8 hex}`.
     #[test]
     fn test_generate_ref_order_id_shape() {
-        let id = generate_ref_order_id(OperateType::Create);
+        let id = generate_ref_order_id(OperateType::Create, TEST_REF_ORDER_PREFIX);
         // Prefix
-        assert!(id.starts_with("PROPOSER_TZ_"), "expected PROPOSER_TZ_ prefix, got: {id}");
+        assert!(
+            id.starts_with(TEST_REF_ORDER_PREFIX),
+            "expected {TEST_REF_ORDER_PREFIX} prefix, got: {id}"
+        );
         // Three underscore-separated chunks after the prefix:
         //   operateType, timestamp, random
-        let tail = id.trim_start_matches("PROPOSER_TZ_");
+        let tail = id.trim_start_matches(TEST_REF_ORDER_PREFIX);
         let parts: Vec<&str> = tail.split('_').collect();
         assert_eq!(parts.len(), 3, "expected op_ts_rand, got: {id}");
         assert_eq!(parts[0], "20"); // OperateType::Create == 20
@@ -1517,9 +1577,18 @@ mod tests {
     /// the same millisecond — the random suffix is what saves us.
     #[test]
     fn test_generate_ref_order_id_unique() {
-        let a = generate_ref_order_id(OperateType::Resolve);
-        let b = generate_ref_order_id(OperateType::Resolve);
+        let a = generate_ref_order_id(OperateType::Resolve, TEST_REF_ORDER_PREFIX);
+        let b = generate_ref_order_id(OperateType::Resolve, TEST_REF_ORDER_PREFIX);
         assert_ne!(a, b);
+    }
+
+    /// A caller-supplied prefix is what the generated ID starts with, and the
+    /// rest of the shape is unchanged.
+    #[test]
+    fn test_generate_ref_order_id_honours_configured_prefix() {
+        let id = generate_ref_order_id(OperateType::Prove, "MY_PREFIX_");
+        assert!(id.starts_with("MY_PREFIX_"), "got: {id}");
+        assert_eq!(id.trim_start_matches("MY_PREFIX_").split('_').next(), Some("27"));
     }
 
     /// `has_ref_order_id` round-trip: an ID becomes known once it's recorded,
@@ -1529,15 +1598,54 @@ mod tests {
     async fn test_has_ref_order_id_roundtrip() {
         let client = XLayerRemoteClient::new(XLayerConfig::default());
 
-        let id = generate_ref_order_id(OperateType::Create);
+        let id = generate_ref_order_id(OperateType::Create, TEST_REF_ORDER_PREFIX);
         assert!(!client.has_ref_order_id(&id).await);
 
-        {
-            let mut cache = client.ref_order_cache.lock().await;
-            cache.put(id.clone(), ());
-        }
+        client.seed_ref_order_id(&id).await;
 
         assert!(client.has_ref_order_id(&id).await);
         assert!(!client.has_ref_order_id("totally-unrelated-id").await);
+    }
+
+    #[test]
+    fn test_validate_ref_order_prefix_valid() {
+        assert!(validate_ref_order_prefix("PROPOSER_TZ_").is_ok());
+        assert!(validate_ref_order_prefix("ABC_123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ref_order_prefix_empty() {
+        let err = validate_ref_order_prefix("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_ref_order_prefix_invalid_chars() {
+        let err = validate_ref_order_prefix("my-prefix!").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_ref_order_prefix_non_ascii() {
+        assert!(validate_ref_order_prefix("前缀_").is_err());
+    }
+
+    /// Once the cache is full, the oldest issued ID is evicted and the lookup
+    /// for it reports "unknown".
+    #[tokio::test]
+    async fn test_cache_eviction_over_capacity() {
+        let capacity = 100;
+        let client = XLayerRemoteClient::test_client_with_capacity(capacity);
+        let first_id = "FIRST_ID_1_1000_aaaaaaaa";
+        client.seed_ref_order_id(first_id).await;
+        assert!(client.has_ref_order_id(first_id).await);
+
+        for i in 0..capacity {
+            client.seed_ref_order_id(&format!("ID_{i}")).await;
+        }
+
+        assert!(!client.has_ref_order_id(first_id).await, "first ID should be evicted");
+        assert!(client.has_ref_order_id("ID_0").await);
+        assert!(client.has_ref_order_id(&format!("ID_{}", capacity - 1)).await);
     }
 }

@@ -1,0 +1,267 @@
+//! Standalone read-only HTTP endpoint that lets the asset-management service
+//! verify whether a `refOrderId` was issued by this signer.
+//!
+//! The server only reads the client's issued-order LRU through
+//! [`XLayerRemoteClient::has_ref_order_id`]; it never touches the signing lock,
+//! so callback traffic cannot block transaction signing.
+
+#[cfg(feature = "xlayer-verify")]
+use std::sync::Arc;
+
+#[cfg(feature = "xlayer-verify")]
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::Json,
+    routing::get,
+    Router,
+};
+#[cfg(feature = "xlayer-verify")]
+use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "xlayer-verify")]
+use crate::xlayer_remote_client::XLayerRemoteClient;
+
+/// Envelope shared by every response of the lookup endpoint. All five fields
+/// are always present in the JSON body.
+#[cfg(feature = "xlayer-verify")]
+#[derive(Debug, Serialize)]
+struct VerifyResponse {
+    status: u16,
+    code: i32,
+    msg: String,
+    #[serde(rename = "detailMsg")]
+    detail_msg: String,
+    data: Option<()>,
+}
+
+#[cfg(feature = "xlayer-verify")]
+impl VerifyResponse {
+    fn new(status: u16, code: i32, msg: &str) -> Self {
+        Self { status, code, msg: msg.to_string(), detail_msg: String::new(), data: None }
+    }
+}
+
+/// Query string of the lookup endpoint. `refOrderId` is optional so that both
+/// its absence and an empty value can be answered with the same error body.
+#[cfg(feature = "xlayer-verify")]
+#[derive(Debug, Deserialize)]
+struct VerifyQuery {
+    #[serde(rename = "refOrderId")]
+    ref_order_id: Option<String>,
+}
+
+/// Answers `GET /signer/get?refOrderId=<id>`.
+#[cfg(feature = "xlayer-verify")]
+async fn get_handler(
+    State(client): State<Arc<XLayerRemoteClient>>,
+    Query(params): Query<VerifyQuery>,
+) -> (StatusCode, Json<VerifyResponse>) {
+    match params.ref_order_id {
+        Some(id) if !id.is_empty() => {
+            if client.has_ref_order_id(&id).await {
+                (StatusCode::OK, Json(VerifyResponse::new(200, 0, "success")))
+            } else {
+                (StatusCode::OK, Json(VerifyResponse::new(200, 1, "not found")))
+            }
+        }
+        // Absent parameter and empty parameter are reported identically.
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(VerifyResponse::new(400, 1, "refOrderId is required")),
+        ),
+    }
+}
+
+/// Fallback for the route, so any method other than `GET` still answers with
+/// the documented envelope instead of an empty default body.
+#[cfg(feature = "xlayer-verify")]
+async fn method_not_allowed() -> (StatusCode, Json<VerifyResponse>) {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(VerifyResponse::new(405, 1, "method not allowed")),
+    )
+}
+
+/// Exposes `GET /signer/get?refOrderId=<id>` for the asset-management callback.
+/// Read-only: only reads the client's issued-ID cache via `has_ref_order_id`.
+#[cfg(feature = "xlayer-verify")]
+pub fn app(client: Arc<XLayerRemoteClient>) -> Router {
+    Router::new()
+        .route("/signer/get", get(get_handler).fallback(method_not_allowed))
+        .with_state(client)
+}
+
+/// Starts the verify server on `addr`. Returns on serve error so the caller can
+/// log it and continue.
+#[cfg(feature = "xlayer-verify")]
+pub async fn serve(addr: std::net::SocketAddr, client: Arc<XLayerRemoteClient>) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("refOrderId lookup endpoint listening on {addr}");
+    axum::serve(listener, app(client)).await?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "xlayer-verify"))]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::xlayer_remote_client::XLayerRemoteClient;
+
+    const FIVE_FIELDS: [&str; 5] = ["status", "code", "msg", "detailMsg", "data"];
+
+    /// Round-trips one request through the router and returns the status plus
+    /// the decoded JSON body.
+    async fn call(
+        client: Arc<XLayerRemoteClient>,
+        method: Method,
+        uri: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+        let response = app(client).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = serde_json::from_slice(&bytes).expect("response body must be JSON");
+        (status, body)
+    }
+
+    /// Asserts the response carries exactly the five documented fields with the
+    /// expected values.
+    fn assert_contract(body: &serde_json::Value, status: u16, code: i64, msg: &str) {
+        let object = body.as_object().expect("body must be a JSON object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut expected = FIVE_FIELDS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "unexpected field set in {body}");
+        assert_eq!(body["status"], status);
+        assert_eq!(body["code"], code);
+        assert_eq!(body["msg"], msg);
+        assert_eq!(body["detailMsg"], "");
+        assert_eq!(body["data"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_verify_found_returns_code_0() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+        let id = "PROPOSER_TZ_27_1000_a1b2c3d4";
+        client.seed_ref_order_id(id).await;
+
+        let (status, body) = call(client, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_contract(&body, 200, 0, "success");
+    }
+
+    #[tokio::test]
+    async fn test_verify_not_found_returns_code_1() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let (status, body) =
+            call(client, Method::GET, "/signer/get?refOrderId=UNKNOWN_ID_12345").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_contract(&body, 200, 1, "not found");
+    }
+
+    #[tokio::test]
+    async fn test_verify_missing_param_returns_400() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let (status, body) = call(client, Method::GET, "/signer/get").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_contract(&body, 400, 1, "refOrderId is required");
+    }
+
+    #[tokio::test]
+    async fn test_verify_empty_param_returns_400() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let (status, body) = call(client, Method::GET, "/signer/get?refOrderId=").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_contract(&body, 400, 1, "refOrderId is required");
+    }
+
+    #[tokio::test]
+    async fn test_verify_wrong_method_returns_405() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+
+        let (status, body) = call(client, Method::POST, "/signer/get").await;
+
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_contract(&body, 405, 1, "method not allowed");
+    }
+
+    /// An ID that was never issued must not be reported as found even when the
+    /// cache is non-empty.
+    #[tokio::test]
+    async fn test_verify_five_field_contract_for_every_scenario() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+        client.seed_ref_order_id("PROPOSER_TZ_20_1_00000000").await;
+
+        let (_, found) =
+            call(client.clone(), Method::GET, "/signer/get?refOrderId=PROPOSER_TZ_20_1_00000000")
+                .await;
+        assert_contract(&found, 200, 0, "success");
+
+        let (_, missing) = call(client.clone(), Method::GET, "/signer/get").await;
+        assert_contract(&missing, 400, 1, "refOrderId is required");
+    }
+
+    /// Two clients do not share issued-order state.
+    #[tokio::test]
+    async fn test_verify_cross_client_isolation() {
+        let client_a = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+        let client_b = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+        let id = "ISOLATION_TEST_42_5000_deadbeef";
+        client_a.seed_ref_order_id(id).await;
+
+        let (_, body_a) =
+            call(client_a, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
+        assert_eq!(body_a["code"], 0);
+
+        let (_, body_b) = call(client_b, Method::GET, &format!("/signer/get?refOrderId={id}")).await;
+        assert_contract(&body_b, 200, 1, "not found");
+    }
+
+    /// The documented endpoint is reachable over a real socket, and the task
+    /// keeps serving after its join handle is dropped.
+    #[tokio::test]
+    async fn test_verify_detached_server_survives_handle_drop() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+        let id = "DETACHED_99_9999_ffffffff";
+        client.seed_ref_order_id(id).await;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+        let server_client = client.clone();
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app(server_client)).await.unwrap();
+        });
+        // The server task must outlive the handle that started it.
+        drop(handle);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let found = reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId={id}"))
+            .await
+            .unwrap();
+        assert_eq!(found.status(), 200);
+        let found_body: serde_json::Value = found.json().await.unwrap();
+        assert_contract(&found_body, 200, 0, "success");
+
+        let unknown = reqwest::get(format!("http://{bound_addr}/signer/get?refOrderId=nope"))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), 200);
+        let unknown_body: serde_json::Value = unknown.json().await.unwrap();
+        assert_contract(&unknown_body, 200, 1, "not found");
+    }
+}
