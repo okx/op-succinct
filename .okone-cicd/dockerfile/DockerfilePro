@@ -28,6 +28,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Builder stage: Build dependencies then project
 FROM chef AS builder
 
+# The original gnark-ignition-verifier repository is unavailable. This fork
+# retains SP1's pinned commit 10693546ab33 with identical Go module checksums.
+# Redirect only this repository; keep the original module version and go.sum
+# verification for both cargo-chef and the subsequent application builds.
+RUN git config --global \
+    url."https://github.com/GopherJ/gnark-ignition-verifier".insteadOf \
+    "https://github.com/consensys/gnark-ignition-verifier"
+
 # Copy recipe and build dependencies (this layer will be cached)
 COPY --from=planner /app/recipe.json recipe.json
 # The recipe retains this local path dependency, so make it available before
