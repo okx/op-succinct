@@ -12,10 +12,10 @@ use fault_proof::{
     proposer::OPSuccinctProposer,
     tz::{
         chain_client::TzChainClient,
+        config::TzConfig,
         confirmed_height_tracker::{
             parse_threshold_secs, ConfirmedHeightTracker, DEFAULT_STAGNATION_THRESHOLD_SECS,
         },
-        config::TzConfig,
         l2_provider::TzL2Provider,
     },
     L2ProviderTrait,
@@ -98,10 +98,8 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     }
 
     let confirmed_height_tracker = Arc::new(ConfirmedHeightTracker::new(stagnation_threshold_secs));
-    let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(TzL2Provider::new(
-        Arc::clone(&tz_client),
-        Arc::clone(&confirmed_height_tracker),
-    ));
+    let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> =
+        Arc::new(TzL2Provider::new(Arc::clone(&tz_client), Arc::clone(&confirmed_height_tracker)));
 
     let proposer_signer = SignerLock::from_env().await?;
     // Start the refOrderId lookup endpoint before any signing work begins, so

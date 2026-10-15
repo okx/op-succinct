@@ -60,28 +60,32 @@ impl ConfirmedHeightTracker {
             return;
         }
 
-        let mut state = self.state.lock().unwrap();
-        match state.last_observed_height {
-            None => {
-                state.last_observed_height = Some(height);
-                state.observed_since = Some(Instant::now());
-            }
-            Some(previous) if previous == height => {
-                if let Some(since) = state.observed_since {
-                    let elapsed = since.elapsed();
-                    if elapsed >= self.stagnation_threshold {
-                        tracing::warn!(
-                            "tz_confirmed_height_stagnation: confirmed height {} unchanged for {}s (threshold {}s)",
-                            height,
-                            elapsed.as_secs(),
-                            self.stagnation_threshold.as_secs(),
-                        );
-                    }
+        // The lock is released at the end of this block, before the warning is emitted: writing
+        // a log line dispatches to arbitrary subscribers, and holding the lock across that would
+        // block the caller and let a panicking subscriber poison the mutex for good.
+        let unchanged_for = {
+            let mut state = self.state.lock().unwrap();
+            match state.last_observed_height {
+                Some(previous) if previous == height => {
+                    state.observed_since.map(|since| since.elapsed())
+                }
+                // First sample, or a height that changed in either direction: (re)start the timer.
+                _ => {
+                    state.last_observed_height = Some(height);
+                    state.observed_since = Some(Instant::now());
+                    None
                 }
             }
-            Some(_) => {
-                state.last_observed_height = Some(height);
-                state.observed_since = Some(Instant::now());
+        };
+
+        if let Some(elapsed) = unchanged_for {
+            if elapsed >= self.stagnation_threshold {
+                tracing::warn!(
+                    "tz_confirmed_height_stagnation: confirmed height {} unchanged for {}s (threshold {}s)",
+                    height,
+                    elapsed.as_secs(),
+                    self.stagnation_threshold.as_secs(),
+                );
             }
         }
     }
@@ -154,8 +158,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::capture_warns;
-    use super::*;
+    use super::{test_support::capture_warns, *};
     use tokio::time::Duration;
 
     // T1: First sample — height recorded, no warning.
@@ -241,7 +244,9 @@ mod tests {
         assert_eq!(capture.warn_count(), 0);
         let state = tracker.state.lock().unwrap();
         assert_eq!(state.last_observed_height, Some(200));
-        assert!(state.observed_since.expect("reset on change").elapsed() < Duration::from_millis(1));
+        assert!(
+            state.observed_since.expect("reset on change").elapsed() < Duration::from_millis(1)
+        );
     }
 
     // T6: Height decrease (reorg) resets the timer.

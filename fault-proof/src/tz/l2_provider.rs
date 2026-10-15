@@ -7,8 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use op_alloy_rpc_types::Transaction;
 
-use super::chain_client::TzChainClient;
-use super::confirmed_height_tracker::ConfirmedHeightTracker;
+use super::{chain_client::TzChainClient, confirmed_height_tracker::ConfirmedHeightTracker};
 use crate::L2ProviderTrait;
 
 pub struct TzL2Provider {
@@ -100,8 +99,10 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        super::chain_client::{TzBlockInfo, TzCacheMissError},
-        super::confirmed_height_tracker::test_support::capture_warns,
+        super::{
+            chain_client::{TzBlockInfo, TzCacheMissError},
+            confirmed_height_tracker::test_support::capture_warns,
+        },
         *,
     };
     use tokio::time::Duration;
@@ -266,7 +267,8 @@ mod tests {
             .await;
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
-        let provider = TzL2Provider::new(Arc::clone(&client), Arc::new(ConfirmedHeightTracker::new(300)));
+        let provider =
+            TzL2Provider::new(Arc::clone(&client), Arc::new(ConfirmedHeightTracker::new(300)));
 
         provider.refresh_checkpoint_cache().await.unwrap();
 
@@ -314,16 +316,10 @@ mod tests {
         let (provider, _tracker, _server) =
             provider_with_script(vec![height_response(950); 3], 1).await;
 
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
 
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
         let messages = capture.messages();
         assert_eq!(messages.len(), 1, "one warning after the threshold is crossed");
         assert!(
@@ -331,17 +327,10 @@ mod tests {
             "unexpected message: {}",
             messages[0]
         );
-        assert!(
-            messages[0].contains("(threshold 1s)"),
-            "unexpected message: {}",
-            messages[0]
-        );
+        assert!(messages[0].contains("(threshold 1s)"), "unexpected message: {}", messages[0]);
         assert!(warned_seconds(&messages[0]) >= 1);
 
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
         assert_eq!(capture.warn_count(), 2, "the warning is not suppressed");
     }
 
@@ -363,35 +352,23 @@ mod tests {
         .await;
 
         // A failure on the very first read leaves the tracker empty — nothing was observed.
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
         assert_eq!(tracker.last_observed_height(), None, "a failed read must not invent a height");
 
         // First success: the staleness timer starts here.
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
         assert_eq!(tracker.last_observed_height(), Some(950));
 
         // Past the threshold, another failure must stay silent: had the failure observed, the
         // unchanged height would have produced a warning here.
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
         assert_eq!(tracker.last_observed_height(), Some(950));
         assert_eq!(capture.warn_count(), 0, "a failed read is not an observation");
 
         // The next success still measures staleness from the last success, so the failures did
         // not restart the timer either.
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
         let messages = capture.messages();
         assert_eq!(messages.len(), 1);
         assert!(warned_seconds(&messages[0]) >= 1);
@@ -408,10 +385,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
 
         // The height moved past the interval, so a proposal is produced and the timer resets.
         tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -424,10 +398,7 @@ mod tests {
 
         // The new height then stalls past the threshold.
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert_eq!(
-            provider.get_next_proposal_block(U256::from(1050u64), 100).await.unwrap(),
-            None
-        );
+        assert_eq!(provider.get_next_proposal_block(U256::from(1050u64), 100).await.unwrap(), None);
         let messages = capture.messages();
         assert_eq!(messages.len(), 1);
         assert!(
