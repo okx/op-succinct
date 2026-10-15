@@ -162,6 +162,7 @@ where
     /// Reads rollup_config_hash from the on-chain game implementation.
     /// Range / aggregation ELFs are selected by the `tz` cargo feature
     /// (see `op_succinct_proof_utils::{get_range_elf_embedded, AGGREGATION_ELF}`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_with_l2_provider(
         config: ProposerConfig,
         signer: SignerLock,
