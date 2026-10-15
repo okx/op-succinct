@@ -9,6 +9,8 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use op_succinct_client_utils::types::AggregationInputs;
 use sp1_sdk::{SP1Proof, SP1ProofWithPublicValues, SP1VerifyingKey};
 
+use crate::tz::confirmed_height_tracker::ConfirmedHeightTracker;
+
 /// Default chunk size (in blocks) for `fetch_blocks_range` when `TZ_BLOCKS_PER_FETCH`
 /// is absent, non-positive, or unparseable.
 const DEFAULT_TZ_BLOCKS_PER_FETCH: u64 = 1000;
@@ -168,6 +170,7 @@ where
         fetcher: Arc<OPSuccinctDataFetcher>,
         host: Arc<H>,
         l2_provider: Arc<dyn L2ProviderTrait + Send + Sync>,
+        confirmed_height_tracker: Arc<ConfirmedHeightTracker>,
     ) -> Result<Self> {
         // tz: read all identity fields from the deployed game implementation so is_owned()
         // matches on-chain games regardless of which local ELF is loaded.
@@ -267,6 +270,7 @@ where
             last_created_game_l2_block: Arc::new(AtomicU64::new(0)),
             last_created_game_address: Arc::new(Mutex::new(Address::ZERO)),
             identity,
+            confirmed_height_tracker,
         })
     }
 
