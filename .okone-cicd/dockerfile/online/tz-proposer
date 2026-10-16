@@ -1,12 +1,72 @@
-FROM online-registry.cn-hongkong.cr.aliyuncs.com/inner-public/ubuntu/24.04/ubuntu:latest
-USER root
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 curl jq \
-    && rm -rf /var/lib/apt/lists/*
-
+# Build from the repository root:
+# docker build -f .okone-cicd/dockerfile/online/tz-proposer \
+#   --build-arg GIT_TOKEN="$CI_JOB_TOKEN" -t tz-proposer:kms .
+FROM office-registry-vpc.cn-hongkong.cr.aliyuncs.com/okbase/lukemathwalker/cargo-chef:latest-rust-1-okg1-sec20251110 AS chef
 WORKDIR /app
 
-COPY build/tz-proposer /usr/local/bin/tz-proposer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates build-essential clang libclang-dev cmake git \
+    pkg-config libssl-dev protobuf-compiler libprotobuf-dev golang-go \
+    && rm -rf /var/lib/apt/lists/*
 
+COPY rust-toolchain.toml ./
+RUN rustup show
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true CC=clang CXX=clang++
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ARG GIT_TOKEN
+
+# Keep SP1's original gnark commit and go.sum checksums; only redirect its
+# unavailable upstream repository to a fork retaining the same source.
+RUN git config --global \
+    url."https://github.com/GopherJ/gnark-ignition-verifier".insteadOf \
+    "https://github.com/consensys/gnark-ignition-verifier"
+
+COPY --from=planner /app/recipe.json recipe.json
+COPY stubs/ok-kms-rust stubs/ok-kms-rust
+
+# TZ has private GitLab dependencies even before the real KMS SDK is injected.
+# Supply both HTTPS and SSH URL rewrites through process-local Git config.
+RUN set -eu; \
+    test -n "$GIT_TOKEN"; \
+    export GIT_CONFIG_COUNT=2; \
+    export GIT_CONFIG_KEY_0="url.https://gitlab-ci-token:${GIT_TOKEN}@gitlab.okg.com/.insteadOf"; \
+    export GIT_CONFIG_VALUE_0="https://gitlab.okg.com/"; \
+    export GIT_CONFIG_KEY_1="$GIT_CONFIG_KEY_0"; \
+    export GIT_CONFIG_VALUE_1="ssh://git@gitlab.okg.com/"; \
+    cargo chef cook --release --features tz --bin tz-proposer --recipe-path recipe.json
+
+COPY . .
+
+# Pin the real KMS SDK using the shared overlay, then build with both TZ and KMS.
+# Keep credentials available throughout dependency resolution and compilation.
+RUN set -eu; \
+    test -n "$GIT_TOKEN"; \
+    export GIT_CONFIG_COUNT=2; \
+    export GIT_CONFIG_KEY_0="url.https://gitlab-ci-token:${GIT_TOKEN}@gitlab.okg.com/.insteadOf"; \
+    export GIT_CONFIG_VALUE_0="https://gitlab.okg.com/"; \
+    export GIT_CONFIG_KEY_1="$GIT_CONFIG_KEY_0"; \
+    export GIT_CONFIG_VALUE_1="ssh://git@gitlab.okg.com/"; \
+    bash .okone-cicd/scripts/inject-real-kms.sh; \
+    cargo build --release --features tz,kms --bin tz-proposer
+
+RUN test -x target/release/tz-proposer && \
+    if grep -qa OK_KMS_STUB target/release/tz-proposer; then \
+        echo "ERROR: tz-proposer contains the offline KMS stub; refusing to ship" >&2; \
+        exit 1; \
+    fi
+
+FROM online-registry.cn-hongkong.cr.aliyuncs.com/inner-public/ubuntu/24.04/ubuntu:latest AS runtime
+USER root
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 curl jq \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/tz-proposer /usr/local/bin/tz-proposer
 ENTRYPOINT ["tz-proposer"]
