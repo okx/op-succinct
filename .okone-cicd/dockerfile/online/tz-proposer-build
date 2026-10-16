@@ -14,7 +14,10 @@ RUN rustup show
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true CC=clang CXX=clang++
 
 FROM chef AS planner
+# The host uses committed TZ ELFs; do not resolve the range guest
+# or its private tradezone dependencies in this host-only build.
 COPY . .
+RUN sed -i '/^[[:space:]]*"programs\/tz\/range",[[:space:]]*$/d' Cargo.toml
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -29,8 +32,8 @@ RUN git config --global \
 COPY --from=planner /app/recipe.json recipe.json
 COPY stubs/ok-kms-rust stubs/ok-kms-rust
 
-# TZ has private GitLab dependencies even before the real KMS SDK is injected.
-# Supply both HTTPS and SSH URL rewrites through process-local Git config.
+# Supply GitLab URL rewrites through process-local Git config for any
+# remaining private dependencies. The range guest is excluded from the recipe.
 RUN set -eu; \
     test -n "$GIT_TOKEN"; \
     export GIT_CONFIG_COUNT=2; \
@@ -40,7 +43,10 @@ RUN set -eu; \
     export GIT_CONFIG_VALUE_1="ssh://git@gitlab.okg.com/"; \
     cargo chef cook --release --features tz --bin tz-proposer --recipe-path recipe.json
 
+# COPY restores the original workspace manifest, so apply the host-only
+# member selection again before KMS metadata resolution and compilation.
 COPY . .
+RUN sed -i '/^[[:space:]]*"programs\/tz\/range",[[:space:]]*$/d' Cargo.toml
 
 # Pin the real KMS SDK using the shared overlay, then build with both TZ and KMS.
 # Keep credentials available throughout dependency resolution and compilation.
