@@ -127,16 +127,18 @@ fn build_transaction(signer: &PrivateKeySigner) -> (TransactionRequest, String) 
     let calldata = Bytes::from(hex::decode("2810e1d6").unwrap());
     let to = address!("1234567890123456789012345678901234567890");
 
-    let mut request = TransactionRequest::default();
-    request.from = Some(signer.address());
-    request.to = Some(TxKind::Call(to));
-    request.input = TransactionInput::new(calldata.clone());
-    request.nonce = Some(NONCE);
-    request.gas = Some(GAS_LIMIT);
-    request.max_fee_per_gas = Some(MAX_FEE_PER_GAS);
-    request.max_priority_fee_per_gas = Some(MAX_PRIORITY_FEE_PER_GAS);
-    request.value = Some(U256::ZERO);
-    request.chain_id = Some(CHAIN_ID);
+    let request = TransactionRequest {
+        from: Some(signer.address()),
+        to: Some(TxKind::Call(to)),
+        input: TransactionInput::new(calldata.clone()),
+        nonce: Some(NONCE),
+        gas: Some(GAS_LIMIT),
+        max_fee_per_gas: Some(MAX_FEE_PER_GAS),
+        max_priority_fee_per_gas: Some(MAX_PRIORITY_FEE_PER_GAS),
+        value: Some(U256::ZERO),
+        chain_id: Some(CHAIN_ID),
+        ..Default::default()
+    };
 
     let envelope_tx = TxEip1559 {
         chain_id: CHAIN_ID,
