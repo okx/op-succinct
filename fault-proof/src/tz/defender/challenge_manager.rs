@@ -11,7 +11,10 @@
 //! - submits `submitWithdrawProof(challengeId, leafIndex, leafCount, proof)` with the four fields
 //!   passed through verbatim.
 
-use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use alloy_primitives::{Address, TxHash, B256, U256};
 use alloy_provider::{DynProvider, Provider};
@@ -621,8 +624,12 @@ mod tests {
     /// end up holding a different signer from the one that serves the refOrderId lookup endpoint.
     #[test]
     fn adapter_reserves_signer_only_when_the_live_path_attaches_one() {
-        let mut adapter =
-            ChallengeManagerContract::from_raw_events(vec![], DirectLeafLocator, 196, CONTRACT_ADDR);
+        let mut adapter = ChallengeManagerContract::from_raw_events(
+            vec![],
+            DirectLeafLocator,
+            196,
+            CONTRACT_ADDR,
+        );
         assert!(adapter.signer().is_none(), "scripted path must reserve no signer");
 
         // A fixed, non-secret scalar: the test only needs *a* signer handle to prove the adapter

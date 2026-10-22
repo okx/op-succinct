@@ -62,6 +62,14 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Resolve the protected configuration items before any component reads the environment, so a
+    // value backed by the key service is resolved (or fails closed) rather than being consumed as
+    // the literal placeholder. Matches the other service entrypoints.
+    op_succinct_config_kms::init_startup_config().unwrap_or_else(|e| {
+        eprintln!("error: startup config resolution failed: {e}");
+        std::process::exit(1);
+    });
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

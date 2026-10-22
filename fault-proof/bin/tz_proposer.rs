@@ -130,7 +130,7 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(tz_provider);
 
     let proposer_signer = SignerLock::from_env().await?;
-// Start the refOrderId lookup endpoint before any signing work begins, so
+    // Start the refOrderId lookup endpoint before any signing work begins, so
     // the asset-management callback is answerable from the moment the proposer
     // starts issuing order IDs. An address that cannot be parsed or bound stops
     // startup. No-op for non-XLayer signers or when no lookup address is
