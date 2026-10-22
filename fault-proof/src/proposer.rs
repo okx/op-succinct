@@ -356,6 +356,11 @@ where
     /// Address of the most recently created game. Used to precisely identify
     /// the guarded game for CHALLENGER_WINS subtree removal.
     last_created_game_address: Arc<Mutex<Address>>,
+    /// Confirmed-height stagnation tracker, shared with the tz L2 provider that observes it.
+    /// Held here for ownership and lifecycle; the observation itself happens inside
+    /// `TzL2Provider::get_next_proposal_block`.
+    #[cfg(feature = "tz")]
+    pub confirmed_height_tracker: Arc<crate::tz::confirmed_height_tracker::ConfirmedHeightTracker>,
 }
 
 impl<P, H> OPSuccinctProposer<P, H>
@@ -470,6 +475,13 @@ where
             last_synced_l1_block: Arc::new(AtomicU64::new(0)),
             last_created_game_l2_block: Arc::new(AtomicU64::new(0)),
             last_created_game_address: Arc::new(Mutex::new(Address::ZERO)),
+            // This construction path wires up the concrete xlayer L2 provider, which never
+            // observes the tracker, so it is built disabled to stay inert. `tz` builds use
+            // `tz::proposer::OPSuccinctProposer::new_with_l2_provider` and pass a live tracker.
+            #[cfg(feature = "tz")]
+            confirmed_height_tracker: Arc::new(
+                crate::tz::confirmed_height_tracker::ConfirmedHeightTracker::new(0),
+            ),
         })
     }
 

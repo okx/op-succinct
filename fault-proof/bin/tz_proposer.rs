@@ -10,7 +10,14 @@ use fault_proof::{
     contract::{AnchorStateRegistry, DisputeGameFactory},
     prometheus::ProposerGauge,
     proposer::OPSuccinctProposer,
-    tz::{chain_client::TzChainClient, config::TzConfig, l2_provider::TzL2Provider},
+    tz::{
+        chain_client::TzChainClient,
+        config::TzConfig,
+        confirmed_height_tracker::{
+            parse_threshold_secs, ConfirmedHeightTracker, DEFAULT_STAGNATION_THRESHOLD_SECS,
+        },
+        l2_provider::TzL2Provider,
+    },
     L2ProviderTrait,
 };
 use op_succinct_host_utils::{
@@ -74,9 +81,38 @@ async fn run(tz_config: TzConfig) -> Result<()> {
     proposer_config.log();
 
     let tz_client = Arc::new(TzChainClient::new(tz_config.rpc_urls));
-    let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> = Arc::new(TzL2Provider { tz_client });
+
+    // Confirmed-height stagnation warning threshold, resolved once at startup. Absent, empty or
+    // unparseable values fall back to the default; an explicit zero disables the warning.
+    let stagnation_threshold_raw =
+        std::env::var("TZ_CONFIRMED_HEIGHT_STAGNATION_THRESHOLD_SECS").ok();
+    let stagnation_threshold_secs = parse_threshold_secs(stagnation_threshold_raw.as_deref());
+
+    if let Some(raw) = stagnation_threshold_raw.as_deref().filter(|raw| !raw.is_empty()) {
+        match raw.parse::<u64>() {
+            Ok(0) => tracing::info!(
+                "TZ_CONFIRMED_HEIGHT_STAGNATION_THRESHOLD_SECS=0: confirmed-height stagnation warning disabled"
+            ),
+            Ok(_) => {}
+            Err(_) => tracing::warn!(
+                "TZ_CONFIRMED_HEIGHT_STAGNATION_THRESHOLD_SECS unparseable ('{}'), using default {}s",
+                raw,
+                DEFAULT_STAGNATION_THRESHOLD_SECS,
+            ),
+        }
+    }
+
+    let confirmed_height_tracker = Arc::new(ConfirmedHeightTracker::new(stagnation_threshold_secs));
+    let l2_provider: Arc<dyn L2ProviderTrait + Send + Sync> =
+        Arc::new(TzL2Provider::new(Arc::clone(&tz_client), Arc::clone(&confirmed_height_tracker)));
 
     let proposer_signer = SignerLock::from_env().await?;
+    // Start the refOrderId lookup endpoint before any signing work begins, so
+    // the asset-management callback is answerable from the moment the proposer
+    // starts issuing order IDs. An address that cannot be parsed or bound stops
+    // startup. No-op for non-XLayer signers or when no lookup address is
+    // configured.
+    proposer_signer.maybe_spawn_xlayer_verify_server().await?;
     let l1_provider = ProviderBuilder::new().connect_http(proposer_config.l1_rpc.clone());
 
     let anchor_state_registry = AnchorStateRegistry::new(
@@ -98,6 +134,7 @@ async fn run(tz_config: TzConfig) -> Result<()> {
             Arc::new(fetcher),
             host,
             l2_provider,
+            Arc::clone(&confirmed_height_tracker),
         )
         .await?,
     );

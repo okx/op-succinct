@@ -20,5 +20,6 @@
 
 pub mod chain_client;
 pub mod config;
+pub mod confirmed_height_tracker;
 pub mod game_validator;
 pub mod l2_provider;
