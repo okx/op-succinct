@@ -6,6 +6,7 @@ use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    op_succinct_config_kms::init_startup_config()?;
     let prover = ProverClient::builder().cpu().build().await;
 
     let range_pk = prover.setup(Elf::Static(TZ_RANGE_ELF)).await?;

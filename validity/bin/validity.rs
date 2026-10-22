@@ -43,6 +43,10 @@ async fn main() -> Result<()> {
 
     setup_logger();
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::init_startup_config()?;
+
     // Parse the L1 block selection config first so any user-facing error happens before
     // we touch RPCs or DBs. The SafeDB check (only needed for DA backends whose non-default
     // path goes through `optimism_safeHeadAtL1Block`) runs once the host is constructed.

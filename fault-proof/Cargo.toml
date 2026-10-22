@@ -33,6 +33,7 @@ required-features = ["tz"]
 [dependencies]
 # local
 op-succinct-client-utils.workspace = true
+op-succinct-config-kms.workspace = true
 op-succinct-elfs.workspace = true
 op-succinct-ethereum-host-utils.workspace = true
 op-succinct-host-utils.workspace = true
@@ -116,4 +117,4 @@ tz = [
     "op-succinct-proof-utils/tz",
     "op-succinct-signer-utils/xlayer-verify",
 ]
-kms = ["op-succinct-signer-utils/kms"]
+kms = ["op-succinct-signer-utils/kms", "op-succinct-config-kms/kms"]

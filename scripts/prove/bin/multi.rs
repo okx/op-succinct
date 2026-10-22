@@ -38,6 +38,10 @@ async fn main() -> Result<()> {
         .context(format!("Environment file not found: {}", args.env_file.display()))?;
     utils::setup_logger();
 
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, before the first config read. Fail-closed on any resolution problem.
+    op_succinct_config_kms::init_startup_config()?;
+
     let l1_selection = L1BlockSelectionConfig::from_env()?;
     let data_fetcher =
         OPSuccinctDataFetcher::new_with_rollup_config_and_l1_selection(l1_selection).await?;

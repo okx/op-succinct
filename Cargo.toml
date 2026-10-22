@@ -3,6 +3,7 @@ members = [
     "utils/client",
     "utils/host",
     "utils/build",
+    "utils/config-kms",
     "utils/celestia/client",
     "utils/celestia/host",
     "utils/eigenda/client",
@@ -21,10 +22,10 @@ members = [
     "validity",
     "fault-proof",
     "bindings",
-    "stubs/ok-kms-rust",
 ]
 exclude = [
     "scripts/ci-env",
+    "stubs/ok-kms-rust",
 ]
 resolver = "2"
 
@@ -143,6 +144,7 @@ op-succinct-prove = { path = "scripts/prove" }
 op-succinct-client-utils = { path = "utils/client" }
 op-succinct-host-utils = { path = "utils/host" }
 op-succinct-build-utils = { path = "utils/build" }
+op-succinct-config-kms = { path = "utils/config-kms" }
 op-succinct-elfs = { path = "utils/elfs" }
 op-succinct-validity = { path = "validity" }
 op-succinct-fp = { path = "fault-proof" }
