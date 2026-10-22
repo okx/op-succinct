@@ -28,7 +28,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use op_succinct_signer_utils::xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
+use op_succinct_signer_utils::{
+    xlayer_remote_client::{XLayerConfig, XLayerRemoteClient},
+    Signer, SignerLock,
+};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
@@ -157,6 +160,25 @@ fn build_transaction(signer: &PrivateKeySigner) -> (TransactionRequest, String) 
     (request, format!("0x{}", hex::encode(envelope.encoded_2718())))
 }
 
+/// Waits until the lookup endpoint accepts a connection, bounded by a
+/// deadline — a readiness signal rather than a fixed sleep.
+async fn wait_until_answering(addr: SocketAddr) {
+    let url = format!("http://{addr}{LOOKUP_PATH}?refOrderId=PENDING");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match reqwest::get(&url).await {
+            Ok(_) => return,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the lookup endpoint never became reachable at {addr}: {error}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    }
+}
+
 /// The lookup endpoint answers for an order while the signer is still waiting
 /// for that order's signature.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -169,8 +191,12 @@ async fn test_sign_transaction_callback_visible_before_post_returns() {
     let mock_addr = mock_listener.local_addr().unwrap();
 
     // The lookup endpoint shares the very client that issues the orders.
-    let lookup_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let lookup_addr = lookup_listener.local_addr().unwrap();
+    // A port is reserved by binding and releasing it, so the address can be
+    // handed to the signer's own startup path below — the same path the
+    // services run, rather than a listener this test wires up by hand.
+    let lookup_probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let lookup_addr = lookup_probe.local_addr().unwrap();
+    drop(lookup_probe);
 
     let config = XLayerConfig {
         endpoint: format!("http://{mock_addr}"),
@@ -178,19 +204,19 @@ async fn test_sign_transaction_callback_visible_before_post_returns() {
         request_sign_uri: "/sign".to_string(),
         query_sign_uri: "/query".to_string(),
         ref_order_prefix: REF_ORDER_PREFIX.to_string(),
+        verify_addr: lookup_addr.to_string(),
         ..XLayerConfig::default()
     };
     let client = Arc::new(XLayerRemoteClient::new(config));
 
-    let lookup_client = Arc::clone(&client);
-    tokio::spawn(async move {
-        axum::serve(
-            lookup_listener,
-            op_succinct_signer_utils::xlayer_verify_server::app(lookup_client),
-        )
+    let lock = SignerLock::new(Signer::XLayerRemoteSigner(Arc::clone(&client), signer.address()));
+    lock.maybe_spawn_xlayer_verify_server()
         .await
-        .unwrap();
-    });
+        .expect("the lookup endpoint must start on the configured address");
+
+    // Wait for the endpoint the signer just started to answer, so the mock's
+    // in-request lookup below is not racing startup.
+    wait_until_answering(lookup_addr).await;
 
     let mock = Arc::new(Mock {
         lookup_addr,
