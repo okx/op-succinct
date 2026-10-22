@@ -11,7 +11,7 @@
 //! - submits `submitWithdrawProof(challengeId, leafIndex, leafCount, proof)` with the four fields
 //!   passed through verbatim.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, sync::Arc, sync::Mutex};
 
 use alloy_primitives::{Address, TxHash, B256, U256};
 use alloy_provider::{DynProvider, Provider};
@@ -19,6 +19,7 @@ use alloy_rpc_types_eth::Filter;
 use alloy_sol_types::{sol, SolEvent};
 use anyhow::Context;
 use async_trait::async_trait;
+use op_succinct_signer_utils::SignerLock;
 
 use super::{
     challenge_contract::{
@@ -201,6 +202,12 @@ pub struct ChallengeManagerContract<L: LeafLocator> {
     /// The L2 provider (live path). `None` on the scripted test path.
     provider: Option<DynProvider>,
     state: Mutex<AdapterState>,
+    /// Transaction signer used to broadcast the response transaction on the live path. `None` on
+    /// the scripted/offline path, which builds the calldata but never broadcasts it. The holder is
+    /// reserved here and shared with the process-wide signer; it is attached with
+    /// [`Self::set_signer`] after construction because the lookup endpoint must be spawned before
+    /// the signer is wrapped in an `Arc`.
+    signer: Option<Arc<SignerLock>>,
 }
 
 impl<L: LeafLocator> ChallengeManagerContract<L> {
@@ -218,6 +225,7 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
             locator,
             provider: Some(provider.erased()),
             state: Mutex::new(AdapterState::default()),
+            signer: None,
         }
     }
 
@@ -240,7 +248,21 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
                 scripted_events: Some(events),
                 ..AdapterState::default()
             }),
+            signer: None,
         }
+    }
+
+    /// Attaches the shared transaction signer. Called by the live binary after the signer's lookup
+    /// endpoint has been started and before the adapter is shared, so the broadcast path always
+    /// holds the same signer instance the process uses for its own order IDs.
+    pub fn set_signer(&mut self, signer: Arc<SignerLock>) {
+        self.signer = Some(signer);
+    }
+
+    /// The transaction signer reserved for the on-chain submission path, if the live binary
+    /// attached one. `None` on the scripted/offline path, which never broadcasts.
+    pub fn signer(&self) -> Option<&Arc<SignerLock>> {
+        self.signer.as_ref()
     }
 
     /// Gather the decoded-but-unfiltered events in `window`: the scripted batch when present, else
@@ -542,6 +564,7 @@ impl<L: LeafLocator> ChallengeReader for ChallengeManagerContract<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use op_succinct_signer_utils::Signer;
 
     /// Build a `ChallengeCreated` log fixture from the generated event type. The event carries
     /// independent `tzTxHash` and `leaf` fields plus `affectedBridge`.
@@ -591,6 +614,28 @@ mod tests {
                 uint64 responseDeadline
             );
         }
+    }
+
+    /// The adapter stays signer-free on the scripted path and reserves exactly the signer the live
+    /// binary attaches, so no test can silently depend on a broadcast path and the live path cannot
+    /// end up holding a different signer from the one that serves the refOrderId lookup endpoint.
+    #[test]
+    fn adapter_reserves_signer_only_when_the_live_path_attaches_one() {
+        let mut adapter =
+            ChallengeManagerContract::from_raw_events(vec![], DirectLeafLocator, 196, CONTRACT_ADDR);
+        assert!(adapter.signer().is_none(), "scripted path must reserve no signer");
+
+        // A fixed, non-secret scalar: the test only needs *a* signer handle to prove the adapter
+        // keeps the exact instance it was handed. No key material is involved.
+        let scalars = hex::encode([0x11u8; 32]);
+        let shared = Arc::new(SignerLock::new(
+            Signer::new_local_signer(&format!("0x{scalars}")).expect("fixed test scalar is valid"),
+        ));
+        adapter.set_signer(Arc::clone(&shared));
+        assert!(
+            Arc::ptr_eq(adapter.signer().expect("signer attached"), &shared),
+            "the adapter must hold the exact signer instance it was handed"
+        );
     }
 
     #[test]
