@@ -59,6 +59,12 @@ async fn run() -> Result<()> {
     validator_config.log();
 
     let challenger_signer = SignerLock::from_env().await?;
+    // Start the refOrderId lookup endpoint before any signing work begins, so
+    // the asset-management callback is answerable from the moment the
+    // challenger starts issuing order IDs. An address that cannot be parsed or
+    // bound stops startup. No-op for non-XLayer signers or when no lookup
+    // address is configured.
+    challenger_signer.maybe_spawn_xlayer_verify_server().await?;
     let l1_provider = ProviderBuilder::default().connect_http(challenger_config.l1_rpc.clone());
 
     let anchor_state_registry = AnchorStateRegistry::new(

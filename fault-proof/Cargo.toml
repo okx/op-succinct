@@ -99,6 +99,9 @@ alloy-rpc-types-trace.workspace = true
 rstest = "0.26"
 which = "4.4"
 wiremock = "0.6"
+# `test-util` (paused time: `start_paused`, `tokio::time::advance`) is not part of the
+# workspace tokio `full` feature set, and the tz stagnation tests drive time explicitly.
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 default = ["ethereum"]
@@ -108,5 +111,10 @@ eigenda = ["op-succinct-proof-utils/eigenda"]
 ethereum = ["op-succinct-proof-utils/ethereum"]
 integration = []
 # for tz: gates the TradeZone (tz) custom L2 chain support module + binaries.
-tz = ["dep:reqwest", "dep:thiserror", "op-succinct-proof-utils/tz"]
+tz = [
+    "dep:reqwest",
+    "dep:thiserror",
+    "op-succinct-proof-utils/tz",
+    "op-succinct-signer-utils/xlayer-verify",
+]
 kms = ["op-succinct-signer-utils/kms", "op-succinct-config-kms/kms"]
