@@ -4,11 +4,12 @@
 //! Challenger. It watches the X Layer Withdraw-challenge contract and, before each challenge's
 //! response deadline, answers with a locally-verified inclusion proof.
 //!
-//! Signer: no transaction signer is wired in this stage. The challenge/prove ABI and its on-chain
-//! submission path are not yet delivered (the sender is the in-memory mock seam below), so the
-//! binary constructs no signer and makes NO signer-policy guarantee. When the real challenge sender
-//! adapter lands it will construct and validate its own signer; nothing here should be read as a
-//! promise that a remote/HSM signer is already enforced.
+//! Signer: the binary builds its signer from the shared signer environment and asks it to serve
+//! the asset-management refOrderId lookup endpoint, so the order IDs the Defender issues for its
+//! own responses are answerable by the asset-management callback from the moment it starts. The
+//! challenge/prove ABI's on-chain submission path is not yet delivered (the sender is the in-memory
+//! mock seam below), so the signer handle is reserved for that sender rather than used to broadcast
+//! today; no proof transaction is sent by this binary yet.
 //!
 //! Challenge-contract seam: the real X Layer challenge/prove ABI is not yet finalized, so the
 //! binary wires the in-memory `MockChallengeContract` and logs a prominent warning. When the real
@@ -41,6 +42,7 @@ use fault_proof::tz::{
     withdraw::wb_client::WbClient,
 };
 use op_succinct_host_utils::setup_logger;
+use op_succinct_signer_utils::SignerLock;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
@@ -92,11 +94,14 @@ async fn run() -> Result<()> {
         "tz-defender configuration loaded"
     );
 
-    // No transaction signer is constructed here: this stage sends no real prove transaction (the
-    // challenge sender is the mock seam below), so building an unused signer — which would also
-    // read shared signer env and could fall back to a local key — is deliberately omitted. The
-    // real signer is constructed and validated by the challenge sender adapter when the
-    // on-chain ABI is delivered.
+    // Signer + refOrderId lookup endpoint. Both are built before any shared handle exists: the
+    // lookup endpoint has to be bound while the signer is still exclusively owned, and a
+    // misconfigured signer or an unbindable lookup address must stop startup instead of leaving
+    // the asset-management callback unanswered for the order IDs this service issues.
+    let defender_signer =
+        SignerLock::from_env().await.context("failed to initialize the tz-defender signer")?;
+    defender_signer.maybe_spawn_xlayer_verify_server().await?;
+    let signer = Arc::new(defender_signer);
 
     // Witness Builder v2 client + witness-source adapter (record/proof witness data only).
     let wb = Arc::new(WbClient::new(config.wb_endpoint.clone(), config.chain_id)?);
@@ -112,16 +117,21 @@ async fn run() -> Result<()> {
 
     // Challenge-contract seam: the real ChallengeManager adapter (WithdrawNotInRoot only), wired
     // with the direct leaf-locator — the event carries the Merkle leaf explicitly, so the leaf is
-    // read straight from it. There is no reverse lookup, and nothing about a reverse-lookup service
-    // gates the challenge-listening chain. One honest limitation remains: no transaction signer is
-    // wired in this stage, so submitWithdrawProof calldata is built but not broadcast.
+    // read straight from it. The Defender hosts the asset-management refOrderId lookup endpoint for
+    // the order IDs it issues, but it does not consume a reverse lookup to find leaves, so nothing
+    // about a reverse-lookup service gates the challenge-listening chain. One honest limitation
+    // remains: the challenge/prove ABI's on-chain submission path is not yet delivered, so
+    // submitWithdrawProof calldata is built but not broadcast; the shared signer is reserved for
+    // that sender.
     let locator = DirectLeafLocator;
-    let challenge = Arc::new(ChallengeManagerContract::new(
+    let mut challenge = ChallengeManagerContract::new(
         l2_provider.clone(),
         config.challenge_contract,
         config.chain_id,
         locator,
-    ));
+    );
+    challenge.set_signer(Arc::clone(&signer));
+    let challenge = Arc::new(challenge);
 
     // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
     // flow, bound to the deployed challenge contract + chain id. Production passes no compatibility
@@ -145,9 +155,10 @@ async fn run() -> Result<()> {
     tracing::info!(
         challenge_contract = %config.challenge_contract,
         "tz-defender wired the real ChallengeManager adapter (WithdrawNotInRoot only) with the \
-         direct event-leaf locator; the Witness-Builder proof flow stays behind the leaf-encoding \
-         compatibility gate until the contract and Witness-Builder encodings are declared \
-         compatible for this deployment, and no transaction signer is wired yet"
+         direct event-leaf locator and the shared signer; the Witness-Builder proof flow stays \
+         behind the leaf-encoding compatibility gate until the contract and Witness-Builder \
+         encodings are declared compatible for this deployment, and the on-chain submission path \
+         is not yet wired, so no proof transaction is broadcast"
     );
 
     // Global single-process in-flight gate (at most one broadcast in flight); lost on restart.
