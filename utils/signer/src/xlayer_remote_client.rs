@@ -393,9 +393,13 @@ impl XLayerRemoteClient {
     /// Reports whether this client has issued the given `refOrderID`.
     /// Used by asset-management callbacks to vouch for a transfer
     /// initiated by the remote signer.
+    ///
+    /// A hit counts as recent use: an order ID that keeps being looked up is
+    /// kept longer than one nobody asks about. A miss records nothing, so
+    /// probing for unknown IDs cannot evict real entries.
     pub async fn has_ref_order_id(&self, id: &str) -> bool {
-        let cache = self.ref_order_cache.lock().await;
-        cache.contains(id)
+        let mut cache = self.ref_order_cache.lock().await;
+        cache.get(id).is_some()
     }
 
     /// Signs `transaction_request` via the XLayer remote signer.
@@ -1647,5 +1651,58 @@ mod tests {
         assert!(!client.has_ref_order_id(first_id).await, "first ID should be evicted");
         assert!(client.has_ref_order_id("ID_0").await);
         assert!(client.has_ref_order_id(&format!("ID_{}", REF_ORDER_CACHE_CAPACITY - 1)).await);
+    }
+
+    /// A repeated lookup counts as recent use, so an actively-queried order ID
+    /// is kept longer than one that was only ever recorded. Without this, a
+    /// callback that keeps being answered can be evicted before an entry
+    /// nobody has asked about.
+    #[tokio::test]
+    async fn test_lru_touch_on_lookup_hit() {
+        let client = XLayerRemoteClient::test_client_with_capacity(2);
+        client.seed_ref_order_id("ID_A").await;
+        client.seed_ref_order_id("ID_B").await;
+
+        for _ in 0..5 {
+            assert!(client.has_ref_order_id("ID_A").await);
+        }
+
+        // Recording a third entry evicts the least recently used one.
+        client.seed_ref_order_id("ID_C").await;
+
+        assert!(client.has_ref_order_id("ID_A").await, "ID_A should survive: it was queried");
+        assert!(!client.has_ref_order_id("ID_B").await, "ID_B should be evicted: never queried");
+        assert!(client.has_ref_order_id("ID_C").await, "ID_C should be present");
+    }
+
+    /// A lookup for an unknown ID must not record that ID: probing for orders
+    /// this client never issued cannot push real entries out of the cache.
+    #[tokio::test]
+    async fn test_lru_no_phantom_on_miss() {
+        let client = XLayerRemoteClient::test_client_with_capacity(2);
+        client.seed_ref_order_id("X").await;
+        client.seed_ref_order_id("Y").await;
+
+        for _ in 0..10 {
+            assert!(!client.has_ref_order_id("NONEXISTENT").await);
+        }
+
+        client.seed_ref_order_id("Z").await;
+
+        assert!(!client.has_ref_order_id("NONEXISTENT").await, "the miss inserted a phantom entry");
+        assert!(client.has_ref_order_id("Z").await, "Z should be present");
+    }
+
+    /// Each client owns its own issued-order cache, so one service's lookup
+    /// answers can never vouch for another service's orders.
+    #[tokio::test]
+    async fn test_lru_cross_client_isolation() {
+        let client_a = XLayerRemoteClient::test_client_with_capacity(10);
+        let client_b = XLayerRemoteClient::test_client_with_capacity(10);
+        client_a.seed_ref_order_id("IDA").await;
+        client_b.seed_ref_order_id("IDB").await;
+
+        assert!(client_a.has_ref_order_id("IDA").await);
+        assert!(!client_b.has_ref_order_id("IDA").await);
     }
 }
