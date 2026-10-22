@@ -38,6 +38,8 @@ The TradeZone project must be cloned separately and its own CI-env prerequisites
 
 All other configuration comes from `example.env.tz-proposer`, which is rendered automatically into `.env.tz-proposer` by `start.sh`. Edit the template if you need to change RPC endpoints, timeouts, or proof strategy.
 
+`example.env.tz-challenger` is a companion template for the challenger service's own `.env.tz-challenger`. It covers the signer and refOrderId lookup-endpoint settings that have to differ between the two services; the surrounding chain and dispute-game values still have to be filled in for your deployment.
+
 ## How to run
 
 ```bash
