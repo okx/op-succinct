@@ -141,6 +141,21 @@ pub async fn serve(
     Ok(())
 }
 
+/// Starts the verify server from an already bound listener.
+///
+/// Binding is the caller's step so that an address which is unusable is
+/// reported before any serving task is spawned; this function only serves.
+#[cfg(feature = "xlayer-verify")]
+pub async fn serve_from_listener(
+    listener: tokio::net::TcpListener,
+    client: Arc<XLayerRemoteClient>,
+) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
+    tracing::info!("refOrderId lookup endpoint listening on {addr}");
+    axum::serve(listener, app(client)).await?;
+    Ok(())
+}
+
 #[cfg(all(test, feature = "xlayer-verify"))]
 mod tests {
     use std::sync::Arc;
@@ -399,5 +414,26 @@ mod tests {
         assert_eq!(unknown.status(), 200);
         let unknown_body: serde_json::Value = unknown.json().await.unwrap();
         assert_contract(&unknown_body, 200, 1, "not found");
+    }
+
+    /// Serving from a listener bound by the caller (the startup path used by
+    /// the services) exposes the same contract on a real socket.
+    #[tokio::test]
+    async fn test_serve_from_listener_answers_lookup() {
+        let client = Arc::new(XLayerRemoteClient::test_client_with_capacity(100));
+        let id = "CHALLENGER_TZ_99_9999_ffffffff";
+        client.seed_ref_order_id(id).await;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(serve_from_listener(listener, client));
+        drop(handle);
+
+        let found =
+            get_until_ready(&format!("http://{bound_addr}/signer/get?refOrderId={id}")).await;
+        assert_eq!(found.status(), 200);
+        let found_body: serde_json::Value = found.json().await.unwrap();
+        assert_contract(&found_body, 200, 0, "success");
     }
 }
