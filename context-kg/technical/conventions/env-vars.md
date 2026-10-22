@@ -70,8 +70,8 @@ CloudHSM and Web3Signer are not auto-detected from env — they must be configur
 | `XLAYER_SIGNER_ADDRESS` | Yes | Signer address |
 | `XLAYER_ACCESS_KEY` | Yes | API access key |
 | `XLAYER_SECRET_KEY` | Yes | AES secret key (16/24/32 bytes) |
-| `XLAYER_SIGNER_REF_ORDER_PREFIX` | Yes (when enabled) | Prefix prepended to every generated refOrderId. No default — a missing, empty or non-ASCII-alphanumeric value fails the process at startup, before any network I/O |
-| `XLAYER_SIGNER_VERIFY_ADDR` | No | (empty) | Socket address for the refOrderId lookup endpoint (`GET /signer/get?refOrderId=<id>`). Empty disables it; an unparseable value is logged and disables it. Started only by `tz-proposer` |
+| `XLAYER_SIGNER_REF_ORDER_PREFIX` | Yes (when enabled) | Prefix prepended to every generated refOrderId. No default — a missing, empty or non-ASCII-alphanumeric value fails the process at startup, before any network I/O. Give each service its own prefix so their order IDs stay distinguishable |
+| `XLAYER_SIGNER_VERIFY_ADDR` | No | (empty) | Socket address for the refOrderId lookup endpoint (`GET /signer/get?refOrderId=<id>`). Empty disables it. A value that cannot be parsed, or that cannot be bound, fails the process at startup. Started by `tz-proposer` and `tz-challenger` — each needs its own address |
 | `XLAYER_USER_ID` | No | 0 | User ID |
 | `XLAYER_SYMBOL` | No | 2882 | Chain symbol |
 | `XLAYER_PROJECT_SYMBOL` | No | 3011 | Project symbol |
