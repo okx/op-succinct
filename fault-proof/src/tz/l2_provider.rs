@@ -9,6 +9,7 @@ use op_alloy_rpc_types::Transaction;
 
 use super::{
     chain_client::{TzCacheMissError, TzChainClient},
+    confirmed_height_tracker::ConfirmedHeightTracker,
     withdraw::{
         claim::claim_root,
         types::{GameCheckpointPreimage, TreeBoundaryWitness},
@@ -19,9 +20,29 @@ use crate::L2ProviderTrait;
 
 pub struct TzL2Provider {
     pub tz_client: Arc<TzChainClient>,
+    /// Confirmed-height stagnation tracker. Shared with the proposer so every clone observes into
+    /// one tracker for the process.
+    confirmed_height_tracker: Arc<ConfirmedHeightTracker>,
     /// Witness Builder v2 client. Required for the four-field claim path (checkpoint components +
     /// boundary witness); `None` only in isolated unit tests that exercise the chain-client cache.
     pub wb: Option<Arc<WbClient>>,
+}
+
+impl TzL2Provider {
+    /// Builds a provider that shares its confirmed-height tracker with the caller.
+    ///
+    /// Sharing the same `Arc` with the proposer keeps a single tracker for the process, so
+    /// every clone of the proposer observes into one set of state. Call [`Self::with_wb`] to
+    /// enable the four-field claim path.
+    pub fn new(tz_client: Arc<TzChainClient>, tracker: Arc<ConfirmedHeightTracker>) -> Self {
+        Self { tz_client, confirmed_height_tracker: tracker, wb: None }
+    }
+
+    /// Attaches a Witness Builder v2 client, enabling the four-field claim path.
+    pub fn with_wb(mut self, wb: Arc<WbClient>) -> Self {
+        self.wb = Some(wb);
+        self
+    }
 }
 
 /// Compute the four-field tz `claimRoot = keccak256(blockHash ‖ appHash ‖ withdrawalRoot ‖
@@ -155,7 +176,14 @@ impl L2ProviderTrait for TzL2Provider {
         proposal_interval: u64,
     ) -> Result<Option<U256>> {
         let info = match self.tz_client.get_confirmed_block_info().await {
-            Ok(i) => i,
+            Ok(i) => {
+                // Record the height on every successful read, before the interval check, so a
+                // height that stops advancing is tracked even while it is still below the
+                // proposal interval. A failed read returns early below and records nothing:
+                // an error carries no height, and one must never be invented.
+                self.confirmed_height_tracker.observe(i.height);
+                i
+            }
             Err(_) => return Ok(None),
         };
         let confirmed = U256::from(info.height);
@@ -185,13 +213,19 @@ impl L2ProviderTrait for TzL2Provider {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::{
-        super::chain_client::{TzBlockInfo, TzCacheMissError},
+        super::{
+            chain_client::{TzBlockInfo, TzCacheMissError},
+            confirmed_height_tracker::test_support::capture_warns,
+        },
         *,
     };
+    use tokio::time::Duration;
     use wiremock::{
         matchers::{method, path},
-        Mock, MockServer, ResponseTemplate,
+        Mock, MockServer, Respond, ResponseTemplate,
     };
 
     const HASH_A: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -209,6 +243,58 @@ mod tests {
     }
     fn fr() -> B256 {
         B256::repeat_byte(0x44)
+    }
+
+    fn height_response(height: u64) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 0, "message": "ok",
+            "data": { "height": height, "blockHash": HASH_A, "appHash": HASH_B }
+        }))
+    }
+
+    /// Replies with a scripted sequence of responses, one per request, so a test can drive a
+    /// failed read and a later successful read deterministically.
+    struct ScriptedResponses {
+        remaining: std::sync::Mutex<VecDeque<ResponseTemplate>>,
+    }
+
+    impl Respond for ScriptedResponses {
+        fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+            self.remaining
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("the test scripted more requests than it issued")
+        }
+    }
+
+    /// Builds a provider backed by a scripted endpoint. The `MockServer` is returned so the
+    /// caller keeps it alive for the duration of the test.
+    async fn provider_with_script(
+        responses: Vec<ResponseTemplate>,
+        threshold_secs: u64,
+    ) -> (TzL2Provider, Arc<ConfirmedHeightTracker>, MockServer) {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chain/confirmed_block_info"))
+            .respond_with(ScriptedResponses { remaining: std::sync::Mutex::new(responses.into()) })
+            .mount(&mock_server)
+            .await;
+
+        let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
+        let tracker = Arc::new(ConfirmedHeightTracker::new(threshold_secs));
+        let provider = TzL2Provider::new(client, Arc::clone(&tracker));
+        (provider, tracker, mock_server)
+    }
+
+    /// Reads the elapsed seconds out of a stagnation warning message.
+    fn warned_seconds(message: &str) -> u64 {
+        message
+            .split("unchanged for ")
+            .nth(1)
+            .and_then(|rest| rest.split('s').next())
+            .and_then(|secs| secs.parse().ok())
+            .unwrap_or_else(|| panic!("no elapsed seconds in {message}"))
     }
 
     #[test]
@@ -254,7 +340,7 @@ mod tests {
             let mut h = client.history.lock().unwrap();
             h.insert(height, TzBlockInfo { height, block_hash, state_hash });
         }
-        TzL2Provider { tz_client: client, wb: None }
+        TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300)))
     }
 
     #[tokio::test]
@@ -276,7 +362,8 @@ mod tests {
             .await;
         let client = Arc::new(TzChainClient::new(vec!["http://unused".to_string()]));
         let wb = Arc::new(WbClient::new(server.uri().parse().unwrap(), 196).unwrap());
-        let provider = TzL2Provider { tz_client: client, wb: Some(wb) };
+        let provider =
+            TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300))).with_wb(wb);
         let result = provider.compute_output_root_at_block(U256::from(100u64)).await.unwrap();
         assert_eq!(result, claim);
     }
@@ -299,7 +386,8 @@ mod tests {
             .await;
         let client = Arc::new(TzChainClient::new(vec!["http://unused".to_string()]));
         let wb = Arc::new(WbClient::new(server.uri().parse().unwrap(), 196).unwrap());
-        let provider = TzL2Provider { tz_client: client, wb: Some(wb) };
+        let provider =
+            TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300))).with_wb(wb);
         let err = provider.compute_output_root_at_block(U256::from(100u64)).await.unwrap_err();
         assert!(err.to_string().contains("height"));
     }
@@ -332,7 +420,7 @@ mod tests {
             .await;
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
-        let provider = TzL2Provider { tz_client: client, wb: None };
+        let provider = TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300)));
         let result = provider.get_next_proposal_block(U256::from(1000u64), 100).await.unwrap();
         assert!(result.is_none());
     }
@@ -350,7 +438,7 @@ mod tests {
             .await;
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
-        let provider = TzL2Provider { tz_client: client, wb: None };
+        let provider = TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300)));
         let result = provider.get_next_proposal_block(U256::from(1000u64), 100).await.unwrap();
         assert_eq!(result, Some(U256::from(1200u64)));
     }
@@ -358,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn get_next_proposal_block_returns_none_on_api_error() {
         let client = Arc::new(TzChainClient::new(vec!["http://127.0.0.1:1".to_string()]));
-        let provider = TzL2Provider { tz_client: client, wb: None };
+        let provider = TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300)));
         let result = provider.get_next_proposal_block(U256::from(0u64), 100).await.unwrap();
         assert!(result.is_none());
     }
@@ -376,7 +464,8 @@ mod tests {
             .await;
 
         let client = Arc::new(TzChainClient::new(vec![mock_server.uri()]));
-        let provider = TzL2Provider { tz_client: Arc::clone(&client), wb: None };
+        let provider =
+            TzL2Provider::new(Arc::clone(&client), Arc::new(ConfirmedHeightTracker::new(300)));
 
         provider.refresh_checkpoint_cache().await.unwrap();
 
@@ -388,7 +477,132 @@ mod tests {
     #[tokio::test]
     async fn refresh_checkpoint_cache_returns_err_on_api_failure() {
         let client = Arc::new(TzChainClient::new(vec!["http://127.0.0.1:1".to_string()]));
-        let provider = TzL2Provider { tz_client: client, wb: None };
+        let provider = TzL2Provider::new(client, Arc::new(ConfirmedHeightTracker::new(300)));
         assert!(provider.refresh_checkpoint_cache().await.is_err());
+    }
+
+    // A height that stays below the proposal interval is still observed on every successful
+    // read, but no warning is emitted while the elapsed time is under the threshold.
+    //
+    // These integration tests use the real clock: under a paused clock tokio advances time
+    // while the runtime waits on I/O, which trips the request timeout and makes every fetch
+    // fail. Staleness is therefore asserted with a threshold far above the (sub-millisecond)
+    // real elapsed time for the negative cases, and a short threshold plus a sleep past it for
+    // the positive ones.
+    #[tokio::test]
+    async fn stagnation_below_interval_no_warn_before_threshold() {
+        let (capture, _guard) = capture_warns();
+        let (provider, tracker, _server) =
+            provider_with_script(vec![height_response(950), height_response(950)], 300).await;
+
+        let first = provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap();
+        assert_eq!(first, None, "950 is below 900 + 100");
+        assert_eq!(tracker.last_observed_height(), Some(950));
+
+        let second = provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap();
+        assert_eq!(second, None, "still below the proposal interval");
+
+        assert_eq!(capture.warn_count(), 0, "elapsed time is far under the 300s threshold");
+    }
+
+    // Once the unchanged height passes the threshold the warning appears, and it repeats on
+    // every later observation instead of being emitted only once.
+    #[tokio::test]
+    async fn stagnation_below_interval_warns_after_threshold_and_repeats() {
+        let (capture, _guard) = capture_warns();
+        let (provider, _tracker, _server) =
+            provider_with_script(vec![height_response(950); 3], 1).await;
+
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+        let messages = capture.messages();
+        assert_eq!(messages.len(), 1, "one warning after the threshold is crossed");
+        assert!(
+            messages[0].contains("confirmed height 950 unchanged for"),
+            "unexpected message: {}",
+            messages[0]
+        );
+        assert!(messages[0].contains("(threshold 1s)"), "unexpected message: {}", messages[0]);
+        assert!(warned_seconds(&messages[0]) >= 1);
+
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+        assert_eq!(capture.warn_count(), 2, "the warning is not suppressed");
+    }
+
+    // A failed read must not be treated as an observation: no height is invented, the tracker
+    // keeps the last successfully observed height, and the staleness timer keeps running from
+    // that success rather than being restarted by the failure.
+    #[tokio::test]
+    async fn stagnation_failed_read_records_no_observation() {
+        let (capture, _guard) = capture_warns();
+        let (provider, tracker, _server) = provider_with_script(
+            vec![
+                ResponseTemplate::new(500),
+                height_response(950),
+                ResponseTemplate::new(500),
+                height_response(950),
+            ],
+            1,
+        )
+        .await;
+
+        // A failure on the very first read leaves the tracker empty — nothing was observed.
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+        assert_eq!(tracker.last_observed_height(), None, "a failed read must not invent a height");
+
+        // First success: the staleness timer starts here.
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+        assert_eq!(tracker.last_observed_height(), Some(950));
+
+        // Past the threshold, another failure must stay silent: had the failure observed, the
+        // unchanged height would have produced a warning here.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+        assert_eq!(tracker.last_observed_height(), Some(950));
+        assert_eq!(capture.warn_count(), 0, "a failed read is not an observation");
+
+        // The next success still measures staleness from the last success, so the failures did
+        // not restart the timer either.
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+        let messages = capture.messages();
+        assert_eq!(messages.len(), 1);
+        assert!(warned_seconds(&messages[0]) >= 1);
+    }
+
+    // A successful read that returns a different height restarts the timer, and staleness is
+    // measured from that change onward.
+    #[tokio::test]
+    async fn stagnation_height_change_resets_then_stagnates() {
+        let (capture, _guard) = capture_warns();
+        let (provider, tracker, _server) = provider_with_script(
+            vec![height_response(950), height_response(1050), height_response(1050)],
+            1,
+        )
+        .await;
+
+        assert_eq!(provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(), None);
+
+        // The height moved past the interval, so a proposal is produced and the timer resets.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(
+            provider.get_next_proposal_block(U256::from(900u64), 100).await.unwrap(),
+            Some(U256::from(1050u64))
+        );
+        assert_eq!(tracker.last_observed_height(), Some(1050));
+        assert_eq!(capture.warn_count(), 0, "a changed height resets the timer");
+
+        // The new height then stalls past the threshold.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(provider.get_next_proposal_block(U256::from(1050u64), 100).await.unwrap(), None);
+        let messages = capture.messages();
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("confirmed height 1050 unchanged for"),
+            "unexpected message: {}",
+            messages[0]
+        );
+        assert!(warned_seconds(&messages[0]) >= 1);
     }
 }

@@ -46,13 +46,17 @@ aes.workspace = true
 base64.workspace = true
 lru.workspace = true
 
-# verify server for asset-management refOrderId callbacks
-axum = "0.8"
+# xlayer verify server (asset-management refOrderId callback endpoint)
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
 
 [features]
 kms = ["dep:ok-kms-rust"]
+# Gates the standalone refOrderId lookup HTTP server. Activated transitively by
+# the `tz` feature of op-succinct-fp.
+xlayer-verify = ["dep:axum", "dep:tower"]
 
 [dev-dependencies]
 dotenv.workspace = true
 op-succinct-host-utils.workspace = true
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }

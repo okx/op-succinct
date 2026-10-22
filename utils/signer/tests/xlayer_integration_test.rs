@@ -35,6 +35,7 @@ const SYS_FROM: i32 = 3;
 const REQUEST_SIGN_URI: &str = "/priapi/v1/assetonchain/ecology/ecologyOperate";
 const QUERY_SIGN_URI: &str = "/priapi/v1/assetonchain/ecology/querySignDataByOrderNo";
 const TIMEOUT: Duration = Duration::from_secs(30);
+const REF_ORDER_PREFIX: &str = "PROPOSER_TZ_";
 
 const CHAIN_ID: u64 = 11155111; // Sepolia
 const MAX_FEE_PER_GAS: u128 = 2_000_000_000;
@@ -68,7 +69,8 @@ fn build_config() -> XLayerConfig {
         access_key,
         secret_key,
         timeout: TIMEOUT,
-        ref_order_prefix: "PROPOSER_TZ_".to_string(),
+        ref_order_prefix: std::env::var("XLAYER_SIGNER_REF_ORDER_PREFIX")
+            .unwrap_or_else(|_| REF_ORDER_PREFIX.to_string()),
         verify_addr: String::new(),
     }
 }

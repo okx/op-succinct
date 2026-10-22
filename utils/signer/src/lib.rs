@@ -18,9 +18,9 @@ use tokio::{sync::Mutex, time::Duration};
 
 pub mod kms;
 pub mod xlayer_remote_client;
+#[cfg(feature = "xlayer-verify")]
 pub mod xlayer_verify_server;
 pub use xlayer_remote_client::{XLayerConfig, XLayerRemoteClient};
-pub use xlayer_verify_server::{serve as serve_xlayer_verify, VerifyResponseResult};
 
 pub const NUM_CONFIRMATIONS: u64 = 3;
 pub const TIMEOUT_SECONDS: u64 = 60;
@@ -81,23 +81,47 @@ impl Signer {
         Signer::XLayerRemoteSigner(Arc::new(client), address)
     }
 
-    /// Creates a signer from environment variables. For the XLayer remote
-    /// signer, `XLAYER_SIGNER_REF_ORDER_PREFIX` supplies the refOrderID
-    /// prefix directly — this function does not know or care whether it is
-    /// running inside a proposer, a challenger, or any future service.
+    /// Resolves the refOrderId lookup endpoint address of this signer.
+    ///
+    /// Returns `Ok(None)` when this is not an XLayer signer, and when it is an
+    /// XLayer signer with no lookup address configured. Returns
+    /// `Ok(Some((addr, client)))` when the configured address parses. Returns
+    /// `Err` when an address IS configured but cannot be parsed: the caller
+    /// must stop startup rather than run without the lookup endpoint that the
+    /// asset-management callback depends on.
+    pub fn xlayer_verify_target(
+        &self,
+    ) -> Result<Option<(std::net::SocketAddr, Arc<XLayerRemoteClient>)>> {
+        match self {
+            Signer::XLayerRemoteSigner(client, _) => {
+                let addr = client.verify_addr();
+                if addr.is_empty() {
+                    return Ok(None);
+                }
+                match addr.parse::<std::net::SocketAddr>() {
+                    Ok(sock) => Ok(Some((sock, client.clone()))),
+                    Err(e) => {
+                        Err(anyhow::anyhow!("invalid XLAYER_SIGNER_VERIFY_ADDR '{addr}': {e}"))
+                    }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub async fn from_env() -> Result<Self> {
         // Check for XLayer remote signer first (highest priority for production)
         if let Ok(enabled) = std::env::var("XLAYER_SIGNER_ENABLED") {
             if enabled.to_lowercase() == "true" {
-                // The refOrderID prefix is ops-owned deployment identity, not a role
-                // this crate senses or hardcodes: the same binary run as a proposer,
-                // a challenger, or any future service is told what to embed in every
-                // refOrderID purely via this variable. Validated eagerly so a typo
-                // fails startup instead of silently producing an unattributable ID.
+                // The refOrderId prefix is mandatory for the remote signer: the
+                // verify endpoint and the asset-management side both key on it,
+                // so a missing or malformed value must stop the process rather
+                // than produce orders nobody can look up.
                 let ref_order_prefix = std::env::var("XLAYER_SIGNER_REF_ORDER_PREFIX").context(
                     "XLAYER_SIGNER_REF_ORDER_PREFIX is required when XLAYER_SIGNER_ENABLED=true",
                 )?;
                 xlayer_remote_client::validate_ref_order_prefix(&ref_order_prefix)?;
+                let verify_addr = std::env::var("XLAYER_SIGNER_VERIFY_ADDR").unwrap_or_default();
 
                 let config = XLayerConfig {
                     endpoint: std::env::var("XLAYER_SIGNER_ENDPOINT").context(
@@ -145,7 +169,7 @@ impl Signer {
                             .context("Failed to parse XLAYER_TIMEOUT")?,
                     ),
                     ref_order_prefix,
-                    verify_addr: std::env::var("XLAYER_SIGNER_VERIFY_ADDR").unwrap_or_default(),
+                    verify_addr,
                 };
 
                 tracing::info!(
@@ -197,30 +221,6 @@ impl Signer {
                 - For Web3Signer: SIGNER_URL and SIGNER_ADDRESS\n\
                 - For Local: PRIVATE_KEY"
             )
-        }
-    }
-
-    /// If this is an XLayer signer with a non-empty, parseable verify address,
-    /// returns the socket address and the client handle to serve. Otherwise
-    /// `None` (non-XLayer signer, unset address, or unparseable address).
-    pub fn xlayer_verify_target(&self) -> Option<(std::net::SocketAddr, Arc<XLayerRemoteClient>)> {
-        match self {
-            Signer::XLayerRemoteSigner(client, _) => {
-                let addr = client.verify_addr();
-                if addr.is_empty() {
-                    return None;
-                }
-                match addr.parse::<std::net::SocketAddr>() {
-                    Ok(sock) => Some((sock, client.clone())),
-                    Err(e) => {
-                        tracing::warn!(
-                            "invalid XLAYER_SIGNER_VERIFY_ADDR '{addr}': {e}; verify server disabled"
-                        );
-                        None
-                    }
-                }
-            }
-            _ => None,
         }
     }
 
@@ -381,27 +381,9 @@ impl SignerLock {
         SignerLock { inner: Arc::new(Mutex::new(signer)), cached_address }
     }
 
-    /// Creates a SignerLock from environment variables. For the XLayer remote
-    /// signer, the refOrderID prefix embedded in every issued ID comes from
-    /// `XLAYER_SIGNER_REF_ORDER_PREFIX` — this crate has no notion of which
-    /// component (proposer, challenger, or a future service) is calling it.
+    /// Creates a SignerLock from environment variables.
     pub async fn from_env() -> Result<Self> {
         Ok(SignerLock::new(Signer::from_env().await?))
-    }
-
-    /// Best-effort: if the wrapped signer is an XLayer signer with a configured
-    /// verify address, spawn the verify server. A bind/serve failure is logged
-    /// and the caller continues (mirrors the metrics-server startup pattern).
-    /// No-op for any other signer or when no verify address is configured.
-    pub async fn maybe_spawn_xlayer_verify_server(&self) {
-        let target = { self.inner.lock().await.xlayer_verify_target() };
-        if let Some((addr, client)) = target {
-            tokio::spawn(async move {
-                if let Err(e) = crate::xlayer_verify_server::serve(addr, client).await {
-                    tracing::warn!("XLayer verify server exited: {e}. Continuing without it.");
-                }
-            });
-        }
     }
 
     /// Returns the address of the signer without acquiring a lock.
@@ -434,6 +416,33 @@ impl SignerLock {
             .send_transaction_request_with_timeout(l1_rpc, transaction_request, timeout_secs)
             .await
     }
+
+    /// Pre-binds the refOrderId lookup listener (when one is configured) and
+    /// spawns a task that serves it.
+    ///
+    /// Returns `Err` when the configured address cannot be parsed or cannot be
+    /// bound — the caller must stop startup rather than run without an
+    /// endpoint the asset-management callback depends on. A successful no-op
+    /// for signers that do not serve a lookup endpoint, and for an XLayer
+    /// signer whose lookup address is unset.
+    #[cfg(feature = "xlayer-verify")]
+    pub async fn maybe_spawn_xlayer_verify_server(&self) -> Result<()> {
+        let target = {
+            let signer = self.inner.lock().await;
+            signer.xlayer_verify_target()?
+        };
+        if let Some((addr, client)) = target {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::xlayer_verify_server::serve_from_listener(listener, client).await
+                {
+                    tracing::warn!("refOrderId lookup endpoint exited: {e}.");
+                }
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -443,29 +452,6 @@ mod tests {
     use op_succinct_host_utils::OPSuccinctL2OutputOracle::OPSuccinctL2OutputOracleInstance as OPSuccinctL2OOContract;
 
     use super::*;
-
-    #[test]
-    fn test_xlayer_verify_target_none_for_non_xlayer() {
-        let signer = Signer::new_local_signer(
-            "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-        )
-        .unwrap();
-        assert!(signer.xlayer_verify_target().is_none());
-    }
-
-    #[test]
-    fn test_xlayer_verify_target_none_when_addr_empty() {
-        let cfg = XLayerConfig::default(); // verify_addr == ""
-        let signer = Signer::new_xlayer_remote_signer(cfg);
-        assert!(signer.xlayer_verify_target().is_none());
-    }
-
-    #[test]
-    fn test_xlayer_verify_target_some_when_addr_set() {
-        let cfg = XLayerConfig { verify_addr: "127.0.0.1:0".to_string(), ..Default::default() };
-        let signer = Signer::new_xlayer_remote_signer(cfg);
-        assert!(signer.xlayer_verify_target().is_some());
-    }
 
     #[tokio::test]
     #[ignore]
@@ -523,5 +509,199 @@ mod tests {
             .await
             .unwrap();
         println!("Signed transaction receipt: {receipt:?}");
+    }
+
+    /// A signer that is not an XLayer remote signer must not expose a lookup
+    /// target, and asking it to start the endpoint must be a successful no-op
+    /// so a non-XLayer deployment is never blocked at startup.
+    #[cfg(feature = "xlayer-verify")]
+    #[tokio::test]
+    async fn test_maybe_spawn_xlayer_verify_server_non_xlayer_is_noop() {
+        let signers = [
+            Signer::LocalSigner(PrivateKeySigner::random()),
+            Signer::new_web3_signer(
+                "http://localhost:9000".parse().unwrap(),
+                Address::from([0x11u8; 20]),
+            ),
+        ];
+
+        for signer in signers {
+            let lock = SignerLock::new(signer);
+            assert!(lock.inner.lock().await.xlayer_verify_target().unwrap().is_none());
+            lock.maybe_spawn_xlayer_verify_server().await.unwrap();
+            assert!(lock.inner.lock().await.xlayer_verify_target().unwrap().is_none());
+        }
+    }
+
+    /// A disabled lookup endpoint (empty address) is a successful no-op: no
+    /// listener, no error, so both services keep working without one.
+    #[cfg(feature = "xlayer-verify")]
+    #[tokio::test]
+    async fn test_maybe_spawn_xlayer_verify_server_disabled_addr_is_noop() {
+        let config = XLayerConfig { verify_addr: String::new(), ..XLayerConfig::default() };
+        let lock = SignerLock::new(Signer::new_xlayer_remote_signer(config));
+
+        lock.maybe_spawn_xlayer_verify_server().await.unwrap();
+    }
+
+    /// A configured address that cannot be parsed must stop startup: the
+    /// caller propagates the error instead of running without the lookup
+    /// endpoint the asset-management callback depends on.
+    #[cfg(feature = "xlayer-verify")]
+    #[tokio::test]
+    async fn test_maybe_spawn_invalid_addr_is_fatal() {
+        let config = XLayerConfig {
+            verify_addr: "definitely-not-a-socket-addr".to_string(),
+            ..XLayerConfig::default()
+        };
+        let lock = SignerLock::new(Signer::new_xlayer_remote_signer(config));
+
+        let err = lock
+            .maybe_spawn_xlayer_verify_server()
+            .await
+            .expect_err("unparseable address must stop startup");
+        assert!(err.to_string().contains("invalid XLAYER_SIGNER_VERIFY_ADDR"), "got: {err}");
+    }
+
+    /// A lookup address that is already in use must stop startup rather than
+    /// leave the service running with a silently unreachable callback endpoint.
+    #[cfg(feature = "xlayer-verify")]
+    #[tokio::test]
+    async fn test_maybe_spawn_bind_failure_port_occupied() {
+        let occupant = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = occupant.local_addr().unwrap().port();
+
+        let config =
+            XLayerConfig { verify_addr: format!("127.0.0.1:{port}"), ..XLayerConfig::default() };
+        let lock = SignerLock::new(Signer::new_xlayer_remote_signer(config));
+
+        let result = lock.maybe_spawn_xlayer_verify_server().await;
+        assert!(result.is_err(), "binding to an occupied port must fail");
+
+        // Keep the occupant alive until the assertion above has run, so the
+        // port really is occupied for the whole bind attempt.
+        drop(occupant);
+    }
+
+    /// The lookup endpoint is only exposed for a parseable, non-empty address;
+    /// an address that cannot be parsed is reported as an error instead of a
+    /// silently disabled endpoint.
+    #[test]
+    fn test_xlayer_verify_target_respects_configured_address() {
+        let mut config = XLayerConfig::default();
+        // An unset address means "endpoint not configured", not a failure.
+        assert!(Signer::new_xlayer_remote_signer(config.clone())
+            .xlayer_verify_target()
+            .expect("unset address must not be an error")
+            .is_none());
+
+        // An address that is set but cannot be parsed is an error.
+        config.verify_addr = "definitely-not-a-socket-addr".to_string();
+        let result = Signer::new_xlayer_remote_signer(config.clone()).xlayer_verify_target();
+        assert!(result.is_err(), "unparseable address must be reported as an error");
+
+        config.verify_addr = "127.0.0.1:9191".to_string();
+        let target = Signer::new_xlayer_remote_signer(config).xlayer_verify_target();
+        let (addr, _client) = target.expect("parseable address must yield a target").unwrap();
+        assert_eq!(addr.to_string(), "127.0.0.1:9191");
+    }
+
+    /// A configured but unparseable lookup address must surface as an error
+    /// carrying the variable name, so startup can stop with an actionable
+    /// message rather than running without the lookup endpoint.
+    #[test]
+    fn test_xlayer_verify_target_invalid_address_returns_err() {
+        let config = XLayerConfig {
+            verify_addr: "definitely-not-a-socket-addr".to_string(),
+            ..XLayerConfig::default()
+        };
+        let signer = Signer::new_xlayer_remote_signer(config);
+        let result = signer.xlayer_verify_target();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid XLAYER_SIGNER_VERIFY_ADDR"));
+    }
+
+    /// An empty address means "endpoint disabled" and must stay a successful
+    /// no-op, so a deployment that does not want the lookup endpoint is not
+    /// forced to configure one.
+    #[test]
+    fn test_xlayer_verify_target_empty_addr_returns_ok_none() {
+        let config = XLayerConfig { verify_addr: String::new(), ..XLayerConfig::default() };
+        let signer = Signer::new_xlayer_remote_signer(config);
+        assert!(signer
+            .xlayer_verify_target()
+            .expect("empty address must not be an error")
+            .is_none());
+    }
+
+    /// The pre-bound listener really serves the documented lookup contract on
+    /// a live socket, answering over HTTP for the same client instance that
+    /// would otherwise sign — so a callback can be answered before any signing
+    /// request has been made.
+    #[cfg(feature = "xlayer-verify")]
+    #[tokio::test]
+    async fn test_maybe_spawn_bound_listener_answers_lookup_over_http() {
+        let port = reserve_loopback_port().await;
+        let config =
+            XLayerConfig { verify_addr: format!("127.0.0.1:{port}"), ..XLayerConfig::default() };
+        let client = Arc::new(XLayerRemoteClient::new(config));
+        let id = "CHALLENGER_TZ_99_9999_ffffffff";
+        client.seed_ref_order_id(id).await;
+
+        let lock = SignerLock::new(Signer::XLayerRemoteSigner(
+            Arc::clone(&client),
+            Address::from([0x22u8; 20]),
+        ));
+        lock.maybe_spawn_xlayer_verify_server().await.unwrap();
+
+        let (status, code, msg) = lookup("127.0.0.1", port, id).await;
+        assert_eq!(status, 200);
+        assert_eq!(code, 0);
+        assert_eq!(msg, "success");
+
+        let (status, code, msg) = lookup("127.0.0.1", port, "CHALLENGER_TZ_00_0000_00000000").await;
+        assert_eq!(status, 200);
+        assert_eq!(code, 1);
+        assert_eq!(msg, "not found");
+    }
+
+    /// Reserves a loopback port by binding and immediately releasing it, so a
+    /// test can configure a known address for the pre-binding startup path.
+    #[cfg(feature = "xlayer-verify")]
+    async fn reserve_loopback_port() -> u16 {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        port
+    }
+
+    /// Performs one lookup call against a running endpoint and returns the
+    /// documented `(status, code, msg)` triple from the response envelope.
+    /// Retries until the serving task has accepted its first connection,
+    /// bounded by a deadline — a readiness signal rather than a fixed sleep.
+    #[cfg(feature = "xlayer-verify")]
+    async fn lookup(host: &str, port: u16, id: &str) -> (u16, i64, String) {
+        let url = format!("http://{host}:{port}/signer/get?refOrderId={id}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match reqwest::get(&url).await {
+                Ok(response) => {
+                    let body = response.text().await.unwrap();
+                    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    return (
+                        parsed["status"].as_u64().unwrap() as u16,
+                        parsed["code"].as_i64().unwrap(),
+                        parsed["msg"].as_str().unwrap().to_string(),
+                    );
+                }
+                Err(error) => {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the lookup endpoint never became reachable: {error}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
     }
 }

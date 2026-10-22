@@ -108,3 +108,6 @@ pnpm-debug.log*
 # repo tree. Cumulative context travels via CoW + the out-of-repo stage-5 checkpoint tar.
 # On the feature branch, also run: git rm -r --cached docs/superpowers
 docs/superpowers/
+# Offline KMS stub build artifacts (standalone crate; its own target/lockfile)
+/stubs/ok-kms-rust/target
+/stubs/ok-kms-rust/Cargo.lock
