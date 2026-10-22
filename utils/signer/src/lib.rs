@@ -538,8 +538,7 @@ mod tests {
     #[cfg(feature = "xlayer-verify")]
     #[tokio::test]
     async fn test_maybe_spawn_xlayer_verify_server_disabled_addr_is_noop() {
-        let mut config = XLayerConfig::default();
-        config.verify_addr = String::new();
+        let config = XLayerConfig { verify_addr: String::new(), ..XLayerConfig::default() };
         let lock = SignerLock::new(Signer::new_xlayer_remote_signer(config));
 
         lock.maybe_spawn_xlayer_verify_server().await.unwrap();
@@ -551,8 +550,10 @@ mod tests {
     #[cfg(feature = "xlayer-verify")]
     #[tokio::test]
     async fn test_maybe_spawn_invalid_addr_is_fatal() {
-        let mut config = XLayerConfig::default();
-        config.verify_addr = "definitely-not-a-socket-addr".to_string();
+        let config = XLayerConfig {
+            verify_addr: "definitely-not-a-socket-addr".to_string(),
+            ..XLayerConfig::default()
+        };
         let lock = SignerLock::new(Signer::new_xlayer_remote_signer(config));
 
         let err = lock
@@ -570,8 +571,8 @@ mod tests {
         let occupant = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = occupant.local_addr().unwrap().port();
 
-        let mut config = XLayerConfig::default();
-        config.verify_addr = format!("127.0.0.1:{port}");
+        let config =
+            XLayerConfig { verify_addr: format!("127.0.0.1:{port}"), ..XLayerConfig::default() };
         let lock = SignerLock::new(Signer::new_xlayer_remote_signer(config));
 
         let result = lock.maybe_spawn_xlayer_verify_server().await;
@@ -610,8 +611,10 @@ mod tests {
     /// message rather than running without the lookup endpoint.
     #[test]
     fn test_xlayer_verify_target_invalid_address_returns_err() {
-        let mut config = XLayerConfig::default();
-        config.verify_addr = "definitely-not-a-socket-addr".to_string();
+        let config = XLayerConfig {
+            verify_addr: "definitely-not-a-socket-addr".to_string(),
+            ..XLayerConfig::default()
+        };
         let signer = Signer::new_xlayer_remote_signer(config);
         let result = signer.xlayer_verify_target();
         assert!(result.is_err());
@@ -623,8 +626,7 @@ mod tests {
     /// forced to configure one.
     #[test]
     fn test_xlayer_verify_target_empty_addr_returns_ok_none() {
-        let mut config = XLayerConfig::default();
-        config.verify_addr = "".to_string();
+        let config = XLayerConfig { verify_addr: String::new(), ..XLayerConfig::default() };
         let signer = Signer::new_xlayer_remote_signer(config);
         assert!(signer
             .xlayer_verify_target()
@@ -640,8 +642,8 @@ mod tests {
     #[tokio::test]
     async fn test_maybe_spawn_bound_listener_answers_lookup_over_http() {
         let port = reserve_loopback_port().await;
-        let mut config = XLayerConfig::default();
-        config.verify_addr = format!("127.0.0.1:{port}");
+        let config =
+            XLayerConfig { verify_addr: format!("127.0.0.1:{port}"), ..XLayerConfig::default() };
         let client = Arc::new(XLayerRemoteClient::new(config));
         let id = "CHALLENGER_TZ_99_9999_ffffffff";
         client.seed_ref_order_id(id).await;
