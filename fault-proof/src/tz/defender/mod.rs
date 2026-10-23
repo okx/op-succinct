@@ -17,6 +17,7 @@ pub mod cache;
 pub mod challenge_contract;
 pub mod challenge_manager;
 pub mod config;
+pub mod context;
 pub mod handler;
 pub mod leaf_encoding_gate;
 pub mod leaf_locator;
@@ -31,6 +32,7 @@ pub use challenge_contract::{
     ChallengeStatus, ConfirmOutcome, ScanWindow, SenderError, SubmitOutcome,
 };
 pub use config::DefenderConfig;
+pub use context::{make_defender_context, DefenderChallengeContext};
 pub use handler::{ChallengeState, Handler, InFlightGate, WaitReason};
 pub use leaf_encoding_gate::{
     CompatibilityDeclaration, DeclarationProvenance, DeploymentTarget, EncodingMismatchSummary,

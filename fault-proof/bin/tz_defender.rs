@@ -34,9 +34,8 @@ use fault_proof::tz::{
         challenge_contract::{ChallengeEventSource, ScanWindow},
         challenge_manager::ChallengeManagerContract,
         config::DefenderConfig,
+        context::make_defender_context,
         handler::{Handler, InFlightGate},
-        leaf_encoding_gate::{DeploymentTarget, LeafEncodingGate},
-        leaf_locator::DirectLeafLocator,
         rootmanager_client::RootManagerClient,
         supervisor::Supervisor,
         watcher::Watcher,
@@ -161,12 +160,12 @@ async fn run() -> Result<()> {
     // remains: the challenge/prove ABI's on-chain submission path is not yet delivered, so
     // submitWithdrawProof calldata is built but not broadcast; the shared signer is reserved for
     // that sender.
-    let locator = DirectLeafLocator;
+    let ctx = make_defender_context(&config);
     let mut challenge = ChallengeManagerContract::new(
         l2_provider.clone(),
         config.challenge_contract,
         config.chain_id,
-        locator,
+        ctx.locator,
     );
     // Reserve the shared signer on the adapter only when one was constructed. With no signer the
     // adapter keeps its default `None` and the scripted/offline path is unchanged.
@@ -176,24 +175,10 @@ async fn run() -> Result<()> {
     let challenge = Arc::new(challenge);
 
     // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
-    // flow, bound to the deployed challenge contract + chain id. Production passes no compatibility
-    // declaration — none is published yet and none is constructible from local config/env/flags —
-    // so the gate is unconditionally mismatched and every proof path is withheld with an observable
-    // Blocked status; there is no local re-encode shim to mask it. The expected encoding
-    // version / canonical hash / Witness-Builder identity are placeholders here: with no
-    // declaration to match, they are never compared. Lifting fail-closed is a separate
-    // contract/WB prerequisite (publish an authenticated, immutable declaration + wire an
-    // authenticated read).
-    let leaf_encoding_gate = Arc::new(LeafEncodingGate::new(
-        DeploymentTarget {
-            address: config.challenge_contract,
-            chain_id: config.chain_id,
-            expected_encoding_version: 0,
-            expected_canonical_encoding_hash: alloy_primitives::B256::ZERO,
-            expected_witness_builder_id: alloy_primitives::B256::ZERO,
-        },
-        None,
-    ));
+    // flow, bound to the deployed challenge contract + chain id. Built by the shared challenge
+    // context so the integration tests exercise the same wiring; it is unconditionally mismatched
+    // until a deployment-bound compatibility declaration exists.
+    let leaf_encoding_gate = ctx.leaf_encoding_gate;
     tracing::info!(
         challenge_contract = %config.challenge_contract,
         "tz-defender wired the real ChallengeManager adapter (WithdrawNotInRoot only) with the \
