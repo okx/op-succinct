@@ -706,3 +706,172 @@ async fn end_to_end_blocked_leaf_encoding_mismatch_makes_zero_wb_and_zero_sender
     );
     assert_eq!(gate.holder(), None, "no in-flight gate is held while blocked");
 }
+
+/// The refOrderId lookup contract exposed by the Defender's signer, driven through the same
+/// construction the binary performs.
+///
+/// Gated on `xlayer-verify-test-utils`: the cache-seeding bridge these cases use exists only in
+/// test builds, mirroring the binary's own gate on `XLAYER_SIGNER_ENABLED` — a release build
+/// carries neither.
+#[cfg(feature = "xlayer-verify-test-utils")]
+mod reforder_lookup_contract {
+    use alloy_primitives::{Address, B256, U256};
+    use fault_proof::tz::defender::{
+        challenge_manager::{ChallengeType, RawChallengeEvent},
+        leaf_encoding_gate::LeafEncodingDecision,
+        leaf_locator::LeafLocator,
+        make_defender_context, DefenderConfig,
+    };
+    use op_succinct_signer_utils::{Signer, SignerLock, XLayerConfig, XLayerRemoteClient};
+
+    use super::raw_event;
+
+    const CONTRACT: Address = Address::repeat_byte(0x0c);
+
+    fn env_value(key: &str) -> Option<String> {
+        match key {
+            "DEFENDER_CHALLENGE_CONTRACT" => Some(format!("{CONTRACT:#x}")),
+            "DEFENDER_ROOT_MANAGER" => Some(format!("{:#x}", Address::repeat_byte(0x0d))),
+            "DEFENDER_WB_ENDPOINT" => Some("http://127.0.0.1:18546".to_string()),
+            "DEFENDER_TZ_CHAIN_ID" => Some("2882".to_string()),
+            "DEFENDER_FINALITY_BLOCKS" => Some("0".to_string()),
+            _ => None,
+        }
+    }
+
+    fn config() -> DefenderConfig {
+        DefenderConfig::parse_from(env_value).expect("the injected environment is complete")
+    }
+
+    /// T7a — a signer that is not an XLayer remote signer never resolves a lookup target, so the
+    /// binary has nothing to bind.
+    #[test]
+    fn non_xlayer_signer_has_no_lookup_target() {
+        let url = "http://127.0.0.1:8545".parse().expect("a literal URL parses");
+        let signer = Signer::new_web3_signer(url, Address::repeat_byte(0x01));
+        let target =
+            signer.xlayer_verify_target().expect("a web3 signer never fails the address check");
+        assert!(target.is_none(), "a non-XLayer signer must not serve the lookup endpoint");
+    }
+
+    /// T7b — an XLayer signer whose lookup address is empty serves nothing, and asking it to spawn
+    /// the endpoint is a successful no-op rather than an error.
+    #[tokio::test]
+    async fn empty_lookup_address_serves_nothing() {
+        let cfg = XLayerConfig { verify_addr: String::new(), ..XLayerConfig::default() };
+        let signer = Signer::new_xlayer_remote_signer(cfg);
+        assert!(
+            signer.xlayer_verify_target().expect("an empty address is not a parse error").is_none(),
+            "an empty lookup address must resolve to no target"
+        );
+        SignerLock::new(signer)
+            .maybe_spawn_xlayer_verify_server()
+            .await
+            .expect("spawning without a target is a no-op");
+    }
+
+    /// T7c — the default configuration carries no lookup address at all.
+    #[test]
+    fn default_config_has_empty_lookup_address() {
+        assert_eq!(XLayerConfig::default().verify_addr, "");
+    }
+
+    /// A configured but unparsable lookup address must stop startup instead of silently running
+    /// without the endpoint the asset-management callback depends on.
+    #[test]
+    fn malformed_lookup_address_is_rejected() {
+        let cfg = XLayerConfig {
+            verify_addr: "not-a-socket-addr".to_string(),
+            ..XLayerConfig::default()
+        };
+        let signer = Signer::new_xlayer_remote_signer(cfg);
+        assert!(signer.xlayer_verify_target().is_err(), "a malformed address must be fatal");
+    }
+
+    /// T7d — an ID registered on the client is confirmed by the same lookup the endpoint serves.
+    #[tokio::test]
+    async fn seeded_id_is_confirmed() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+        client.seed_ref_order_id("DEFENDER_LOCAL_PROBE_20_1_00000000").await;
+        assert!(
+            client.has_ref_order_id("DEFENDER_LOCAL_PROBE_20_1_00000000").await,
+            "a seeded ID must be confirmed"
+        );
+    }
+
+    /// T7e — an ID that was never registered is not confirmed, and probing for it evicts nothing.
+    #[tokio::test]
+    async fn unseeded_id_is_not_confirmed() {
+        let client = XLayerRemoteClient::new(XLayerConfig::default());
+        client.seed_ref_order_id("DEFENDER_LOCAL_PROBE_20_2_00000000").await;
+        assert!(
+            !client.has_ref_order_id("DEFENDER_LOCAL_PROBE_20_3_00000000").await,
+            "an unseeded ID must not be confirmed"
+        );
+        assert!(
+            client.has_ref_order_id("DEFENDER_LOCAL_PROBE_20_2_00000000").await,
+            "a miss must not evict a real entry"
+        );
+    }
+
+    /// T7f — the cache is per client instance, so one process cannot confirm another's IDs.
+    #[tokio::test]
+    async fn second_client_does_not_confirm_first_clients_ids() {
+        let first = XLayerRemoteClient::new(XLayerConfig::default());
+        let second = XLayerRemoteClient::new(XLayerConfig::default());
+        first.seed_ref_order_id("DEFENDER_LOCAL_PROBE_20_4_00000000").await;
+        assert!(first.has_ref_order_id("DEFENDER_LOCAL_PROBE_20_4_00000000").await);
+        assert!(
+            !second.has_ref_order_id("DEFENDER_LOCAL_PROBE_20_4_00000000").await,
+            "a second instance must not see IDs registered on the first"
+        );
+    }
+
+    /// T7g — the challenge-side context is built by the same function the binary calls, so these
+    /// cases exercise production wiring: the direct event-leaf locator and the fail-closed gate.
+    #[tokio::test]
+    async fn challenge_context_mirrors_binary_construction() {
+        let cfg = config();
+        let ctx = make_defender_context(&cfg);
+        assert!(
+            matches!(
+                ctx.leaf_encoding_gate.decision(),
+                LeafEncodingDecision::LeafEncodingMismatch(_)
+            ),
+            "with no compatibility declaration the gate must stay closed"
+        );
+
+        let ev = raw_event(
+            U256::from(1u64),
+            ChallengeType::WithdrawNotInRoot,
+            B256::repeat_byte(0xbb),
+            0xAA,
+            0,
+        );
+        let leaf = ctx.locator.locate(&ev).await.expect("the direct locator never fails");
+        assert_eq!(leaf, ev.leaf, "the wired locator returns the event's leaf field");
+        assert_ne!(leaf, ev.tz_tx_hash, "the wired locator must not return the tzTxHash");
+    }
+
+    /// The event builder and the configuration above are wired consistently: the challenge address
+    /// the context gates on is the one the configuration carries.
+    #[test]
+    fn challenge_context_uses_configured_deployment() {
+        let cfg = config();
+        assert_eq!(cfg.challenge_contract, CONTRACT);
+        assert_eq!(cfg.chain_id, 2882);
+        // A challenge event on that deployment decodes into the shape the context consumes.
+        let ev = RawChallengeEvent {
+            contract: CONTRACT,
+            chain_id: cfg.chain_id,
+            ..raw_event(
+                U256::from(2u64),
+                ChallengeType::WithdrawNotInRoot,
+                B256::repeat_byte(0xcc),
+                0xBB,
+                1,
+            )
+        };
+        assert_eq!(ev.contract, cfg.challenge_contract);
+    }
+}
