@@ -209,8 +209,9 @@ pub struct ChallengeManagerContract<L: LeafLocator> {
     /// the scripted/offline path, which builds the calldata but never broadcasts it. The holder is
     /// reserved here and shared with the process-wide signer; it is attached with
     /// [`Self::set_signer`] after construction because the lookup endpoint must be spawned before
-    /// the signer is wrapped in an `Arc`.
-    signer: Option<Arc<SignerLock>>,
+    /// the signer is wrapped in an `Arc`. Behind a mutex so wiring happens through `&self`, letting
+    /// the shared startup path attach it to an adapter that is already shared.
+    signer: Mutex<Option<Arc<SignerLock>>>,
 }
 
 impl<L: LeafLocator> ChallengeManagerContract<L> {
@@ -228,7 +229,7 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
             locator,
             provider: Some(provider.erased()),
             state: Mutex::new(AdapterState::default()),
-            signer: None,
+            signer: Mutex::new(None),
         }
     }
 
@@ -251,21 +252,27 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
                 scripted_events: Some(events),
                 ..AdapterState::default()
             }),
-            signer: None,
+            signer: Mutex::new(None),
         }
     }
 
-    /// Attaches the shared transaction signer. Called by the live binary after the signer's lookup
-    /// endpoint has been started and before the adapter is shared, so the broadcast path always
-    /// holds the same signer instance the process uses for its own order IDs.
-    pub fn set_signer(&mut self, signer: Arc<SignerLock>) {
-        self.signer = Some(signer);
+    /// Attaches the shared transaction signer. Called by the shared startup path after the signer's
+    /// lookup endpoint has been started, so the broadcast path always holds the same signer instance
+    /// the process uses for its own order IDs. Takes `&self` because the adapter is already shared
+    /// when the startup path runs.
+    pub fn set_signer(&self, signer: Arc<SignerLock>) {
+        *self.signer.lock().unwrap() = Some(signer);
     }
 
-    /// The transaction signer reserved for the on-chain submission path, if the live binary
+    /// The transaction signer reserved for the on-chain submission path, if the startup path
     /// attached one. `None` on the scripted/offline path, which never broadcasts.
-    pub fn signer(&self) -> Option<&Arc<SignerLock>> {
-        self.signer.as_ref()
+    ///
+    /// Compiled only for this crate's own tests and for the `xlayer-verify-test-utils` feature: it
+    /// exists so the shared startup path can seed a known refOrderId through the signer it just
+    /// wired, and so tests can assert that wiring happened.
+    #[cfg(any(test, feature = "xlayer-verify-test-utils"))]
+    pub fn get_signer(&self) -> Option<Arc<SignerLock>> {
+        self.signer.lock().unwrap().clone()
     }
 
     /// Gather the decoded-but-unfiltered events in `window`: the scripted batch when present, else
@@ -630,7 +637,7 @@ mod tests {
             196,
             CONTRACT_ADDR,
         );
-        assert!(adapter.signer().is_none(), "scripted path must reserve no signer");
+        assert!(adapter.get_signer().is_none(), "scripted path must reserve no signer");
 
         // A fixed, non-secret scalar: the test only needs *a* signer handle to prove the adapter
         // keeps the exact instance it was handed. No key material is involved.
@@ -640,7 +647,7 @@ mod tests {
         ));
         adapter.set_signer(Arc::clone(&shared));
         assert!(
-            Arc::ptr_eq(adapter.signer().expect("signer attached"), &shared),
+            Arc::ptr_eq(&adapter.get_signer().expect("signer attached"), &shared),
             "the adapter must hold the exact signer instance it was handed"
         );
     }

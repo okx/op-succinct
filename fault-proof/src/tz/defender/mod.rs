@@ -22,6 +22,7 @@ pub mod handler;
 pub mod leaf_encoding_gate;
 pub mod leaf_locator;
 pub mod rootmanager_client;
+pub mod signer;
 pub mod supervisor;
 pub mod verifier;
 pub mod watcher;
