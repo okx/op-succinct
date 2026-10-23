@@ -875,3 +875,122 @@ mod reforder_lookup_contract {
         assert_eq!(ev.contract, cfg.challenge_contract);
     }
 }
+
+/// Signer wiring through the shared startup path.
+///
+/// Gated on `xlayer-verify-test-utils`: the seed bridge and the `get_signer` accessor exist only in
+/// test builds, so a release build compiles none of this.
+///
+/// The point of these cases is mutation sensitivity. `shared_construction_ptr_equality` never calls
+/// `set_signer` by hand — it goes through the same function the binary calls. If the wiring step is
+/// dropped from that function, the adapter holds no signer, `get_signer()` answers `None`, and the
+/// test fails at runtime instead of silently passing on a differently wired adapter.
+#[cfg(all(feature = "tz", feature = "xlayer-verify-test-utils"))]
+mod defender_reverse_lookup {
+    use super::*;
+    use fault_proof::tz::defender::signer::{build_defender_signer, wire_defender_signer};
+    use op_succinct_signer_utils::XLayerConfig;
+    use op_succinct_signer_utils::XLayerRemoteClient;
+
+    /// Serializes the cases that mutate the process environment: the environment is shared by the
+    /// whole test binary, so two of these running at once would read each other's variables.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Sets the signer environment the Defender startup path reads. Rust 2024 makes environment
+    /// mutation unsafe because it is process-wide; every caller holds [`ENV_LOCK`] for the whole
+    /// case so no other case observes a half-written environment.
+    fn set_signer_env(verify_addr: &str) {
+        unsafe {
+            std::env::set_var("XLAYER_SIGNER_ENABLED", "true");
+            std::env::set_var("XLAYER_SIGNER_REF_ORDER_PREFIX", "TEST_DEFENDER");
+            std::env::set_var("XLAYER_SIGNER_VERIFY_ADDR", verify_addr);
+            std::env::set_var("XLAYER_SIGNER_ENDPOINT", "https://signer.example.com");
+            std::env::set_var(
+                "XLAYER_SIGNER_ADDRESS",
+                "0x1111111111111111111111111111111111111111",
+            );
+            std::env::set_var("XLAYER_ACCESS_KEY", "test-key");
+            std::env::set_var("XLAYER_SECRET_KEY", "test-secret");
+        }
+    }
+
+    fn clear_signer_env() {
+        unsafe {
+            for key in [
+                "XLAYER_SIGNER_ENABLED",
+                "XLAYER_SIGNER_REF_ORDER_PREFIX",
+                "XLAYER_SIGNER_VERIFY_ADDR",
+                "XLAYER_SIGNER_ENDPOINT",
+                "XLAYER_SIGNER_ADDRESS",
+                "XLAYER_ACCESS_KEY",
+                "XLAYER_SECRET_KEY",
+            ] {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    fn scripted_adapter() -> Arc<ChallengeManagerContract<DirectLeafLocator>> {
+        Arc::new(ChallengeManagerContract::from_raw_events(
+            vec![],
+            DirectLeafLocator,
+            CHAIN_ID,
+            Address::repeat_byte(CONTRACT),
+        ))
+    }
+
+    /// One client serves both the signer and the lookup endpoint, through the shared wiring.
+    #[tokio::test]
+    async fn shared_construction_ptr_equality() {
+        let _guard = ENV_LOCK.lock().await;
+        set_signer_env("127.0.0.1:19976");
+        let adapter = scripted_adapter();
+
+        // The shared startup path — the same call the binary makes. Not `set_signer` by hand.
+        let listener_client = wire_defender_signer(&adapter)
+            .await
+            .expect("the shared wiring succeeds")
+            .expect("a fully configured signer resolves a lookup target");
+
+        let wired = adapter.get_signer().expect("the wiring step attached the signer");
+        let (_addr, wired_client) = wired
+            .xlayer_verify_target()
+            .await
+            .expect("the wired signer resolves its lookup target")
+            .expect("a configured address yields a target");
+
+        assert!(
+            Arc::ptr_eq(&listener_client, &wired_client),
+            "one client instance must serve both the signer and the lookup endpoint"
+        );
+
+        clear_signer_env();
+    }
+
+    /// The startup path yields no signer at all when the gate is off.
+    #[tokio::test]
+    async fn disabled_gate_wires_no_signer() {
+        let _guard = ENV_LOCK.lock().await;
+        clear_signer_env();
+        let (lock, client) = build_defender_signer().await.expect("the gate check cannot fail");
+        assert!(lock.is_none(), "a disabled gate must construct no signer");
+        assert!(client.is_none(), "a disabled gate must resolve no lookup client");
+
+        let adapter = scripted_adapter();
+        wire_defender_signer(&adapter).await.expect("wiring without a signer is a no-op");
+        assert!(adapter.get_signer().is_none(), "a disabled gate must leave the adapter unwired");
+    }
+
+    /// A seeded ID does not leak into a second client.
+    #[tokio::test]
+    async fn second_instance_does_not_see_seeded_id() {
+        let c1 = Arc::new(XLayerRemoteClient::new(XLayerConfig::default()));
+        let c2 = Arc::new(XLayerRemoteClient::new(XLayerConfig::default()));
+        c1.seed_ref_order_id("instance-1-only").await;
+        assert!(c1.has_ref_order_id("instance-1-only").await);
+        assert!(
+            !c2.has_ref_order_id("instance-1-only").await,
+            "a second instance must not see IDs seeded in the first"
+        );
+    }
+}
