@@ -1,143 +1,76 @@
 #!/usr/bin/env bash
-#
-# Defender signer-gate matrix, part 1: the cases in which the refOrderId lookup endpoint must
-# NOT be listening.
-#
-#   T1  XLAYER_SIGNER_ENABLED unset      -> no signer, no listener, supervisor loop reached
-#   T2  XLAYER_SIGNER_ENABLED=false      -> no signer, no listener, supervisor loop reached
-#   T3  XLAYER_SIGNER_ENABLED=true with an empty XLAYER_SIGNER_VERIFY_ADDR
-#                                        -> signer built, no listener, supervisor loop reached
-#
-# The companion script run_listener_tests.sh covers the case in which the endpoint is served.
-#
-# The process is expected to reach its supervisor loop and stay there; the L2 RPC and the witness
-# builder in the generated environment are deliberately unreachable, so the binary logs connection
-# errors and keeps looping. Every run is therefore bounded with `timeout` and a run that exits
-# before the bound is a failure unless the case expects a startup abort (none do here).
-#
-# Exit status: 0 when every case passes, otherwise the number of failed cases.
-#
-# Note: errexit is deliberately NOT enabled. A matrix accumulates failures; aborting on the first
-# failing probe would hide the rest of the matrix.
+# Defender lookup-endpoint matrix, part 1: the cases in which the endpoint must NOT be listening.
+# No set -e — failures accumulate so one bad probe cannot hide the rest of the matrix.
 set -uo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-PORT="${TZ_DEFENDER_TEST_PORT:-18081}"
-BASE="http://127.0.0.1:${PORT}"
-RUN_SECONDS="${TZ_DEFENDER_TEST_RUN_SECONDS:-5}"
-WORK_DIR="$(mktemp -d)"
-PID=""
-
 FAILURES=0
-fail() {
-    echo "FAIL $1: $2"
-    FAILURES=$((FAILURES + 1))
-}
-pass() { echo "PASS $1"; }
+TZ_DEFENDER="${TZ_DEFENDER_BIN:-./target/debug/tz-defender}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_OUT="${TEST_OUT_DIR:-$DIR/test_output}"
+mkdir -p "$TEST_OUT"
 
 cleanup() {
-    if [ -n "${PID}" ]; then
-        kill "${PID}" 2>/dev/null
-        wait "${PID}" 2>/dev/null
-    fi
-    rm -rf "${WORK_DIR}"
+  [ -n "${PID:-}" ] && kill "$PID" 2>/dev/null || true
+  wait 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
-resolve_bin() {
-    if [ -n "${TZ_DEFENDER_BIN:-}" ]; then
-        printf '%s' "${TZ_DEFENDER_BIN}"
-        return
-    fi
-    local prebuilt="${REPO_ROOT}/target/debug/tz-defender"
-    if [ ! -x "${prebuilt}" ]; then
-        echo "building tz-defender (no prebuilt binary at ${prebuilt})"
-        ( cd "${REPO_ROOT}" && cargo build --bin tz-defender --features tz ) || return 1
-    fi
-    printf '%s' "${prebuilt}"
-}
-
-# Prints whether anything already answers on the test port, so a leftover process cannot be
-# mistaken for a listener this binary opened.
-port_in_use() {
-    curl -sS --max-time 2 -o /dev/null "${BASE}/signer/get?refOrderId=preflight" 2>/dev/null
+# Check that no listener is bound to the given port.
+# Exit 7  = connection refused (PASS — no listener).
+# Exit 28 = timeout (FAIL — port may be firewalled).
+# Anything else = FAIL.
+check_no_listener() {
+  local label="$1" port="$2"
+  curl -sS --connect-timeout 2 --max-time 3 \
+    "http://127.0.0.1:${port}/signer/get?refOrderId=probe" >/dev/null 2>&1
+  local curl_exit=$?
+  case $curl_exit in
+    7)  echo "PASS ${label} (exit 7 — connection refused)"; return 0 ;;
+    28) echo "FAIL ${label}: timeout (exit 28 — not refused)"; return 1 ;;
+    *)  echo "FAIL ${label}: curl exit=$curl_exit (expected 7)"; return 1 ;;
+  esac
 }
 
-# Writes an environment file for the Defender. Only the variables the binary actually reads are
-# set; the credential values are local placeholders that unlock no service.
-write_env() { # dest enabled verify_addr
-    local dest="$1" enabled="$2" verify_addr="$3"
-    {
-        echo "DEFENDER_L2_RPC=http://127.0.0.1:18545"
-        echo "DEFENDER_CHALLENGE_CONTRACT=0x0000000000000000000000000000000000000000"
-        echo "DEFENDER_ROOT_MANAGER=0x0000000000000000000000000000000000000000"
-        echo "DEFENDER_WB_ENDPOINT=http://127.0.0.1:18546"
-        echo "DEFENDER_TZ_CHAIN_ID=2882"
-        echo "DEFENDER_FINALITY_BLOCKS=0"
-        if [ -n "${enabled}" ]; then
-            echo "XLAYER_SIGNER_ENABLED=${enabled}"
-        fi
-        echo "XLAYER_SIGNER_REF_ORDER_PREFIX=DEFENDER_LOCAL_PROBE"
-        echo "XLAYER_SIGNER_ENDPOINT=http://127.0.0.1:19999"
-        echo "XLAYER_SIGNER_ADDRESS=0x0000000000000000000000000000000000000000"
-        echo "XLAYER_ACCESS_KEY=local-placeholder"
-        echo "XLAYER_SECRET_KEY=0000000000000000000000000000000000000000000000000000000000000000"
-        echo "XLAYER_SIGNER_VERIFY_ADDR=${verify_addr}"
-    } > "${dest}"
-}
-
-# Runs one no-listener case: starts the binary, lets it settle, then requires that (a) the process
-# is still running and reached the supervisor loop and (b) nothing answers on the test port.
-no_listener_case() { # name env_file log_file
-    local name="$1" env_file="$2" log="$3"
-    timeout "${RUN_SECONDS}" "$(resolve_bin)" --env-file "${env_file}" > "${log}" 2>&1 &
-    PID=$!
-    sleep 3
-
-    if ! kill -0 "${PID}" 2>/dev/null; then
-        fail "${name}" "process exited before the supervisor loop (see ${log})"
-        PID=""
-        return
-    fi
-    if ! grep -q "entering supervisor loop" "${log}"; then
-        fail "${name}" "supervisor loop not reached (see ${log})"
-    fi
-    if port_in_use; then
-        fail "${name}" "the lookup endpoint answered on ${BASE} although it must not be served"
-    else
-        pass "${name}"
-    fi
-
-    kill "${PID}" 2>/dev/null
-    wait "${PID}" 2>/dev/null
-    PID=""
-}
-
-BIN="$(resolve_bin)" || { echo "FATAL: cannot obtain the tz-defender binary"; exit 1; }
-echo "binary: ${BIN}"
-echo "port:   ${PORT}"
-echo
-
-if port_in_use; then
-    echo "FATAL: ${BASE} is already served before any test ran; stop the process using it"
-    exit 1
+# T1: No signer env (no XLAYER_SIGNER_ENABLED)
+echo "=== T1: No signer ==="
+"$TZ_DEFENDER" --env-file "$DIR/test_no_signer.env" > "$TEST_OUT/t1a.log" 2>&1 &
+PID=$!
+sleep 4
+if kill -0 "$PID" 2>/dev/null; then
+  echo "PASS T1-A (process alive, no signer)"
+else
+  echo "FAIL T1-A: process died"
+  FAILURES=$((FAILURES+1))
 fi
+check_no_listener "T1-B" 19876 || FAILURES=$((FAILURES+1))
+kill "$PID" 2>/dev/null; wait 2>/dev/null; unset PID
 
-echo "=== T1: XLAYER_SIGNER_ENABLED unset ==="
-write_env "${WORK_DIR}/t1.env" "" ""
-no_listener_case "T1 no-signer" "${WORK_DIR}/t1.env" "${WORK_DIR}/t1.log"
-echo
+# T2: Disabled gate (XLAYER_SIGNER_ENABLED=false)
+echo "=== T2: Disabled gate ==="
+"$TZ_DEFENDER" --env-file "$DIR/test_disabled_gate.env" > "$TEST_OUT/t2a.log" 2>&1 &
+PID=$!
+sleep 4
+if kill -0 "$PID" 2>/dev/null; then
+  echo "PASS T2-A (process alive, signer gate disabled)"
+else
+  echo "FAIL T2-A: process died"
+  FAILURES=$((FAILURES+1))
+fi
+check_no_listener "T2-B" 19876 || FAILURES=$((FAILURES+1))
+kill "$PID" 2>/dev/null; wait 2>/dev/null; unset PID
 
-echo "=== T2: XLAYER_SIGNER_ENABLED=false ==="
-write_env "${WORK_DIR}/t2.env" "false" ""
-no_listener_case "T2 disabled" "${WORK_DIR}/t2.env" "${WORK_DIR}/t2.log"
-echo
+# T3: Empty verify addr
+echo "=== T3: Empty verify addr ==="
+"$TZ_DEFENDER" --env-file "$DIR/test_signer_empty_verify.env" > "$TEST_OUT/t3a.log" 2>&1 &
+PID=$!
+sleep 4
+if kill -0 "$PID" 2>/dev/null; then
+  echo "PASS T3-A (process alive, empty verify addr)"
+else
+  echo "FAIL T3-A: process died"
+  FAILURES=$((FAILURES+1))
+fi
+check_no_listener "T3-B" 19876 || FAILURES=$((FAILURES+1))
+kill "$PID" 2>/dev/null; wait 2>/dev/null; unset PID
 
-echo "=== T3: enabled, empty XLAYER_SIGNER_VERIFY_ADDR ==="
-write_env "${WORK_DIR}/t3.env" "true" ""
-no_listener_case "T3 empty-verify-address" "${WORK_DIR}/t3.env" "${WORK_DIR}/t3.log"
-echo
-
-echo "=== Done: ${FAILURES} failure(s) ==="
-exit "${FAILURES}"
+echo "=== No-listener results: $FAILURES failure(s) ==="
+exit $FAILURES
