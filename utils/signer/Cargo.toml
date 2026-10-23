@@ -55,6 +55,10 @@ kms = ["dep:ok-kms-rust"]
 # Gates the standalone refOrderId lookup HTTP server. Activated transitively by
 # the `tz` feature of op-succinct-fp.
 xlayer-verify = ["dep:axum", "dep:tower"]
+# Carries no production code: it only widens the `cfg` on the refOrderId cache
+# helpers so a companion crate's integration tests can seed and probe the cache.
+# Absent from release builds.
+xlayer-verify-test-utils = []
 
 [dev-dependencies]
 dotenv.workspace = true

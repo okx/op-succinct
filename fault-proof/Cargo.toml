@@ -100,6 +100,10 @@ alloy-json-rpc = "=1.7.3"
 tower = "0.5.3"
 alloy.workspace = true
 op-succinct-bindings.workspace = true
+# Test-only cache helpers of the signer crate (seed/probe the refOrderId cache),
+# so the Defender integration tests can exercise the lookup contract end to end.
+# Dev-dependency only: the feature is absent from release builds.
+op-succinct-signer-utils = { workspace = true, features = ["xlayer-verify-test-utils"] }
 serde_json.workspace = true
 serde.workspace = true
 alloy-rpc-types-trace.workspace = true
@@ -126,3 +130,6 @@ tz = [
     "op-succinct-signer-utils/xlayer-verify",
 ]
 kms = ["op-succinct-signer-utils/kms", "op-succinct-config-kms/kms"]
+# Compiles the signer's test-only refOrderId cache helpers into the integration
+# test build. Never part of a release profile.
+xlayer-verify-test-utils = ["op-succinct-signer-utils/xlayer-verify-test-utils"]
