@@ -402,6 +402,20 @@ impl XLayerRemoteClient {
         cache.get(id).is_some()
     }
 
+    /// Records `id` as issued by this client, so a companion lookup endpoint (or a
+    /// test driving one) can confirm a known ID through [`Self::has_ref_order_id`]
+    /// without a live signing round trip.
+    ///
+    /// Compiled only for this crate's own tests and for the
+    /// `xlayer-verify-test-utils` feature; it never reaches a release build, so
+    /// there is no production entry point for registering arbitrary IDs. It is
+    /// reachable from a companion crate precisely so that crate's integration
+    /// tests can drive a lookup endpoint without a live signing round trip.
+    #[cfg(any(test, feature = "xlayer-verify-test-utils"))]
+    pub async fn seed_ref_order_id(&self, id: &str) {
+        self.ref_order_cache.lock().await.put(id.to_string(), ());
+    }
+
     /// Signs `transaction_request` via the XLayer remote signer.
     /// Concurrent calls are serialized internally.
     pub async fn sign_transaction(
@@ -1115,11 +1129,6 @@ impl XLayerRemoteClient {
             NonZeroUsize::new(capacity).expect("cache capacity must be greater than zero"),
         );
         Self { config, client, signing_lock: Mutex::new(()), ref_order_cache: Mutex::new(cache) }
-    }
-
-    /// Test-only: records `id` as issued by this client.
-    pub(crate) async fn seed_ref_order_id(&self, id: &str) {
-        self.ref_order_cache.lock().await.put(id.to_string(), ());
     }
 }
 
