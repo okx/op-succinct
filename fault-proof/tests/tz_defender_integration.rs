@@ -889,8 +889,7 @@ mod reforder_lookup_contract {
 mod defender_reverse_lookup {
     use super::*;
     use fault_proof::tz::defender::signer::{build_defender_signer, wire_defender_signer};
-    use op_succinct_signer_utils::XLayerConfig;
-    use op_succinct_signer_utils::XLayerRemoteClient;
+    use op_succinct_signer_utils::{XLayerConfig, XLayerRemoteClient};
 
     /// Serializes the cases that mutate the process environment: the environment is shared by the
     /// whole test binary, so two of these running at once would read each other's variables.
@@ -986,10 +985,10 @@ mod defender_reverse_lookup {
     async fn second_instance_does_not_see_seeded_id() {
         let c1 = Arc::new(XLayerRemoteClient::new(XLayerConfig::default()));
         let c2 = Arc::new(XLayerRemoteClient::new(XLayerConfig::default()));
-        c1.seed_ref_order_id("instance-1-only").await;
-        assert!(c1.has_ref_order_id("instance-1-only").await);
+        c1.seed_ref_order_id("instance_one_only").await;
+        assert!(c1.has_ref_order_id("instance_one_only").await);
         assert!(
-            !c2.has_ref_order_id("instance-1-only").await,
+            !c2.has_ref_order_id("instance_one_only").await,
             "a second instance must not see IDs seeded in the first"
         );
     }
