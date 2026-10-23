@@ -391,6 +391,20 @@ impl SignerLock {
         self.cached_address
     }
 
+    /// Resolves the XLayer refOrderId lookup target — the address the lookup endpoint would bind
+    /// and the client that serves it — without starting a server.
+    ///
+    /// Compiled only for this crate's own tests and for the
+    /// `xlayer-verify-test-utils` feature. It exists so a companion crate's integration tests can
+    /// assert that the endpoint and the wired signer share one client, without the private signer
+    /// handle being exposed.
+    #[cfg(any(test, feature = "xlayer-verify-test-utils"))]
+    pub async fn xlayer_verify_target(
+        &self,
+    ) -> Result<Option<(std::net::SocketAddr, Arc<XLayerRemoteClient>)>> {
+        self.inner.lock().await.xlayer_verify_target()
+    }
+
     /// Sends a transaction request, signed by the configured signer, using the default
     /// confirmation timeout of [`TIMEOUT_SECONDS`]. Transactions are serialized via a Mutex
     /// to prevent nonce conflicts.
