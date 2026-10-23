@@ -4,12 +4,15 @@
 //! Challenger. It watches the X Layer Withdraw-challenge contract and, before each challenge's
 //! response deadline, answers with a locally-verified inclusion proof.
 //!
-//! Signer: the binary builds its signer from the shared signer environment and asks it to serve
-//! the asset-management refOrderId lookup endpoint, so the order IDs the Defender issues for its
-//! own responses are answerable by the asset-management callback from the moment it starts. The
-//! challenge/prove ABI's on-chain submission path is not yet delivered (the sender is the in-memory
-//! mock seam below), so the signer handle is reserved for that sender rather than used to broadcast
-//! today; no proof transaction is sent by this binary yet.
+//! Signer: optional, enabled only when `XLAYER_SIGNER_ENABLED=true`. The Defender may run without
+//! a signer (local verification only, no on-chain broadcast), so the gate is checked before the
+//! signer environment is read. When enabled, the binary builds its XLayer signer from the shared
+//! signer environment and asks it to serve the asset-management refOrderId lookup endpoint, so the
+//! order IDs the Defender issues for its own responses are answerable by the asset-management
+//! callback from the moment it starts. The challenge/prove ABI's on-chain submission path is not
+//! yet delivered (the sender is the in-memory mock seam below), so the signer handle is reserved
+//! for that sender rather than used to broadcast today; no proof transaction is sent by this
+//! binary yet.
 //!
 //! Challenge-contract seam: the real X Layer challenge/prove ABI is not yet finalized, so the
 //! binary wires the in-memory `MockChallengeContract` and logs a prominent warning. When the real
@@ -76,7 +79,9 @@ fn main() {
         .unwrap()
         .block_on(run())
         .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
+            // Print the whole error chain: a signer or lookup-endpoint misconfiguration must be
+            // diagnosable from the startup log alone, not just as "failed to initialize".
+            eprintln!("error: {e:#}");
             std::process::exit(1);
         });
 }
@@ -102,14 +107,39 @@ async fn run() -> Result<()> {
         "tz-defender configuration loaded"
     );
 
-    // Signer + refOrderId lookup endpoint. Both are built before any shared handle exists: the
-    // lookup endpoint has to be bound while the signer is still exclusively owned, and a
-    // misconfigured signer or an unbindable lookup address must stop startup instead of leaving
-    // the asset-management callback unanswered for the order IDs this service issues.
-    let defender_signer =
-        SignerLock::from_env().await.context("failed to initialize the tz-defender signer")?;
-    defender_signer.maybe_spawn_xlayer_verify_server().await?;
-    let signer = Arc::new(defender_signer);
+    // Signer + refOrderId lookup endpoint: conditional on XLAYER_SIGNER_ENABLED.
+    //
+    // The Defender has different signer requirements from the Proposer and Challenger: it may run
+    // without a signer, verifying challenges locally without broadcasting a prove transaction. The
+    // gate is checked OUTSIDE `SignerLock::from_env()` because `from_env()` always requires at
+    // least one signer type to be configured and bails when none is set. Only the XLayer signer
+    // type is considered here; the Defender does not fall back to the HSM, Web3Signer, or Local
+    // signers.
+    //
+    // When enabled, the signer and its lookup endpoint are built before any shared handle exists:
+    // the lookup endpoint has to be bound while the signer is still exclusively owned, so it can
+    // be wrapped in the shared handle afterwards (mutable-before-Arc). A misconfigured signer or an
+    // unbindable lookup address then stops startup instead of silently leaving the asset-management
+    // callback unanswered for the order IDs this service issues.
+    let signer: Option<Arc<SignerLock>> = match std::env::var("XLAYER_SIGNER_ENABLED") {
+        Ok(v) if v.to_lowercase() == "true" => {
+            let s = SignerLock::from_env()
+                .await
+                .context("failed to initialize XLayer signer (XLAYER_SIGNER_ENABLED=true)")?;
+            s.maybe_spawn_xlayer_verify_server()
+                .await
+                .context("failed to spawn xlayer verify server")?;
+            Some(Arc::new(s))
+        }
+        _ => {
+            tracing::info!(
+                "XLAYER_SIGNER_ENABLED not set or false; running without a transaction signer. \
+                     The Defender will verify challenges locally but will not broadcast prove \
+                     transactions on-chain."
+            );
+            None
+        }
+    };
 
     // Witness Builder v2 client + witness-source adapter (record/proof witness data only).
     let wb = Arc::new(WbClient::new(config.wb_endpoint.clone(), config.chain_id)?);
@@ -138,7 +168,11 @@ async fn run() -> Result<()> {
         config.chain_id,
         locator,
     );
-    challenge.set_signer(Arc::clone(&signer));
+    // Reserve the shared signer on the adapter only when one was constructed. With no signer the
+    // adapter keeps its default `None` and the scripted/offline path is unchanged.
+    if let Some(ref s) = signer {
+        challenge.set_signer(Arc::clone(s));
+    }
     let challenge = Arc::new(challenge);
 
     // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
