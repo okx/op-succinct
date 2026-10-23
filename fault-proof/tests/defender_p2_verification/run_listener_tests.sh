@@ -239,23 +239,23 @@ else
   fi
   rm -f "$HEAD_FILE"
 
-  # T4-404: nonexistent path
+  # T4-missing-path: nonexistent path
   HTTP_STATUS4=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 \
     "http://127.0.0.1:19876/signer/nonexistent")
   if [ "$HTTP_STATUS4" = "404" ]; then
-    echo "PASS T4-404"
+    echo "PASS T4-missing-path"
   else
-    echo "FAIL T4-404: HTTP=$HTTP_STATUS4 (expected 404)"
+    echo "FAIL T4-missing-path: HTTP=$HTTP_STATUS4 (expected 404)"
     FAILURES=$((FAILURES+1))
   fi
 
-  # T4-400: empty refOrderId is treated exactly like an absent one
+  # T4-empty-param: empty refOrderId is treated exactly like an absent one
   HTTP_STATUS5=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 \
     "http://127.0.0.1:19876/signer/get?refOrderId=")
   if [ "$HTTP_STATUS5" = "400" ]; then
-    echo "PASS T4-400 (empty refOrderId -> 400)"
+    echo "PASS T4-empty-param (empty refOrderId -> 400)"
   else
-    echo "FAIL T4-400: HTTP=$HTTP_STATUS5 (expected 400)"
+    echo "FAIL T4-empty-param: HTTP=$HTTP_STATUS5 (expected 400)"
     FAILURES=$((FAILURES+1))
   fi
 

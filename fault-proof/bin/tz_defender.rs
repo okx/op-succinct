@@ -148,9 +148,8 @@ async fn run() -> Result<()> {
     // A misconfigured signer, or a lookup address that cannot be bound, stops startup instead of
     // silently leaving the asset-management callback unanswered for the order IDs this service
     // issues.
-    let _listener_client = wire_defender_signer(&challenge)
-        .await
-        .context("failed to wire the Defender signer")?;
+    let _listener_client =
+        wire_defender_signer(&challenge).await.context("failed to wire the Defender signer")?;
 
     // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
     // flow, bound to the deployed challenge contract + chain id. Built by the shared challenge

@@ -209,8 +209,8 @@ pub struct ChallengeManagerContract<L: LeafLocator> {
     /// the scripted/offline path, which builds the calldata but never broadcasts it. The holder is
     /// reserved here and shared with the process-wide signer; it is attached with
     /// [`Self::set_signer`] after construction because the lookup endpoint must be spawned before
-    /// the signer is wrapped in an `Arc`. Behind a mutex so wiring happens through `&self`, letting
-    /// the shared startup path attach it to an adapter that is already shared.
+    /// the signer is wrapped in an `Arc`. Behind a mutex so wiring happens through `&self`,
+    /// letting the shared startup path attach it to an adapter that is already shared.
     signer: Mutex<Option<Arc<SignerLock>>>,
 }
 
@@ -257,9 +257,9 @@ impl<L: LeafLocator> ChallengeManagerContract<L> {
     }
 
     /// Attaches the shared transaction signer. Called by the shared startup path after the signer's
-    /// lookup endpoint has been started, so the broadcast path always holds the same signer instance
-    /// the process uses for its own order IDs. Takes `&self` because the adapter is already shared
-    /// when the startup path runs.
+    /// lookup endpoint has been started, so the broadcast path always holds the same signer
+    /// instance the process uses for its own order IDs. Takes `&self` because the adapter is
+    /// already shared when the startup path runs.
     pub fn set_signer(&self, signer: Arc<SignerLock>) {
         *self.signer.lock().unwrap() = Some(signer);
     }

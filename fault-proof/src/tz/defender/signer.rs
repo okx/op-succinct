@@ -16,8 +16,7 @@ use op_succinct_signer_utils::SignerLock;
 // `seed_ref_order_id` and the `SignerLock::xlayer_verify_target` accessor are feature-gated.
 use op_succinct_signer_utils::XLayerRemoteClient;
 
-use super::challenge_manager::ChallengeManagerContract;
-use super::leaf_locator::DirectLeafLocator;
+use super::{challenge_manager::ChallengeManagerContract, leaf_locator::DirectLeafLocator};
 
 /// Constructs the Defender's signer from the environment, gated on `XLAYER_SIGNER_ENABLED`.
 ///
@@ -30,11 +29,10 @@ use super::leaf_locator::DirectLeafLocator;
 /// The client is only collected for test assertions; in a production build the extraction is
 /// compiled out and the second element is always `None`. The signer itself is always constructed
 /// here, because a production build calls this function too.
-pub async fn build_defender_signer(
-) -> Result<(Option<SignerLock>, Option<Arc<XLayerRemoteClient>>)> {
-    let enabled = std::env::var("XLAYER_SIGNER_ENABLED")
-        .map(|v| v.to_lowercase() == "true")
-        .unwrap_or(false);
+pub async fn build_defender_signer() -> Result<(Option<SignerLock>, Option<Arc<XLayerRemoteClient>>)>
+{
+    let enabled =
+        std::env::var("XLAYER_SIGNER_ENABLED").map(|v| v.to_lowercase() == "true").unwrap_or(false);
 
     if !enabled {
         tracing::info!("signer not enabled — running without a transaction signer");
