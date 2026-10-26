@@ -10,12 +10,23 @@ body, and the real probe is pointed at it.
 It deliberately sends exactly what it is told to send: no Content-Length fix-ups, no JSON
 validation. A control that silently repaired its own defect would prove nothing.
 
+The request is read to completion before the response is written, and the response is followed by
+a write shutdown — see `control_http`. The single-`recv` timing this replaced happened to work for
+a GET that fits one segment, which is luck rather than a property of TCP.
+
 Usage: envelope_control_responder.py <port> <http-status> <body>
 Binds 127.0.0.1 only and serves one connection at a time until terminated.
 """
 
 import socket
 import sys
+
+# The shared helper below lives next to this file, and importing it would otherwise leave a
+# `__pycache__` directory inside the test tree. Nothing here is imported twice in one process, so
+# there is no cache to gain, and the repository has no ignore rule for it.
+sys.dont_write_bytecode = True
+
+from control_http import IncompleteRequest, read_request_head, respond_and_finish  # noqa: E402
 
 REASONS = {
     200: "OK",
@@ -56,15 +67,19 @@ def main() -> int:
         except OSError:
             return 0
         with conn:
-            conn.settimeout(5)
             try:
-                conn.recv(8192)
-            except OSError:
-                pass
+                read_request_head(conn)
+            except IncompleteRequest as exc:
+                # Stay silent rather than answer a request that was never fully received: the
+                # caller must see a read failure, not a control that appears to have worked.
+                print(f"request head incomplete, not responding: {exc}", file=sys.stderr,
+                      flush=True)
+                continue
             try:
-                conn.sendall(response)
-            except OSError:
-                pass
+                respond_and_finish(conn, response)
+            except OSError as exc:
+                print(f"could not deliver the control response: {exc}", file=sys.stderr,
+                      flush=True)
 
 
 if __name__ == "__main__":
