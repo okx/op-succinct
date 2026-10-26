@@ -148,8 +148,11 @@ async fn run() -> Result<()> {
     // A misconfigured signer, or a lookup address that cannot be bound, stops startup instead of
     // silently leaving the asset-management callback unanswered for the order IDs this service
     // issues.
-    let _listener_client =
-        wire_defender_signer(&challenge).await.context("failed to wire the Defender signer")?;
+    // Called for its effect, with no binding. The return type differs by build configuration --
+    // the delivery build returns `()`, builds carrying the test seed hook return the listener
+    // client -- and a binding is a unit binding in the delivery build, which Clippy rejects under
+    // `-D warnings`. A bare statement is the one form that is lint-clean in both.
+    wire_defender_signer(&challenge).await.context("failed to wire the Defender signer")?;
 
     // Cross-repo leaf-encoding compatibility gate: the sole entry to the Witness-Builder proof
     // flow, bound to the deployed challenge contract + chain id. Built by the shared challenge
