@@ -631,7 +631,7 @@ mod tests {
     /// end up holding a different signer from the one that serves the refOrderId lookup endpoint.
     #[test]
     fn adapter_reserves_signer_only_when_the_live_path_attaches_one() {
-        let mut adapter = ChallengeManagerContract::from_raw_events(
+        let adapter = ChallengeManagerContract::from_raw_events(
             vec![],
             DirectLeafLocator,
             196,

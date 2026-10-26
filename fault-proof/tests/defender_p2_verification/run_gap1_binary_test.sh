@@ -43,26 +43,71 @@ wait_ready() {
   return 1
 }
 
-# jq-based structural assertion, shared with the listener matrix.
+# jq-based structural assertion, shared verbatim with the listener matrix. The two copies must
+# stay identical; a divergence between them is itself a defect.
+# Normative five-field envelope assertion, mirroring the Rust `assert_contract` helper in
+# utils/signer/src/xlayer_verify_server.rs — that Rust helper is the authoritative contract, and
+# this is its shell counterpart: existence of all five documented fields, then their exact values.
+#
+# Existence is asserted separately from value on purpose, because the two cheap shortcuts both
+# admit a wrong envelope:
+#   - a type-only check such as `.status | type == "number"` is satisfied by a wrong value (999);
+#   - reading a missing key in jq yields null, so a bare `.data == null` is also true for a body
+#     that omits `data` entirely.
+# Neither shortcut is used below.
+#
+# Usage: assert_verify_fields <json> <label> <expected_status> <expected_code> <expected_msg>
+# Returns the number of failed assertions (0 = every assertion passed).
 assert_verify_fields() {
-  local json="$1" label="$2" expected_code="$3"
-  local fails=0
-  echo "$json" | jq -e '.status | type == "number"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid status"; fails=$((fails+1)); }
-  echo "$json" | jq -e '.code | type == "number"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid code"; fails=$((fails+1)); }
-  echo "$json" | jq -e '.msg | type == "string"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid msg"; fails=$((fails+1)); }
-  echo "$json" | jq -e '.detailMsg | type == "string"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid detailMsg"; fails=$((fails+1)); }
-  local actual_code
-  actual_code=$(echo "$json" | jq -r '.code // "MISSING"')
-  if [ "$actual_code" != "$expected_code" ]; then
-    echo "FAIL $label: code=$actual_code (expected $expected_code)"
+  if [ "$#" -ne 5 ]; then
+    echo "FAIL assert_verify_fields: expected 5 arguments, got $# — a call site was not updated"
+    return 1
+  fi
+  local json="$1" label="$2" expected_status="$3" expected_code="$4" expected_msg="$5"
+  local fails=0 field actual
+
+  if ! echo "$json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "FAIL $label: body is not a JSON object: $json"
+    return 1
+  fi
+
+  # 1. Field existence, independent of value.
+  for field in status code msg detailMsg data; do
+    if ! echo "$json" | jq -e --arg f "$field" 'has($f)' >/dev/null 2>&1; then
+      echo "FAIL $label: field $field is absent"
+      fails=$((fails+1))
+    fi
+  done
+
+  # 2. Exact protocol values.
+  if ! echo "$json" | jq -e --argjson want "$expected_status" '.status == $want' >/dev/null 2>&1
+  then
+    actual=$(echo "$json" | jq -c '.status' 2>/dev/null)
+    echo "FAIL $label: status=$actual (expected $expected_status)"
     fails=$((fails+1))
   fi
-  echo "$json" | jq -e '.data == null' >/dev/null 2>&1 \
-    || { echo "FAIL $label: data is not null"; fails=$((fails+1)); }
+  if ! echo "$json" | jq -e --argjson want "$expected_code" '.code == $want' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.code' 2>/dev/null)
+    echo "FAIL $label: code=$actual (expected $expected_code)"
+    fails=$((fails+1))
+  fi
+  if ! echo "$json" | jq -e --arg want "$expected_msg" '.msg == $want' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.msg' 2>/dev/null)
+    echo "FAIL $label: msg=$actual (expected \"$expected_msg\")"
+    fails=$((fails+1))
+  fi
+  if ! echo "$json" | jq -e '.detailMsg == ""' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.detailMsg' 2>/dev/null)
+    echo "FAIL $label: detailMsg=$actual (expected the empty string)"
+    fails=$((fails+1))
+  fi
+  # `has("data")` is required alongside the type check so an absent key cannot satisfy "is null".
+  if ! echo "$json" | jq -e 'has("data") and (.data | type == "null")' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.data' 2>/dev/null)
+    echo "FAIL $label: data=$actual (expected JSON null, with the key present)"
+    fails=$((fails+1))
+  fi
+
   return $fails
 }
 
@@ -80,7 +125,7 @@ if wait_ready 19876 "$PID_A" "instance-A"; then
   HTTP_STATUS=$(echo "$HTTP_RESP" | tail -n 1)
   JSON_BODY=$(echo "$HTTP_RESP" | sed '$d')
   if [ "$CURL_EXIT" -eq 0 ] && [ "$HTTP_STATUS" = "200" ]; then
-    assert_verify_fields "$JSON_BODY" "Gap1(a)-known-hit" "0"
+    assert_verify_fields "$JSON_BODY" "Gap1(a)-known-hit" 200 0 "success"
     ASSERT_RC=$?
     if [ "$ASSERT_RC" -eq 0 ]; then
       echo "PASS Gap1(a)-known-hit (HTTP 200, code=0, envelope well formed)"
@@ -109,7 +154,7 @@ if wait_ready 19877 "$PID_B" "instance-B"; then
   HTTP_STATUS2=$(echo "$HTTP_RESP2" | tail -n 1)
   JSON_BODY2=$(echo "$HTTP_RESP2" | sed '$d')
   if [ "$CURL_EXIT2" -eq 0 ] && [ "$HTTP_STATUS2" = "200" ]; then
-    assert_verify_fields "$JSON_BODY2" "Gap1(b)-unknown-miss" "1"
+    assert_verify_fields "$JSON_BODY2" "Gap1(b)-unknown-miss" 200 1 "not found"
     ASSERT_RC=$?
     if [ "$ASSERT_RC" -eq 0 ]; then
       echo "PASS Gap1(b)-unknown-miss (HTTP 200, code=1, envelope well formed)"

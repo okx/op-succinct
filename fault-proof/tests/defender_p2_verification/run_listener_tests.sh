@@ -35,28 +35,134 @@ check_no_listener() {
   esac
 }
 
-# Reusable jq-based structural assertion.
-# Checks all 5 field names, their exact types, code value, and data=null.
-# Returns failure count as exit code (0 = all assertions passed).
+# Normative five-field envelope assertion, mirroring the Rust `assert_contract` helper in
+# utils/signer/src/xlayer_verify_server.rs — that Rust helper is the authoritative contract, and
+# this is its shell counterpart: existence of all five documented fields, then their exact values.
+#
+# Existence is asserted separately from value on purpose, because the two cheap shortcuts both
+# admit a wrong envelope:
+#   - a type-only check such as `.status | type == "number"` is satisfied by a wrong value (999);
+#   - reading a missing key in jq yields null, so a bare `.data == null` is also true for a body
+#     that omits `data` entirely.
+# Neither shortcut is used below.
+#
+# Usage: assert_verify_fields <json> <label> <expected_status> <expected_code> <expected_msg>
+# Returns the number of failed assertions (0 = every assertion passed).
 assert_verify_fields() {
-  local json="$1" label="$2" expected_code="$3"
-  local fails=0
-  echo "$json" | jq -e '.status | type == "number"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid status"; fails=$((fails+1)); }
-  echo "$json" | jq -e '.code | type == "number"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid code"; fails=$((fails+1)); }
-  echo "$json" | jq -e '.msg | type == "string"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid msg"; fails=$((fails+1)); }
-  echo "$json" | jq -e '.detailMsg | type == "string"' >/dev/null 2>&1 \
-    || { echo "FAIL $label: missing/invalid detailMsg"; fails=$((fails+1)); }
-  local actual_code
-  actual_code=$(echo "$json" | jq -r '.code // "MISSING"')
-  if [ "$actual_code" != "$expected_code" ]; then
-    echo "FAIL $label: code=$actual_code (expected $expected_code)"
+  if [ "$#" -ne 5 ]; then
+    echo "FAIL assert_verify_fields: expected 5 arguments, got $# — a call site was not updated"
+    return 1
+  fi
+  local json="$1" label="$2" expected_status="$3" expected_code="$4" expected_msg="$5"
+  local fails=0 field actual
+
+  if ! echo "$json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "FAIL $label: body is not a JSON object: $json"
+    return 1
+  fi
+
+  # 1. Field existence, independent of value.
+  for field in status code msg detailMsg data; do
+    if ! echo "$json" | jq -e --arg f "$field" 'has($f)' >/dev/null 2>&1; then
+      echo "FAIL $label: field $field is absent"
+      fails=$((fails+1))
+    fi
+  done
+
+  # 2. Exact protocol values.
+  if ! echo "$json" | jq -e --argjson want "$expected_status" '.status == $want' >/dev/null 2>&1
+  then
+    actual=$(echo "$json" | jq -c '.status' 2>/dev/null)
+    echo "FAIL $label: status=$actual (expected $expected_status)"
     fails=$((fails+1))
   fi
-  echo "$json" | jq -e '.data == null' >/dev/null 2>&1 \
-    || { echo "FAIL $label: data is not null"; fails=$((fails+1)); }
+  if ! echo "$json" | jq -e --argjson want "$expected_code" '.code == $want' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.code' 2>/dev/null)
+    echo "FAIL $label: code=$actual (expected $expected_code)"
+    fails=$((fails+1))
+  fi
+  if ! echo "$json" | jq -e --arg want "$expected_msg" '.msg == $want' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.msg' 2>/dev/null)
+    echo "FAIL $label: msg=$actual (expected \"$expected_msg\")"
+    fails=$((fails+1))
+  fi
+  if ! echo "$json" | jq -e '.detailMsg == ""' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.detailMsg' 2>/dev/null)
+    echo "FAIL $label: detailMsg=$actual (expected the empty string)"
+    fails=$((fails+1))
+  fi
+  # `has("data")` is required alongside the type check so an absent key cannot satisfy "is null".
+  if ! echo "$json" | jq -e 'has("data") and (.data | type == "null")' >/dev/null 2>&1; then
+    actual=$(echo "$json" | jq -c '.data' 2>/dev/null)
+    echo "FAIL $label: data=$actual (expected JSON null, with the key present)"
+    fails=$((fails+1))
+  fi
+
+  return $fails
+}
+
+# HEAD on the route must answer 405, advertise `Allow: GET`, and send a zero-byte body.
+#
+# `curl -I` cannot produce that evidence: it issues a HEAD and never reads a response body, so
+# `%{size_download}` is structurally 0 whatever the server actually sent — a control service that
+# answers with a 5-byte body and no `Allow` header still reports `405 0`. So the raw response is
+# read straight off the socket, the header/body separator is located, and the bytes after it are
+# counted with the real byte count.
+#
+# Usage: assert_head_405_no_body <host> <port> <path> <label>
+# Returns the number of failed assertions (0 = every assertion passed).
+assert_head_405_no_body() {
+  local host="$1" port="$2" path="$3" label="$4"
+  local raw status_line allow_value total header_len body_bytes fails=0
+  raw=$(mktemp)
+
+  if ! {
+    printf 'HEAD %s HTTP/1.1\r\nHost: %s:%s\r\nConnection: close\r\n\r\n' \
+      "$path" "$host" "$port" >&3
+    timeout 5 cat <&3 > "$raw"
+  } 3<>"/dev/tcp/${host}/${port}" 2>/dev/null; then
+    echo "FAIL $label: could not read a raw response from ${host}:${port}"
+    rm -f "$raw"
+    return 1
+  fi
+
+  status_line=$(head -1 "$raw" | tr -d '\r')
+  case "$status_line" in
+    *" 405 "*|*" 405") : ;;
+    *)
+      echo "FAIL $label: status line is '$status_line' (expected HTTP 405)"
+      fails=$((fails+1))
+      ;;
+  esac
+
+  allow_value=$(LC_ALL=C grep -i '^Allow:' "$raw" | head -1 | tr -d '\r')
+  case "$allow_value" in
+    *GET*) : ;;
+    *)
+      echo "FAIL $label: Allow header does not advertise GET (got '${allow_value:-<absent>}')"
+      fails=$((fails+1))
+      ;;
+  esac
+
+  # Bytes up to and including the blank line that ends the headers, then whatever follows it.
+  header_len=$(LC_ALL=C awk '{ n += length($0) + 1 } /^\r?$/ { print n; exit }' "$raw")
+  total=$(wc -c < "$raw" | tr -d ' ')
+  if [ -z "$header_len" ]; then
+    echo "FAIL $label: the response carries no header/body separator"
+    fails=$((fails+1))
+  else
+    body_bytes=$((total - header_len))
+    [ "$body_bytes" -lt 0 ] && body_bytes=0
+    if [ "$body_bytes" -ne 0 ]; then
+      echo "FAIL $label: body is $body_bytes byte(s) by raw count (expected 0)"
+      fails=$((fails+1))
+    fi
+  fi
+
+  if [ "$fails" -eq 0 ]; then
+    echo "PASS $label (HTTP 405, Allow advertises GET, 0-byte body by raw count)"
+  fi
+  rm -f "$raw"
   return $fails
 }
 
@@ -182,7 +288,7 @@ else
   HTTP_STATUS=$(echo "$HTTP_RESP" | tail -n 1)
   JSON_BODY=$(echo "$HTTP_RESP" | sed '$d')
   if [ "$CURL_EXIT" -eq 0 ] && [ "$HTTP_STATUS" = "200" ]; then
-    assert_verify_fields "$JSON_BODY" "T4-good" "0"
+    assert_verify_fields "$JSON_BODY" "T4-good" 200 0 "success"
     ASSERT_RC=$?
     if [ "$ASSERT_RC" -eq 0 ]; then
       echo "PASS T4-good (known ID confirmed, code=0, envelope well formed)"
@@ -201,7 +307,7 @@ else
   HTTP_STATUS2=$(echo "$HTTP_RESP2" | tail -n 1)
   JSON_BODY2=$(echo "$HTTP_RESP2" | sed '$d')
   if [ "$CURL_EXIT2" -eq 0 ] && [ "$HTTP_STATUS2" = "200" ]; then
-    assert_verify_fields "$JSON_BODY2" "T4-unknown" "1"
+    assert_verify_fields "$JSON_BODY2" "T4-unknown" 200 1 "not found"
     ASSERT_RC=$?
     if [ "$ASSERT_RC" -eq 0 ]; then
       echo "PASS T4-unknown (unissued ID not confirmed, code=1, envelope well formed)"
@@ -213,31 +319,14 @@ else
     FAILURES=$((FAILURES+1))
   fi
 
-  # T4-HEAD: the endpoint answers every method with 405; the transport strips the body from a HEAD
-  # response, so the observable result is HTTP 405 with zero downloaded bytes.
-  HEAD_FILE=$(mktemp)
-  HEAD_CURL_OUT=$(curl -sS -I \
-    -o /dev/null \
-    -D "$HEAD_FILE" \
-    -w '%{http_code} %{size_download}' \
-    --connect-timeout 2 --max-time 5 \
-    "http://127.0.0.1:19876/signer/get?refOrderId=${KNOWN_ID}" 2>&1)
-  CURL_EXIT3=$?
-  HEAD_PASS=0
-  if [ "$CURL_EXIT3" -eq 0 ]; then
-    HTTP_CODE=$(echo "$HEAD_CURL_OUT" | awk '{print $1}')
-    BODY_SIZE=$(echo "$HEAD_CURL_OUT" | awk '{print $2}')
-    if [ "$HTTP_CODE" = "405" ] && [ "$BODY_SIZE" = "0" ]; then
-      HEAD_PASS=1
-    fi
+  # T4-HEAD: the endpoint answers every non-GET method with 405, advertises the methods it serves,
+  # and a HEAD response carries no body. All three are asserted against the raw socket response, so
+  # the byte count is measured rather than inferred from curl's HEAD bookkeeping.
+  assert_head_405_no_body "127.0.0.1" "19876" "/signer/get?refOrderId=${KNOWN_ID}" "T4-HEAD"
+  HEAD_RC=$?
+  if [ "$HEAD_RC" -ne 0 ]; then
+    FAILURES=$((FAILURES + HEAD_RC))
   fi
-  if [ "${HEAD_PASS:-0}" -eq 1 ]; then
-    echo "PASS T4-HEAD (HTTP 405, body 0 bytes)"
-  else
-    echo "FAIL T4-HEAD: curl=$CURL_EXIT3 HTTP=$HTTP_CODE body_size=$BODY_SIZE (expected 405, 0)"
-    FAILURES=$((FAILURES+1))
-  fi
-  rm -f "$HEAD_FILE"
 
   # T4-missing-path: nonexistent path
   HTTP_STATUS4=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 \
@@ -249,51 +338,196 @@ else
     FAILURES=$((FAILURES+1))
   fi
 
-  # T4-empty-param: empty refOrderId is treated exactly like an absent one
-  HTTP_STATUS5=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 \
+  # T4-bad-request: an empty refOrderId is treated exactly like an absent one. This case gets the
+  # same full five-field assertions as the 200 cases.
+  HTTP_RESP5=$(curl -sS -w '\n%{http_code}' --connect-timeout 2 --max-time 5 \
     "http://127.0.0.1:19876/signer/get?refOrderId=")
-  if [ "$HTTP_STATUS5" = "400" ]; then
-    echo "PASS T4-empty-param (empty refOrderId -> 400)"
+  CURL_EXIT5=$?
+  HTTP_STATUS5=$(echo "$HTTP_RESP5" | tail -n 1)
+  JSON_BODY5=$(echo "$HTTP_RESP5" | sed '$d')
+  if [ "$CURL_EXIT5" -eq 0 ] && [ "$HTTP_STATUS5" = "400" ]; then
+    assert_verify_fields "$JSON_BODY5" "T4-bad-request" 400 1 "refOrderId is required"
+    ASSERT_RC=$?
+    if [ "$ASSERT_RC" -eq 0 ]; then
+      echo "PASS T4-bad-request (empty refOrderId -> 400, envelope exact)"
+    else
+      FAILURES=$((FAILURES + ASSERT_RC))
+    fi
   else
-    echo "FAIL T4-empty-param: HTTP=$HTTP_STATUS5 (expected 400)"
+    echo "FAIL T4-bad-request: curl=$CURL_EXIT5 HTTP=$HTTP_STATUS5 (expected 400)"
     FAILURES=$((FAILURES+1))
   fi
 
-  # T4-POST: wrong method -> 405 carrying the JSON envelope
+  # T4-POST: wrong method -> 405 carrying the full five-field envelope, asserted exactly.
   POST_RESP=$(curl -sS -w '\n%{http_code}' --connect-timeout 2 --max-time 5 \
     -X POST "http://127.0.0.1:19876/signer/get?refOrderId=${KNOWN_ID}")
   CURL_EXIT6=$?
   HTTP_STATUS6=$(echo "$POST_RESP" | tail -n 1)
   POST_JSON=$(echo "$POST_RESP" | sed '$d')
-  POST_PASS=0
   if [ "$CURL_EXIT6" -eq 0 ] && [ "$HTTP_STATUS6" = "405" ]; then
-    if echo "$POST_JSON" | jq -e '.status == 405 and .code == 1' >/dev/null 2>&1; then
-      POST_PASS=1
+    assert_verify_fields "$POST_JSON" "T4-POST" 405 1 "method not allowed"
+    ASSERT_RC=$?
+    if [ "$ASSERT_RC" -eq 0 ]; then
+      echo "PASS T4-POST (405 with the exact five-field envelope)"
+    else
+      FAILURES=$((FAILURES + ASSERT_RC))
     fi
-  fi
-  if [ "${POST_PASS:-0}" -eq 1 ]; then
-    echo "PASS T4-POST (405 with JSON envelope status=405 code=1)"
   else
     echo "FAIL T4-POST: curl=$CURL_EXIT6 HTTP=$HTTP_STATUS6 (expected 405 + JSON 405 envelope)"
     FAILURES=$((FAILURES+1))
   fi
 fi
 
-# --- Negative control: the assertion helper must reject a body that merely looks right ---
-echo "=== NEG-CTL: Illegal JSON negative control ==="
-ILLEGAL_JSON='{"status":200,"code":1,"msg":"success","detailMsg":"","data":123}'
-# Fed to the SAME assertion function with expected_code=0: code=1 != 0 and data=123 is not null,
-# so both assertions must fail and the helper must return non-zero.
-NEG_OUT=$(mktemp)
-assert_verify_fields "$ILLEGAL_JSON" "NEG-CTL" "0" >"$NEG_OUT" 2>&1
-NEG_FAILS=$?
-cat "$NEG_OUT"
-rm -f "$NEG_OUT"
-if [ "$NEG_FAILS" -ne 0 ]; then
-  echo "PASS NEG-CTL: illegal JSON correctly rejected ($NEG_FAILS failure(s))"
-else
-  echo "FAIL NEG-CTL: illegal JSON passed assertion"
+# ===================================================================
+# Controls for the assertion helpers themselves.
+#
+# An acceptance assertion that cannot fail is worse than no assertion, so the helpers are exercised
+# directly: every wrong envelope below must be rejected, every real envelope must be accepted, and
+# the HEAD check must report FAIL against a deliberately wrong responder.
+# ===================================================================
+
+# expect_helper_reject <json> <label> <expected_status> <expected_code> <expected_msg>
+# The helper must return non-zero for a body that must not pass.
+expect_helper_reject() {
+  local json="$1" label="$2" want_status="$3" want_code="$4" want_msg="$5"
+  local out rc
+  out=$(mktemp)
+  assert_verify_fields "$json" "$label" "$want_status" "$want_code" "$want_msg" >"$out" 2>&1
+  rc=$?
+  sed 's/^/    /' "$out"
+  rm -f "$out"
+  if [ "$rc" -ne 0 ]; then
+    echo "PASS $label: correctly rejected ($rc failed assertion(s))"
+    return 0
+  fi
+  echo "FAIL $label: a wrong envelope passed the assertion — the helper admits a false pass"
+  return 1
+}
+
+# expect_helper_accept <json> <label> <expected_status> <expected_code> <expected_msg>
+# The helper must return zero for the exact real envelope of that case.
+expect_helper_accept() {
+  local json="$1" label="$2" want_status="$3" want_code="$4" want_msg="$5"
+  local out rc
+  out=$(mktemp)
+  assert_verify_fields "$json" "$label" "$want_status" "$want_code" "$want_msg" >"$out" 2>&1
+  rc=$?
+  sed 's/^/    /' "$out"
+  rm -f "$out"
+  if [ "$rc" -eq 0 ]; then
+    echo "PASS $label: real envelope accepted"
+    return 0
+  fi
+  echo "FAIL $label: the real envelope was rejected ($rc failed assertion(s))"
+  return 1
+}
+
+echo "=== CTL-NEG: the helper must reject every wrong envelope ==="
+
+# Wrong status value: a type-only check would have let 999 through.
+expect_helper_reject '{"status":999,"code":0,"msg":"success","detailMsg":"","data":null}' \
+  "CTL-NEG-wrong-status" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# Wrong msg value.
+expect_helper_reject '{"status":200,"code":0,"msg":"wrong","detailMsg":"","data":null}' \
+  "CTL-NEG-wrong-msg" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# Missing `data` key: in jq a missing key reads as null, so `.data == null` alone would pass.
+expect_helper_reject '{"status":200,"code":0,"msg":"success","detailMsg":""}' \
+  "CTL-NEG-missing-data" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# Missing `detailMsg` key.
+expect_helper_reject '{"status":200,"code":0,"msg":"success","data":null}' \
+  "CTL-NEG-missing-detailMsg" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# The exact body that produced a false pass against the previous type-only helper.
+expect_helper_reject '{"status":999,"code":0,"msg":"wrong","detailMsg":"wrong"}' \
+  "CTL-NEG-known-false-pass" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# Wrong code.
+expect_helper_reject '{"status":200,"code":1,"msg":"success","detailMsg":"","data":null}' \
+  "CTL-NEG-wrong-code" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# Non-null `data`.
+expect_helper_reject '{"status":200,"code":0,"msg":"success","detailMsg":"","data":123}' \
+  "CTL-NEG-nonnull-data" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+# The original illegal-JSON control: wrong code and non-null data at once.
+expect_helper_reject '{"status":200,"code":1,"msg":"success","detailMsg":"","data":123}' \
+  "CTL-NEG-illegal-json" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+echo "=== CTL-POS: the helper must accept the real envelope of every case ==="
+
+expect_helper_accept '{"status":200,"code":0,"msg":"success","detailMsg":"","data":null}' \
+  "CTL-POS-found" 200 0 "success" || FAILURES=$((FAILURES+1))
+
+expect_helper_accept '{"status":200,"code":1,"msg":"not found","detailMsg":"","data":null}' \
+  "CTL-POS-not-found" 200 1 "not found" || FAILURES=$((FAILURES+1))
+
+expect_helper_accept \
+  '{"status":400,"code":1,"msg":"refOrderId is required","detailMsg":"","data":null}' \
+  "CTL-POS-bad-request" 400 1 "refOrderId is required" || FAILURES=$((FAILURES+1))
+
+expect_helper_accept \
+  '{"status":405,"code":1,"msg":"method not allowed","detailMsg":"","data":null}' \
+  "CTL-POS-method-not-allowed" 405 1 "method not allowed" || FAILURES=$((FAILURES+1))
+
+# --- CTL-HEAD-NEG: the HEAD check must FAIL against a deliberately wrong responder ---
+echo "=== CTL-HEAD-NEG: HEAD check against a control that answers with a body and no Allow ==="
+HEAD_CTL_PY="$DIR/head_negative_control.py"
+HEAD_CTL_PORT=19878
+HEAD_CTL_PYTHON=$(command -v python3 || true)
+if [ -z "$HEAD_CTL_PYTHON" ]; then
+  echo "FAIL CTL-HEAD-NEG: python3 not available — the HEAD check is UNVERIFIED, not passing"
   FAILURES=$((FAILURES+1))
+else
+  "$HEAD_CTL_PYTHON" "$HEAD_CTL_PY" "$HEAD_CTL_PORT" \
+    > "$TEST_OUT/head_negative_control.log" 2>&1 &
+  HEAD_CTL_PID=$!
+  HEAD_CTL_READY=0
+  HEAD_CTL_DEADLINE=$(($(date +%s) + 10))
+  while [ "$(date +%s)" -lt "$HEAD_CTL_DEADLINE" ]; do
+    if ! kill -0 "$HEAD_CTL_PID" 2>/dev/null; then
+      break
+    fi
+    if (echo >"/dev/tcp/127.0.0.1/${HEAD_CTL_PORT}") >/dev/null 2>&1; then
+      HEAD_CTL_READY=1
+      break
+    fi
+    sleep 1
+  done
+
+  if [ "$HEAD_CTL_READY" -ne 1 ]; then
+    echo "FAIL CTL-HEAD-NEG: the control service never became reachable — UNVERIFIED"
+    FAILURES=$((FAILURES+1))
+  else
+    CTL_HEAD_OUT=$(mktemp)
+    assert_head_405_no_body "127.0.0.1" "$HEAD_CTL_PORT" "/signer/get?refOrderId=probe" \
+      "CTL-HEAD-NEG-inner" >"$CTL_HEAD_OUT" 2>&1
+    CTL_HEAD_RC=$?
+    sed 's/^/    /' "$CTL_HEAD_OUT"
+    # A non-zero result is not enough: a connection or timeout problem would also be non-zero and
+    # would make an unexercised check look like a working one. The control only counts when the
+    # two defects it actually carries are the findings reported.
+    CTL_SAW_ALLOW=0
+    CTL_SAW_BODY=0
+    grep -q 'Allow header does not advertise GET' "$CTL_HEAD_OUT" && CTL_SAW_ALLOW=1
+    grep -qE 'body is [1-9][0-9]* byte\(s\) by raw count' "$CTL_HEAD_OUT" && CTL_SAW_BODY=1
+    rm -f "$CTL_HEAD_OUT"
+    if [ "$CTL_HEAD_RC" -ne 0 ] && [ "$CTL_SAW_ALLOW" -eq 1 ] && [ "$CTL_SAW_BODY" -eq 1 ]; then
+      echo "PASS CTL-HEAD-NEG: reported FAIL on the missing Allow header AND the non-empty body"
+    elif [ "$CTL_HEAD_RC" -eq 0 ]; then
+      echo "FAIL CTL-HEAD-NEG: a body-bearing, Allow-less HEAD response passed the check"
+      FAILURES=$((FAILURES+1))
+    else
+      echo "FAIL CTL-HEAD-NEG: the control failed for the wrong reason" \
+        "(allow_finding=$CTL_SAW_ALLOW body_finding=$CTL_SAW_BODY) — UNVERIFIED, not a pass"
+      FAILURES=$((FAILURES+1))
+    fi
+  fi
+  kill "$HEAD_CTL_PID" 2>/dev/null
+  wait "$HEAD_CTL_PID" 2>/dev/null
+  unset HEAD_CTL_PID
 fi
 
 cleanup
