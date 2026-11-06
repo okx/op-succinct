@@ -43,6 +43,10 @@ path = "bin/gen_sp1_test_artifacts.rs"
 name = "preflight"
 path = "bin/preflight.rs"
 
+[[bin]]
+name = "export-range-keys"
+path = "bin/export_range_keys.rs"
+
 [dependencies]
 
 # workspace
@@ -69,6 +73,7 @@ serde.workspace = true
 futures.workspace = true
 rayon = "1.10.0"
 serde_json.workspace = true
+sha2.workspace = true
 tracing.workspace = true
 
 # local
