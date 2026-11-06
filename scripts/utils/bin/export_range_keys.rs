@@ -56,6 +56,11 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Resolve any protected config supplied as a secret reference to plaintext, in
+    // place, at startup. Uniform fail-closed behavior across every entrypoint (this
+    // tool reads none of the protected items, so it is a no-op unless one is set).
+    op_succinct_config_kms::init_startup_config()?;
+
     let args = Args::parse();
 
     let elf_bytes =

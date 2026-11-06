@@ -32,5 +32,5 @@ fn every_in_scope_entrypoint_calls_startup_resolver_before_first_config_read() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 14, "expected 14 in-scope entrypoints");
+    assert_eq!(checked, 15, "expected 15 in-scope entrypoints");
 }

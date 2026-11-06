@@ -37,6 +37,7 @@ Scripted comparison of the new `Cargo.lock` with the base lock — all checks PA
 | `cargo check -p op-succinct-fp --lib --bins` | 0 |
 | `cargo build --release -p op-succinct-scripts --bin export-range-keys` | 0 |
 | `cargo test -p op-succinct-client-utils --lib` (information only) | 0 — 22 passed |
+| `cargo test -p op-succinct-config-kms --test entrypoint_coverage` (after the startup resolver call was added to `export-range-keys`) | 0 — 15 entrypoints checked |
 
 `op-succinct-bindings` (and therefore the `op-succinct-fp` test targets, its only dependent) was
 not compiled: its build script runs `forge bind`, which fails on the unchanged `contracts/` tree
@@ -93,6 +94,12 @@ Self-checks (all passed):
 
 Independent check: `cargo prove vkey --elf elf/range-elf-embedded` prints
 `0x002cc819a93261d7998a9372c3469c6e79e17680356f676801b32c4b179d8348`, equal to `vk.bytes32()`.
+
+Host tool follow-up: `export-range-keys` now calls the shared startup config resolver
+(`op_succinct_config_kms::init_startup_config`) first, like every other in-scope entrypoint. This
+change is host-only; the range program source and `Cargo.lock` are unchanged, so the ELF and key
+files above were not rebuilt. The rebuilt tool was run again into a scratch directory: all three
+self-checks passed and the four key files were byte-identical to the committed ones.
 
 ## Not covered here
 
