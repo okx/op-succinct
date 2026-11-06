@@ -1,0 +1,8 @@
+{
+  "elf_path": "elf/range-elf-embedded",
+  "elf_sha256": "f8cbd267af6e25994e3c37c3268fca57942516ffd6ef8b3bd12b595dc0d87916",
+  "format": "sp1-sdk 6.1.0 SP1ProvingKey = (vk, elf)",
+  "reconstruct": "SP1ProvingKey::new(bincode::deserialize(vk.bin), Elf::from(elf bytes))",
+  "vk_file": "range-vk.bin",
+  "vk_sha256": "27663265e00b8f0cd7cf9a4a6ad8908abdfe7e7153e63d72aad45367c344fa67"
+}
