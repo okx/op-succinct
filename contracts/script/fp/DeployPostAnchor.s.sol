@@ -17,7 +17,7 @@ import {CrossChainDeploymentConfig} from "./CrossChainDeploymentConfig.s.sol";
 ///         explicitly sets `ALLOW_UNVERIFIED_DEPLOYMENT=true`.
 contract DeployPostAnchor is CrossChainDeploymentConfig {
     /// @notice Default target-chain execution gas limit when the environment does not override it.
-    uint64 internal constant DEFAULT_PUSH_GAS_LIMIT = 150_000;
+    uint64 internal constant DEFAULT_PUSH_GAS_LIMIT = 300_000;
 
     function run() public returns (address postAnchor) {
         address asr = vm.envAddress("ANCHOR_STATE_REGISTRY");

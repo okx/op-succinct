@@ -24,7 +24,7 @@ import {AccessManager} from "src/fp/AccessManager.sol";
 import {PostAnchor} from "src/fp/PostAnchor.sol";
 import {TZRootManager} from "src/fp/TZRootManager.sol";
 import {ITZRootManager} from "src/fp/interfaces/ITZRootManager.sol";
-import {InvalidRoot, Unauthorized, StaleRoot, RootClaimPreimageDisabled} from "src/fp/lib/Errors.sol";
+import {InvalidRoot, Unauthorized, StaleRoot, RootClaimPreimageDisabled, NoAnchorGame} from "src/fp/lib/Errors.sol";
 import {OP_SUCCINCT_FAULT_DISPUTE_GAME_TYPE} from "src/lib/Types.sol";
 
 import {MockOptimismPortal2} from "src/utils/MockOptimismPortal2.sol";
@@ -75,8 +75,15 @@ contract IntegrationRecordingPortal {
 ///         closeGame -> setAnchorState -> push -> portal deposit -> (aliased) record path.
 contract AnchorRootForceSyncIntegrationTest is Test {
     // Events under observation (mirrors of the production declarations).
-    event RootsEnqueued(address indexed game, uint256 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
-    event RootsRecorded(bytes32 withdrawalRoot, bytes32 forceRoot, uint256 l2BlockNumber);
+    event RootsEnqueued(
+        address indexed game,
+        uint256 indexed blockHeight,
+        bytes32 blockHash,
+        bytes32 appHash,
+        bytes32 bridgeRoot,
+        bytes32 forceRoot
+    );
+    event RootsRecorded(uint256 blockHeight, bytes32 blockHash, bytes32 appHash, bytes32 bridgeRoot, bytes32 forceRoot);
     event PostAnchorFailed(address indexed game);
     event GameClosed(BondDistributionMode bondDistributionMode);
 
@@ -107,10 +114,10 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     uint256 internal constant FINALITY_DELAY = 1000;
     uint64 internal constant PUSH_GAS = 150_000;
 
-    // Four mutually distinct roots so a withdrawal/force swap cannot pass unnoticed.
+    // Four mutually distinct roots so a bridge/force swap cannot pass unnoticed.
     bytes32 internal constant BLOCK_HASH = bytes32(uint256(0x1111));
     bytes32 internal constant APP_HASH = bytes32(uint256(0x2222));
-    bytes32 internal constant WITHDRAWAL_ROOT = bytes32(uint256(0x3333));
+    bytes32 internal constant BRIDGE_ROOT = bytes32(uint256(0x3333));
     bytes32 internal constant FORCE_ROOT = bytes32(uint256(0x4444));
     uint256 internal constant SEQ_1 = 1000;
     uint256 internal constant SEQ_2 = 2000;
@@ -247,13 +254,26 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         (ok,) = address(rootManager).call(data);
     }
 
+    /// @dev Delivers a specific, previously captured deposit payload to the real sink from the
+    ///      aliased forwarder identity. Used to replay enqueued messages out of their enqueue order,
+    ///      exactly as the target chain could receive them after derivation.
+    function _deliverData(bytes memory data) internal returns (bool ok) {
+        vm.prank(aliasedForwarder);
+        (ok,) = address(rootManager).call(data);
+    }
+
     function _assertLatestRoots(uint256 expectedHeight, bytes32 expectedW, bytes32 expectedF) internal view {
-        (uint256 height, bytes32 withdrawalRoot, bytes32 forceTxRoot) = rootManager.getLatestRoots();
+        (uint256 height, bytes32 bridgeRoot, bytes32 forceTxRoot) = rootManager.getLatestRoots();
         assertEq(height, expectedHeight, "latest checkpoint height");
-        assertEq(withdrawalRoot, expectedW, "latest withdrawal root");
+        assertEq(bridgeRoot, expectedW, "latest bridge root");
         assertEq(forceTxRoot, expectedF, "latest force root");
-        assertEq(rootManager.latestWithdrawalRoot(), expectedW, "public latest withdrawal root");
+        assertEq(rootManager.latestBridgeRoot(), expectedW, "public latest bridge root");
         assertEq(rootManager.latestForceTxRoot(), expectedF, "public latest force root");
+        // The full query's height/bridge/force projection must equal the legacy query.
+        (uint256 sHeight,,, bytes32 sW, bytes32 sF) = rootManager.getLatestState();
+        assertEq(sHeight, expectedHeight, "state height projection");
+        assertEq(sW, expectedW, "state bridge projection");
+        assertEq(sF, expectedF, "state force projection");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -281,7 +301,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     }
 
     function test_reinitialize_revertsAfterFactoryInit() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         // A game created by the factory is already initialized; a second initialize must revert.
         vm.expectRevert(abi.encodeWithSignature("AlreadyInitialized()"));
         game.initialize();
@@ -292,14 +312,14 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     // ---------------------------------------------------------------------------------------------
 
     function test_e2e_closeGamePushDepositAndTargetChainRecord() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
 
         // closeGame finalizes its own state before making the best-effort forwarder call.
         vm.expectEmit(false, false, false, true, address(game));
         emit GameClosed(BondDistributionMode.NORMAL);
         vm.expectEmit(true, true, false, true, address(postAnchor));
-        emit RootsEnqueued(address(game), SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        emit RootsEnqueued(address(game), SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         game.closeGame();
 
         // The anchor really advanced to this game and bonds distribute normally.
@@ -316,7 +336,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertFalse(depositPortal.lastIsCreation(), "not a creation deposit");
         assertEq(
             depositPortal.lastData(),
-            abi.encodeCall(ITZRootManager.record, (WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1)),
+            abi.encodeCall(ITZRootManager.record, (SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT)),
             "deposit calldata is record(W,F,seq)"
         );
         // Forwarder holds no funds.
@@ -324,11 +344,14 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         // Deliver the captured message on the target chain from the aliased forwarder identity.
         vm.expectEmit(false, false, false, true, address(rootManager));
-        emit RootsRecorded(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
+        emit RootsRecorded(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         assertTrue(_deliverCapturedDeposit(), "record delivery");
 
-        // The latest query mirrors the anchor game's committed tuple.
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        // The latest query mirrors the anchor game's committed tuple, including block/app hash.
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
+        (, bytes32 landedBlockHash, bytes32 landedAppHash,,) = rootManager.getLatestState();
+        assertEq(landedBlockHash, BLOCK_HASH, "sink stored block hash");
+        assertEq(landedAppHash, APP_HASH, "sink stored app hash");
 
         // Credit remains claimable and pays exactly the bond; no value is stranded.
         uint256 beforeBalance = proposer.balance;
@@ -346,11 +369,11 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         bytes32 f2 = bytes32(uint256(0x6666));
 
         // First game closes and syncs its roots at height SEQ_1.
-        OPSuccinctFaultDisputeGame game1 = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game1 = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game1);
         game1.closeGame();
         assertTrue(_deliverCapturedDeposit(), "record #1");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
 
         // Second, higher game re-anchors and advances the sink monotonically.
         OPSuccinctFaultDisputeGame game2 = _createExtendedGame(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
@@ -360,7 +383,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertEq(depositPortal.callCount(), 2, "second deposit enqueued");
         assertEq(
             depositPortal.lastData(),
-            abi.encodeCall(ITZRootManager.record, (w2, f2, SEQ_2)),
+            abi.encodeCall(ITZRootManager.record, (SEQ_2, BLOCK_HASH, APP_HASH, w2, f2)),
             "second deposit carries game2 roots"
         );
         assertTrue(_deliverCapturedDeposit(), "record #2");
@@ -370,7 +393,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     }
 
     function test_e2e_externalAnchorAdvanceBeforeCloseStillPushesLatest() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
 
         // setAnchorState is permissionless. Simulate another caller advancing the ASR before the
@@ -385,7 +408,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertEq(depositPortal.callCount(), 1, "close catches up latest anchor");
         assertEq(
             depositPortal.lastData(),
-            abi.encodeCall(ITZRootManager.record, (WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1)),
+            abi.encodeCall(ITZRootManager.record, (SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT)),
             "latest roots enqueued"
         );
         assertEq(uint8(game.bondDistributionMode()), uint8(BondDistributionMode.NORMAL), "closed normal");
@@ -394,7 +417,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     function test_e2e_multipleExternalAnchorAdvancesPushOnlyCurrentLatest() public {
         bytes32 w2 = bytes32(uint256(0x5555));
         bytes32 f2 = bytes32(uint256(0x6666));
-        OPSuccinctFaultDisputeGame game1 = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game1 = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         OPSuccinctFaultDisputeGame game2 = _createExtendedGame(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
 
         // Finalize both before an external caller advances through both anchors.
@@ -417,7 +440,9 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         assertEq(uint8(game1.bondDistributionMode()), uint8(BondDistributionMode.NORMAL), "older game closed normally");
         assertEq(depositPortal.callCount(), 1, "only current latest enqueued");
         assertEq(
-            depositPortal.lastData(), abi.encodeCall(ITZRootManager.record, (w2, f2, SEQ_2)), "game2 roots enqueued"
+            depositPortal.lastData(),
+            abi.encodeCall(ITZRootManager.record, (SEQ_2, BLOCK_HASH, APP_HASH, w2, f2)),
+            "game2 roots enqueued"
         );
 
         // Closing game2 enqueues the current anchor again. The target-chain sink, rather than an
@@ -431,7 +456,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
     // ---------------------------------------------------------------------------------------------
 
     function test_e2e_postAnchorFailureIsolatedThenPermissionlessRetryConverges() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
 
         // Portal is down: the hook fails but the game must still close cleanly.
@@ -456,17 +481,17 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         // Portal recovers; an arbitrary relayer converges the sink through the same entry point.
         depositPortal.setShouldRevert(false);
         vm.expectEmit(true, true, false, true, address(postAnchor));
-        emit RootsEnqueued(address(game), SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        emit RootsEnqueued(address(game), SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         vm.prank(relayer);
         postAnchor.push();
 
         assertEq(depositPortal.callCount(), 1, "retry enqueued one deposit");
         assertTrue(_deliverCapturedDeposit(), "retry record delivery");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
     }
 
     function test_e2e_enqueuedButUndeliveredMessageCanBeRetried() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
 
         // The close hook successfully enqueues, but simulate that the captured message has not
@@ -480,15 +505,15 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         postAnchor.push();
         assertEq(depositPortal.callCount(), 2, "same-height retry enqueued");
         assertTrue(_deliverCapturedDeposit(), "retry delivery succeeds");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
 
         // If the original delivery later lands too, strict monotonicity rejects the duplicate.
         assertFalse(_deliverCapturedDeposit(), "late duplicate is stale");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
     }
 
     function test_e2e_currentAnchorRemainsRetryableAfterRetirement() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
 
         game.closeGame();
@@ -505,7 +530,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         postAnchor.push();
         assertEq(depositPortal.callCount(), 2, "retired current anchor remains retryable");
         assertTrue(_deliverCapturedDeposit(), "retirement retry delivery succeeds");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -514,7 +539,7 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
     function test_targetChain_rejectsUnauthorizedCallerNoStateChange() public {
         // Build a real producer-shaped message via the full close+push path first.
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
         game.closeGame();
         bytes memory data = depositPortal.lastData();
@@ -532,53 +557,53 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         // Direct typed call surfaces the specific error.
         vm.prank(relayer);
         vm.expectRevert(Unauthorized.selector);
-        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
+        rootManager.record(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         // No partial effect: the sink is still empty.
         _assertLatestRoots(0, bytes32(0), bytes32(0));
 
         // The legitimate aliased delivery still works afterwards.
         assertTrue(_deliverCapturedDeposit(), "aliased delivery still works");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
     }
 
     function test_targetChain_rejectsEitherZeroRootNoStateChange() public {
         vm.expectRevert(InvalidRoot.selector);
         vm.prank(aliasedForwarder);
-        rootManager.record(bytes32(0), FORCE_ROOT, SEQ_1);
+        rootManager.record(SEQ_1, BLOCK_HASH, APP_HASH, bytes32(0), FORCE_ROOT);
 
         vm.expectRevert(InvalidRoot.selector);
         vm.prank(aliasedForwarder);
-        rootManager.record(WITHDRAWAL_ROOT, bytes32(0), SEQ_1);
+        rootManager.record(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, bytes32(0));
 
         _assertLatestRoots(0, bytes32(0), bytes32(0));
     }
 
     function test_targetChain_exactReplayAndLowerHeightRevert() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
         game.closeGame();
 
         // First delivery records the roots.
         assertTrue(_deliverCapturedDeposit(), "first record");
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
 
         // Replaying the identical message is not strictly newer and therefore reverts.
         vm.prank(aliasedForwarder);
         vm.expectRevert(StaleRoot.selector);
-        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1);
+        rootManager.record(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         // A strictly lower height also reverts as stale.
         vm.prank(aliasedForwarder);
         vm.expectRevert(StaleRoot.selector);
-        rootManager.record(WITHDRAWAL_ROOT, FORCE_ROOT, SEQ_1 - 1);
+        rootManager.record(SEQ_1 - 1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         // Neither rejected delivery changes state.
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
     }
 
     function test_targetChain_sameHeightDifferentRootsRevert() public {
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         _resolveAndFinalize(game);
         game.closeGame();
         assertTrue(_deliverCapturedDeposit(), "initial record");
@@ -588,9 +613,9 @@ contract AnchorRootForceSyncIntegrationTest is Test {
         bytes32 correctedF = bytes32(uint256(0x8888));
         vm.expectRevert(StaleRoot.selector);
         vm.prank(aliasedForwarder);
-        rootManager.record(correctedW, correctedF, SEQ_1);
+        rootManager.record(SEQ_1, BLOCK_HASH, APP_HASH, correctedW, correctedF);
 
-        _assertLatestRoots(SEQ_1, WITHDRAWAL_ROOT, FORCE_ROOT);
+        _assertLatestRoots(SEQ_1, BRIDGE_ROOT, FORCE_ROOT);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -620,6 +645,94 @@ contract AnchorRootForceSyncIntegrationTest is Test {
 
         // Four-preimage getters are disabled on the legacy game.
         vm.expectRevert(RootClaimPreimageDisabled.selector);
-        game.withdrawalRoot();
+        game.bridgeRoot();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Out-of-order cross-chain delivery: a later, higher checkpoint lands before an earlier, lower
+    // one. Strict monotonicity on the sink must keep the newer state and reject the stale arrival.
+    // ---------------------------------------------------------------------------------------------
+
+    function test_e2e_outOfOrderHigherThenLowerDeliveryRejectsStale() public {
+        bytes32 w2 = bytes32(uint256(0x5555));
+        bytes32 f2 = bytes32(uint256(0x6666));
+
+        // Enqueue the lower checkpoint first and capture its exact portal payload before it is
+        // overwritten by the next enqueue.
+        OPSuccinctFaultDisputeGame game1 = _createExtendedGame(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
+        _resolveAndFinalize(game1);
+        game1.closeGame();
+        bytes memory lowerDelivery = depositPortal.lastData();
+        assertEq(depositPortal.callCount(), 1, "lower checkpoint enqueued");
+
+        // Enqueue the higher checkpoint next and capture its payload.
+        OPSuccinctFaultDisputeGame game2 = _createExtendedGame(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
+        _resolveAndFinalize(game2);
+        game2.closeGame();
+        bytes memory higherDelivery = depositPortal.lastData();
+        assertEq(depositPortal.callCount(), 2, "higher checkpoint enqueued");
+
+        // The target chain receives the HIGHER-height message first and records it.
+        vm.expectEmit(false, false, false, true, address(rootManager));
+        emit RootsRecorded(SEQ_2, BLOCK_HASH, APP_HASH, w2, f2);
+        assertTrue(_deliverData(higherDelivery), "higher checkpoint delivered first records");
+        _assertLatestRoots(SEQ_2, w2, f2);
+
+        // The earlier, LOWER-height message then arrives out of order. The real captured payload is
+        // rejected, and a typed call pins the exact error.
+        assertFalse(_deliverData(lowerDelivery), "out-of-order lower checkpoint rejected");
+        vm.prank(aliasedForwarder);
+        vm.expectRevert(StaleRoot.selector);
+        rootManager.record(SEQ_1, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
+
+        // No partial effect: the sink still holds exactly the higher checkpoint, block/app hashes
+        // included.
+        _assertLatestRoots(SEQ_2, w2, f2);
+        (, bytes32 landedBlockHash, bytes32 landedAppHash,,) = rootManager.getLatestState();
+        assertEq(landedBlockHash, BLOCK_HASH, "block hash unchanged after stale arrival");
+        assertEq(landedAppHash, APP_HASH, "app hash unchanged after stale arrival");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Workflow-boundary failures of the permissionless L1 push, exercised against the real registry.
+    // ---------------------------------------------------------------------------------------------
+
+    function test_e2e_pushRevertsNoAnchorGameWhenRegistryEmpty() public {
+        // Fresh deployment: the real AnchorStateRegistry has no anchor game recorded yet.
+        assertEq(address(anchorStateRegistry.anchorGame()), address(0), "no anchor game at start");
+
+        vm.expectRevert(NoAnchorGame.selector);
+        vm.prank(relayer);
+        postAnchor.push();
+
+        // The push reverted before any cross-chain enqueue; the sink is untouched.
+        assertEq(depositPortal.callCount(), 0, "no deposit without an anchor game");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
+    }
+
+    function test_e2e_pushOnNonFourPreimageAnchorRevertsNoEnqueue() public {
+        // Register a legacy (non-four-preimage) implementation and finalize a legacy game.
+        _registerImpl(false, address(0));
+        Claim claim = Claim.wrap(keccak256("legacy-root"));
+        bytes memory legacyExtraData = TZBootstrapExtraData.encodeLegacy(SEQ_1, type(uint32).max);
+        vm.prank(proposer);
+        OPSuccinctFaultDisputeGame legacyGame =
+            OPSuccinctFaultDisputeGame(address(factory.create{value: INIT_BOND}(gameType, claim, legacyExtraData)));
+        _resolveAndFinalize(legacyGame);
+
+        // Make the legacy game the current anchor through the permissionless registry entry point.
+        vm.prank(address(0xBEEF));
+        anchorStateRegistry.setAnchorState(IDisputeGame(address(legacyGame)));
+        assertEq(address(anchorStateRegistry.anchorGame()), address(legacyGame), "legacy game is current anchor");
+
+        // push() reads the current anchor and reverts when it reads the four preimages, exactly as
+        // the pre-existing bridge/force getters already revert on a non-four-preimage game. No
+        // deposit is enqueued and the sink is untouched.
+        vm.expectRevert(RootClaimPreimageDisabled.selector);
+        vm.prank(relayer);
+        postAnchor.push();
+
+        assertEq(depositPortal.callCount(), 0, "no deposit from a non-four-preimage anchor");
+        _assertLatestRoots(0, bytes32(0), bytes32(0));
     }
 }

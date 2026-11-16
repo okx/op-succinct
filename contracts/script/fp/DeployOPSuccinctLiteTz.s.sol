@@ -35,7 +35,7 @@ import {TZBootstrapExtraData} from "../../test/helpers/TZBootstrapExtraData.sol"
 ///      once it is resolved and closed. This variant registers an extended
 ///      (HAS_ROOT_CLAIM_PREIMAGE = true) implementation, which accepts only a
 ///      164-byte four-preimage extraData bound to
-///      rootClaim = keccak256(blockHash . appHash . withdrawalRoot . forceRoot).
+///      rootClaim = keccak256(blockHash . appHash . bridgeRoot . forceRoot).
 ///      The bootstrap game is created only when all four preimages are supplied via
 ///      env; otherwise it is intentionally skipped (the approved design forbids
 ///      creating an extended game with a legacy payload before activation).
@@ -59,10 +59,10 @@ import {TZBootstrapExtraData} from "../../test/helpers/TZBootstrapExtraData.sol"
 /// omit them before activation to skip creation):
 ///   BOOTSTRAP_BLOCK_HASH (bytes32)      — committed block hash
 ///   BOOTSTRAP_APP_HASH (bytes32)        — committed app hash
-///   BOOTSTRAP_WITHDRAWAL_ROOT (bytes32) — committed withdrawal root
+///   BOOTSTRAP_BRIDGE_ROOT (bytes32) — committed bridge root
 ///   BOOTSTRAP_FORCE_ROOT (bytes32)      — committed force root
 ///   BOOTSTRAP_ROOT_CLAIM (bytes32)      — optional; if set, must equal
-///                                         keccak256(blockHash.appHash.withdrawalRoot.forceRoot)
+///                                         keccak256(blockHash.appHash.bridgeRoot.forceRoot)
 ///
 /// PostAnchor configuration:
 ///   - `config/tz/opsuccinctfdgconfig.json` is the sole source of the implementation's
@@ -213,7 +213,7 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
 
         // This TradeZone deploy path registers an extended implementation
         // (HAS_ROOT_CLAIM_PREIMAGE == true), which accepts only a 164-byte four-preimage
-        // extraData whose rootClaim equals keccak256(blockHash . appHash . withdrawalRoot .
+        // extraData whose rootClaim equals keccak256(blockHash . appHash . bridgeRoot .
         // forceRoot). The four preimages are produced off-chain by the fault-proof backend, which
         // is the activation gate and is not available at bootstrap/deploy time. The approved design
         // forbids creating an extended Game with a legacy payload before activation, so this
@@ -222,15 +222,15 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         // first valid extended Game to the backend at activation.
         bytes32 bootBlockHash = vm.envOr("BOOTSTRAP_BLOCK_HASH", bytes32(0));
         bytes32 bootAppHash = vm.envOr("BOOTSTRAP_APP_HASH", bytes32(0));
-        bytes32 bootWithdrawalRoot = vm.envOr("BOOTSTRAP_WITHDRAWAL_ROOT", bytes32(0));
+        bytes32 bootBridgeRoot = vm.envOr("BOOTSTRAP_BRIDGE_ROOT", bytes32(0));
         bytes32 bootForceRoot = vm.envOr("BOOTSTRAP_FORCE_ROOT", bytes32(0));
 
         if (
-            bootBlockHash == bytes32(0) || bootAppHash == bytes32(0) || bootWithdrawalRoot == bytes32(0)
+            bootBlockHash == bytes32(0) || bootAppHash == bytes32(0) || bootBridgeRoot == bytes32(0)
                 || bootForceRoot == bytes32(0)
         ) {
             console.log("Bootstrap game skipped: extended implementation requires four preimages.");
-            console.log("Set BOOTSTRAP_BLOCK_HASH / BOOTSTRAP_APP_HASH / BOOTSTRAP_WITHDRAWAL_ROOT /");
+            console.log("Set BOOTSTRAP_BLOCK_HASH / BOOTSTRAP_APP_HASH / BOOTSTRAP_BRIDGE_ROOT /");
             console.log("BOOTSTRAP_FORCE_ROOT to create it; before activation, skipping is expected.");
             return address(0);
         }
@@ -238,16 +238,16 @@ contract DeployOPSuccinctLiteTz is Script, Utils {
         // Bind the rootClaim to the four preimages exactly as the Game verifies on-chain, using the
         // shared encoder that the deterministic tests also exercise.
         bytes32 committedRootClaim =
-            TZBootstrapExtraData.commitRootClaim(bootBlockHash, bootAppHash, bootWithdrawalRoot, bootForceRoot);
+            TZBootstrapExtraData.commitRootClaim(bootBlockHash, bootAppHash, bootBridgeRoot, bootForceRoot);
         require(
             rootClaim == bytes32(0) || rootClaim == committedRootClaim,
-            "BOOTSTRAP_ROOT_CLAIM must equal keccak256(blockHash.appHash.withdrawalRoot.forceRoot)"
+            "BOOTSTRAP_ROOT_CLAIM must equal keccak256(blockHash.appHash.bridgeRoot.forceRoot)"
         );
 
         // First game in the chain: parent index is uint32.max so the game starts from the current
         // anchor root in the registry. The extended 164-byte payload is built by the shared encoder.
         bytes memory extraData = TZBootstrapExtraData.encodeExtended(
-            l2BlockNumber, type(uint32).max, bootBlockHash, bootAppHash, bootWithdrawalRoot, bootForceRoot
+            l2BlockNumber, type(uint32).max, bootBlockHash, bootAppHash, bootBridgeRoot, bootForceRoot
         );
 
         IDisputeGame created =

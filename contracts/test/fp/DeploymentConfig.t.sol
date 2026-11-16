@@ -4,6 +4,7 @@ pragma solidity ^0.8.15;
 import {Test} from "forge-std/Test.sol";
 
 import {CrossChainDeploymentConfig} from "../../script/fp/CrossChainDeploymentConfig.s.sol";
+import {DeployPostAnchor} from "../../script/fp/DeployPostAnchor.s.sol";
 import {DeployOPSuccinctLiteTz} from "../../script/fp/DeployOPSuccinctLiteTz.s.sol";
 import {JSONDecoder} from "../helpers/JSONDecoder.sol";
 
@@ -29,13 +30,25 @@ contract DeployOPSuccinctLiteTzHarness is DeployOPSuccinctLiteTz {
     }
 }
 
+contract DeployPostAnchorHarness is DeployPostAnchor {
+    function defaultPushGasLimit() external pure returns (uint64) {
+        return DEFAULT_PUSH_GAS_LIMIT;
+    }
+
+    function readPushGasLimitFromEnv() external view returns (uint64) {
+        return uint64(vm.envOr("PUSH_GAS_LIMIT", uint256(DEFAULT_PUSH_GAS_LIMIT)));
+    }
+}
+
 contract DeploymentConfigTest is Test {
     CrossChainDeploymentConfigHarness internal addressHarness;
     DeployOPSuccinctLiteTzHarness internal tzHarness;
+    DeployPostAnchorHarness internal postAnchorHarness;
 
     function setUp() public {
         addressHarness = new CrossChainDeploymentConfigHarness();
         tzHarness = new DeployOPSuccinctLiteTzHarness();
+        postAnchorHarness = new DeployPostAnchorHarness();
     }
 
     function test_expectedAddressRequiredByDefault() public {
@@ -91,5 +104,15 @@ contract DeploymentConfigTest is Test {
 
         assertTrue(hasRootClaimPreimage);
         assertEq(postAnchor, address(0));
+    }
+
+    function test_postAnchorDefaultPushGasLimitIsRaisedForFiveFieldRecord() public view {
+        assertEq(postAnchorHarness.defaultPushGasLimit(), 300_000);
+    }
+
+    function test_postAnchorPushGasLimitOverrideIsPreserved() public {
+        vm.setEnv("PUSH_GAS_LIMIT", "424242");
+
+        assertEq(postAnchorHarness.readPushGasLimitFromEnv(), 424_242);
     }
 }

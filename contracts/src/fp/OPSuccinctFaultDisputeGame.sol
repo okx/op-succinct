@@ -271,7 +271,7 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         // - 0x20 extraData (l2BlockNumber)
         // - 0x04 extraData (parentIndex)
         // - 0x02 CWIA bytes
-        // Four-preimage layout appends 0x80 bytes (block hash, app hash, withdrawal root, force
+        // Four-preimage layout appends 0x80 bytes (block hash, app hash, bridge root, force
         // root), for a total of 0xFE.
         if (msg.data.length != (HAS_ROOT_CLAIM_PREIMAGE ? 0xFE : 0x7E)) revert BadExtraData();
 
@@ -669,11 +669,11 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
         appHash_ = _getArgBytes32(0x98);
     }
 
-    /// @notice The withdrawal root preimage committed at creation. Four-preimage games only.
-    /// @return withdrawalRoot_ The committed withdrawal root.
-    function withdrawalRoot() public view returns (bytes32 withdrawalRoot_) {
+    /// @notice The bridge root preimage committed at creation. Four-preimage games only.
+    /// @return bridgeRoot_ The committed bridge root.
+    function bridgeRoot() public view returns (bytes32 bridgeRoot_) {
         _requireRootClaimPreimage();
-        withdrawalRoot_ = _getArgBytes32(0xB8);
+        bridgeRoot_ = _getArgBytes32(0xB8);
     }
 
     /// @notice The force root preimage committed at creation. Four-preimage games only.
@@ -689,10 +689,10 @@ contract OPSuccinctFaultDisputeGame is Clone, ISemver, IDisputeGame {
     }
 
     /// @notice Reverts unless the root claim equals the keccak256 commitment over the four
-    ///         committed preimages, in the fixed order block hash, app hash, withdrawal root,
+    ///         committed preimages, in the fixed order block hash, app hash, bridge root,
     ///         force root.
     function _checkRootClaimCommitment() internal view {
-        bytes32 expectedRootClaim = keccak256(abi.encodePacked(blockHash(), appHash(), withdrawalRoot(), forceRoot()));
+        bytes32 expectedRootClaim = keccak256(abi.encodePacked(blockHash(), appHash(), bridgeRoot(), forceRoot()));
         if (rootClaim().raw() != expectedRootClaim) revert InvalidRootClaimPreimage();
     }
 
