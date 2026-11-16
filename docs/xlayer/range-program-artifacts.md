@@ -1,7 +1,7 @@
-# Range program artifacts — okx/optimism a492b62b alignment
+# Range program ELF — okx/optimism a492b62b alignment
 
-This record describes how `elf/range-elf-embedded` and its SP1 key files under
-`elf/keys/range-elf-embedded/` were produced. All paths are relative to the repository root.
+This record describes how `elf/range-elf-embedded` was produced. All paths are relative to the
+repository root.
 
 ## Source
 
@@ -12,7 +12,12 @@ This record describes how `elf/range-elf-embedded` and its SP1 key files under
 | okx/optimism revision (Kona, OP Alloy, alloy-op-evm, op-revm) | `a492b62bbecbdcf3be90719e042c9abca47c8cc6` |
 | Execution crates | `revm` 40.0.3, `revm-precompile` 36.0.3, `alloy-evm` 0.36.0, `op-revm` 20.0.0, `alloy-op-evm` 0.32.0, `reth-codecs` 0.4.2 |
 | SP1 | `sp1-sdk`/`sp1-lib`/`sp1-zkvm` 6.1.0; `okx/sp1` `dab85639bb828aafa2971ae38fda8eeb56c4b1f5` |
-| `Cargo.lock` SHA256 | `c62dc69d136bd278b99d8e03f431df95a4959d28c75bb850fce9af2ddc47886a` |
+| `Cargo.lock` SHA256 at build commit `9f91d7d0` | `c62dc69d136bd278b99d8e03f431df95a4959d28c75bb850fce9af2ddc47886a` |
+
+The lock hash above is the value at the commit the ELF was built from, not the current tree. The
+current tree differs from it only by the later one-line removal of the `sha2` entry in the
+`op-succinct-scripts` package dependencies; that package is outside the range program's dependency
+graph, so the ELF build input is unaffected and the ELF was not rebuilt after that edit.
 
 ## Lock check
 
@@ -35,9 +40,7 @@ Scripted comparison of the new `Cargo.lock` with the base lock — all checks PA
 | `cargo update -p kona-mpt … -p revm-precompile` (targeted; no bare `cargo update`) | 0 |
 | `cargo check --workspace --all-targets --exclude op-succinct-bindings --exclude op-succinct-fp` | 0 |
 | `cargo check -p op-succinct-fp --lib --bins` | 0 |
-| `cargo build --release -p op-succinct-scripts --bin export-range-keys` | 0 |
 | `cargo test -p op-succinct-client-utils --lib` (information only) | 0 — 22 passed |
-| `cargo test -p op-succinct-config-kms --test entrypoint_coverage` (after the startup resolver call was added to `export-range-keys`) | 0 — 15 entrypoints checked |
 
 `op-succinct-bindings` (and therefore the `op-succinct-fp` test targets, its only dependent) was
 not compiled: its build script runs `forge bind`, which fails on the unchanged `contracts/` tree
@@ -64,42 +67,10 @@ The path remapping keeps local build-host paths out of the binary. The `justfile
 Docker builder (`--docker --tag v6.1.0`) instead, so a Docker build of the same commit is not
 expected to give the same bytes.
 
-## SP1 setup and exported keys
-
-Command: `./target/release/export-range-keys` (defaults `--elf elf/range-elf-embedded`,
-`--out-dir elf/keys/range-elf-embedded`). CPU setup on an AMD EPYC 9T24 (32 vCPU), 36 s including
-the second setup; started 2026-11-06T09:24:06Z.
-
-At sp1-sdk 6.1.0 `SP1ProvingKey` is `(vk, elf)`, so the proving key is the ELF together with
-`range-vk.bin`; `range-pk.json` describes how to rebuild it with `SP1ProvingKey::new`.
-
-| File | SHA256 |
-|---|---|
-| `elf/keys/range-elf-embedded/range-vk.bin` | `27663265e00b8f0cd7cf9a4a6ad8908abdfe7e7153e63d72aad45367c344fa67` |
-| `elf/keys/range-elf-embedded/range-vk.json` | `c1bd708ce60b47c88a694d3724f1cea42cf3d486e7fcce5fc5f9dac0226bf3db` |
-| `elf/keys/range-elf-embedded/range-pk.json` | `863a57e6a324fe9dd091ccf249377e93798a918e13e5d0a720156daf8bc98689` |
-| `elf/keys/range-elf-embedded/range-vk-commitment.txt` | `83780c9c443174b497c5c42f5bde4964c0f10484ff05fdd2a55843227372bb33` |
-
-| Value | |
-|---|---|
-| `range_vkey_commitment` (`B256::from(u32_to_u8(vk.hash_u32()))`, on-chain form) | `0x16640cd44c9875e631526e583469c6e74f0bb40155bd9da003665896179d8348` |
-| `vk.bytes32()` | `0x002cc819a93261d7998a9372c3469c6e79e17680356f676801b32c4b179d8348` |
-| Previous ELF, for reference: `range_vkey_commitment` / `bytes32()` | `0x46b96cee1b25e98c5739a43c6da070fb32577dab7664c8a2475add1a313f5055` / `0x008d72d9dc6c97a632b9cd21e6da070fb64aefb57d993228a3ad6e8d313f5055` |
-
-Self-checks (all passed):
-
-1. `range-vk.bin` deserializes and gives the same commitment and `bytes32()`;
-2. `SP1ProvingKey::new(vk, elf)` returns the same verifying key bytes and ELF;
-3. a second `setup` of the same ELF gives identical verifying key bytes.
-
-Independent check: `cargo prove vkey --elf elf/range-elf-embedded` prints
-`0x002cc819a93261d7998a9372c3469c6e79e17680356f676801b32c4b179d8348`, equal to `vk.bytes32()`.
-
-Host tool follow-up: `export-range-keys` now calls the shared startup config resolver
-(`op_succinct_config_kms::init_startup_config`) first, like every other in-scope entrypoint. This
-change is host-only; the range program source and `Cargo.lock` are unchanged, so the ELF and key
-files above were not rebuilt. The rebuilt tool was run again into a scratch directory: all three
-self-checks passed and the four key files were byte-identical to the committed ones.
+No key files are committed in this tree: the range verifying key is derived at runtime by a
+dynamic `setup` of the embedded ELF. Because the ELF bytes changed, the range vkey commitment
+differs from the base; any deployed configuration that references it is updated separately by its
+owner.
 
 ## Not covered here
 
