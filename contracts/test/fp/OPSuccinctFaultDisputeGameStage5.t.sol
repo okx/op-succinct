@@ -82,7 +82,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     bytes32 internal constant BLOCK_HASH = bytes32(uint256(0x1111));
     bytes32 internal constant APP_HASH = bytes32(uint256(0x2222));
-    bytes32 internal constant WITHDRAWAL_ROOT = bytes32(uint256(0x3333));
+    bytes32 internal constant BRIDGE_ROOT = bytes32(uint256(0x3333));
     bytes32 internal constant FORCE_ROOT = bytes32(uint256(0x4444));
 
     function setUp() public {
@@ -151,12 +151,12 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         factory.setImplementation(gameType, IDisputeGame(address(impl)));
     }
 
-    function _root(bytes32 blockHash_, bytes32 appHash_, bytes32 withdrawalRoot_, bytes32 forceRoot_)
+    function _root(bytes32 blockHash_, bytes32 appHash_, bytes32 bridgeRoot_, bytes32 forceRoot_)
         internal
         pure
         returns (Claim)
     {
-        return Claim.wrap(keccak256(abi.encodePacked(blockHash_, appHash_, withdrawalRoot_, forceRoot_)));
+        return Claim.wrap(keccak256(abi.encodePacked(blockHash_, appHash_, bridgeRoot_, forceRoot_)));
     }
 
     function _extendedExtraData(
@@ -164,10 +164,10 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         uint32 parentIndex,
         bytes32 blockHash_,
         bytes32 appHash_,
-        bytes32 withdrawalRoot_,
+        bytes32 bridgeRoot_,
         bytes32 forceRoot_
     ) internal pure returns (bytes memory) {
-        return abi.encodePacked(l2SequenceNumber, parentIndex, blockHash_, appHash_, withdrawalRoot_, forceRoot_);
+        return abi.encodePacked(l2SequenceNumber, parentIndex, blockHash_, appHash_, bridgeRoot_, forceRoot_);
     }
 
     function _createGame(Claim claim, bytes memory extraData) internal returns (OPSuccinctFaultDisputeGame created) {
@@ -179,12 +179,12 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         uint256 l2SequenceNumber,
         bytes32 blockHash_,
         bytes32 appHash_,
-        bytes32 withdrawalRoot_,
+        bytes32 bridgeRoot_,
         bytes32 forceRoot_
     ) internal returns (OPSuccinctFaultDisputeGame created) {
         created = _createGame(
-            _root(blockHash_, appHash_, withdrawalRoot_, forceRoot_),
-            _extendedExtraData(l2SequenceNumber, type(uint32).max, blockHash_, appHash_, withdrawalRoot_, forceRoot_)
+            _root(blockHash_, appHash_, bridgeRoot_, forceRoot_),
+            _extendedExtraData(l2SequenceNumber, type(uint32).max, blockHash_, appHash_, bridgeRoot_, forceRoot_)
         );
     }
 
@@ -203,18 +203,18 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
     function test_extendedGameCreation_commitsPreimagesAndReturnsFullExtraData() public {
         _registerImpl(true, address(postAnchorProbe));
 
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         bytes memory expected =
-            _extendedExtraData(1000, type(uint32).max, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+            _extendedExtraData(1000, type(uint32).max, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         assertEq(game.blockHash(), BLOCK_HASH);
         assertEq(game.appHash(), APP_HASH);
-        assertEq(game.withdrawalRoot(), WITHDRAWAL_ROOT);
+        assertEq(game.bridgeRoot(), BRIDGE_ROOT);
         assertEq(game.forceRoot(), FORCE_ROOT);
         assertEq(game.extraData(), expected);
         (GameType returnedType, Claim returnedClaim, bytes memory returnedExtraData) = game.gameData();
         assertEq(GameType.unwrap(returnedType), GameType.unwrap(gameType));
-        assertEq(returnedClaim.raw(), _root(BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT).raw());
+        assertEq(returnedClaim.raw(), _root(BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT).raw());
         assertEq(returnedExtraData, expected);
     }
 
@@ -235,17 +235,16 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         vm.expectRevert(RootClaimPreimageDisabled.selector);
         game.appHash();
         vm.expectRevert(RootClaimPreimageDisabled.selector);
-        game.withdrawalRoot();
+        game.bridgeRoot();
         vm.expectRevert(RootClaimPreimageDisabled.selector);
         game.forceRoot();
     }
 
-    function test_extendedGameRejectsSwappedWithdrawalAndForceRoots() public {
+    function test_extendedGameRejectsSwappedBridgeAndForceRoots() public {
         _registerImpl(true, address(postAnchorProbe));
 
-        Claim original = _root(BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
-        bytes memory swapped =
-            _extendedExtraData(1000, type(uint32).max, BLOCK_HASH, APP_HASH, FORCE_ROOT, WITHDRAWAL_ROOT);
+        Claim original = _root(BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
+        bytes memory swapped = _extendedExtraData(1000, type(uint32).max, BLOCK_HASH, APP_HASH, FORCE_ROOT, BRIDGE_ROOT);
 
         uint256 beforeCount = factory.gameCount();
         vm.prank(proposer);
@@ -258,12 +257,12 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         _registerImpl(true, address(postAnchorProbe));
 
         bytes memory missingForceRoot =
-            abi.encodePacked(uint256(1000), type(uint32).max, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT);
+            abi.encodePacked(uint256(1000), type(uint32).max, BLOCK_HASH, APP_HASH, BRIDGE_ROOT);
 
         vm.prank(proposer);
         vm.expectRevert(BadExtraData.selector);
         factory.create{value: INIT_BOND}(
-            gameType, _root(BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT), missingForceRoot
+            gameType, _root(BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT), missingForceRoot
         );
     }
 
@@ -271,28 +270,28 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
         _registerImpl(true, address(postAnchorProbe));
 
         bytes memory extra = abi.encodePacked(
-            _extendedExtraData(1000, type(uint32).max, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT), bytes1(0x01)
+            _extendedExtraData(1000, type(uint32).max, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT), bytes1(0x01)
         );
 
         vm.prank(proposer);
         vm.expectRevert(BadExtraData.selector);
-        factory.create{value: INIT_BOND}(gameType, _root(BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT), extra);
+        factory.create{value: INIT_BOND}(gameType, _root(BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT), extra);
     }
 
     function testFuzz_extendedGameRejectsAnyMutatedPreimage(
         bytes32 blockHash_,
         bytes32 appHash_,
-        bytes32 withdrawalRoot_,
+        bytes32 bridgeRoot_,
         bytes32 forceRoot_,
         bytes32 mutatedValue,
         uint8 field
     ) public {
-        vm.assume(withdrawalRoot_ != forceRoot_);
+        vm.assume(bridgeRoot_ != forceRoot_);
         _registerImpl(true, address(postAnchorProbe));
 
         bytes32 mutatedBlockHash = blockHash_;
         bytes32 mutatedAppHash = appHash_;
-        bytes32 mutatedWithdrawalRoot = withdrawalRoot_;
+        bytes32 mutatedBridgeRoot = bridgeRoot_;
         bytes32 mutatedForceRoot = forceRoot_;
 
         uint8 selected = field % 4;
@@ -303,16 +302,16 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
             vm.assume(mutatedValue != appHash_);
             mutatedAppHash = mutatedValue;
         } else if (selected == 2) {
-            vm.assume(mutatedValue != withdrawalRoot_);
-            mutatedWithdrawalRoot = mutatedValue;
+            vm.assume(mutatedValue != bridgeRoot_);
+            mutatedBridgeRoot = mutatedValue;
         } else {
             vm.assume(mutatedValue != forceRoot_);
             mutatedForceRoot = mutatedValue;
         }
 
-        Claim original = _root(blockHash_, appHash_, withdrawalRoot_, forceRoot_);
+        Claim original = _root(blockHash_, appHash_, bridgeRoot_, forceRoot_);
         bytes memory mutated = _extendedExtraData(
-            1000, type(uint32).max, mutatedBlockHash, mutatedAppHash, mutatedWithdrawalRoot, mutatedForceRoot
+            1000, type(uint32).max, mutatedBlockHash, mutatedAppHash, mutatedBridgeRoot, mutatedForceRoot
         );
 
         vm.prank(proposer);
@@ -322,7 +321,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_closeGame_successCallsPostAnchorOnce() public {
         _registerImpl(true, address(postAnchorProbe));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         _resolveAndFinalize(game);
         game.closeGame();
@@ -337,7 +336,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_closeGame_anchorSetByAnotherCallerStillPushesLatest() public {
         _registerImpl(true, address(postAnchorProbe));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         _resolveAndFinalize(game);
         vm.prank(address(0xBEEF));
@@ -353,7 +352,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_closeGame_postAnchorRevertEmitsFailureButCloses() public {
         _registerImpl(true, address(postAnchorProbe));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         postAnchorProbe.setMode(Stage5PostAnchorProbe.Mode.Revert);
 
         _resolveAndFinalize(game);
@@ -369,7 +368,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_closeGame_postAnchorOogEmitsFailureButCloses() public {
         _registerImpl(true, address(postAnchorProbe));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         postAnchorProbe.setMode(Stage5PostAnchorProbe.Mode.BurnGas);
 
         _resolveAndFinalize(game);
@@ -385,7 +384,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_closeGame_asrRejectsGameSkipsPostAnchor() public {
         _registerImpl(true, address(postAnchorProbe));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         _resolveAndFinalize(game);
         anchorStateRegistry.blacklistDisputeGame(IDisputeGame(address(game)));
@@ -398,7 +397,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_claimCredit_postAnchorRevertStillPaysCredit() public {
         _registerImpl(true, address(postAnchorProbe));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
         postAnchorProbe.setMode(Stage5PostAnchorProbe.Mode.Revert);
 
         _resolveAndFinalize(game);
@@ -417,7 +416,7 @@ contract OPSuccinctFaultDisputeGameStage5Test is Test {
 
     function test_closeGame_degradedConfigDoesNotCallPostAnchor() public {
         _registerImpl(true, address(0));
-        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, WITHDRAWAL_ROOT, FORCE_ROOT);
+        OPSuccinctFaultDisputeGame game = _createExtendedGame(1000, BLOCK_HASH, APP_HASH, BRIDGE_ROOT, FORCE_ROOT);
 
         _resolveAndFinalize(game);
         game.closeGame();

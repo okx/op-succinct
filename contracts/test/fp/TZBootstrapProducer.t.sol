@@ -60,7 +60,7 @@ contract TZBootstrapProducerTest is Test {
     // Fixed preimages for the deterministic checks (arbitrary but distinct).
     bytes32 internal constant BH = keccak256("bootstrap-block-hash");
     bytes32 internal constant AH = keccak256("bootstrap-app-hash");
-    bytes32 internal constant WR = keccak256("bootstrap-withdrawal-root");
+    bytes32 internal constant WR = keccak256("bootstrap-bridge-root");
     bytes32 internal constant FR = keccak256("bootstrap-force-root");
     uint256 internal constant L2_BLOCK = 1000;
 
@@ -128,7 +128,7 @@ contract TZBootstrapProducerTest is Test {
 
     /// @notice The extended payload is exactly 164 bytes and lays out every field at the offset the
     ///         on-chain getters read (l2SequenceNumber at 0, parentIndex at 32, blockHash at 36,
-    ///         appHash at 68, withdrawalRoot at 100, forceRoot at 132).
+    ///         appHash at 68, bridgeRoot at 100, forceRoot at 132).
     function test_encoder_extendedLayout() public pure {
         uint32 parentIndex = type(uint32).max;
         bytes memory extra = TZBootstrapExtraData.encodeExtended(L2_BLOCK, parentIndex, BH, AH, WR, FR);
@@ -139,7 +139,7 @@ contract TZBootstrapProducerTest is Test {
         assertEq(uint256(uint32(bytes4(_word(extra, 32)))), uint256(parentIndex), "parentIndex@32");
         assertEq(_word(extra, 36), BH, "blockHash@36");
         assertEq(_word(extra, 68), AH, "appHash@68");
-        assertEq(_word(extra, 100), WR, "withdrawalRoot@100");
+        assertEq(_word(extra, 100), WR, "bridgeRoot@100");
         assertEq(_word(extra, 132), FR, "forceRoot@132");
     }
 
@@ -153,7 +153,7 @@ contract TZBootstrapProducerTest is Test {
         assertEq(uint256(uint32(bytes4(_word(legacy, 32)))), uint256(parentIndex), "parentIndex@32");
     }
 
-    /// @notice The commitment is keccak256 over the fixed order block, app, withdrawal, force.
+    /// @notice The commitment is keccak256 over the fixed order block, app, bridge, force.
     function test_encoder_rootClaimCommitmentOrder() public pure {
         bytes32 expected = keccak256(abi.encodePacked(BH, AH, WR, FR));
         assertEq(TZBootstrapExtraData.commitRootClaim(BH, AH, WR, FR), expected, "commitment order");
@@ -180,7 +180,7 @@ contract TZBootstrapProducerTest is Test {
         assertEq(g.rootClaim().raw(), rootClaim, "rootClaim bound to preimages");
         assertEq(g.blockHash(), BH, "blockHash getter");
         assertEq(g.appHash(), AH, "appHash getter");
-        assertEq(g.withdrawalRoot(), WR, "withdrawalRoot getter");
+        assertEq(g.bridgeRoot(), WR, "bridgeRoot getter");
         assertEq(g.forceRoot(), FR, "forceRoot getter");
         assertEq(g.extraData().length, 164, "extraData length");
     }

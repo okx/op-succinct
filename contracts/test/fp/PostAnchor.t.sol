@@ -23,14 +23,18 @@ contract MockASR {
     }
 }
 
-/// @notice TZ claim game stub exposing the source getters PostAnchor reads.
+/// @notice TZ claim game stub exposing the five source getters PostAnchor reads.
 contract MockTZGame {
     uint256 internal seq;
+    bytes32 internal bHash;
+    bytes32 internal aHash;
     bytes32 internal wRoot;
     bytes32 internal fRoot;
 
-    function set(uint256 seq_, bytes32 w_, bytes32 f_) external {
+    function set(uint256 seq_, bytes32 b_, bytes32 a_, bytes32 w_, bytes32 f_) external {
         seq = seq_;
+        bHash = b_;
+        aHash = a_;
         wRoot = w_;
         fRoot = f_;
     }
@@ -39,7 +43,15 @@ contract MockTZGame {
         return seq;
     }
 
-    function withdrawalRoot() external view returns (bytes32) {
+    function blockHash() external view returns (bytes32) {
+        return bHash;
+    }
+
+    function appHash() external view returns (bytes32) {
+        return aHash;
+    }
+
+    function bridgeRoot() external view returns (bytes32) {
         return wRoot;
     }
 
@@ -85,10 +97,19 @@ contract PostAnchorTest is Test {
 
     address internal constant ROOT_MANAGER = address(0xCAFE);
     uint64 internal constant PUSH_GAS = 150_000;
-    bytes32 internal constant W = keccak256("withdrawalRoot");
+    bytes32 internal constant B = keccak256("blockHash");
+    bytes32 internal constant A = keccak256("appHash");
+    bytes32 internal constant W = keccak256("bridgeRoot");
     bytes32 internal constant F = keccak256("forceRoot");
 
-    event RootsEnqueued(address indexed game, uint256 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
+    event RootsEnqueued(
+        address indexed game,
+        uint256 indexed blockHeight,
+        bytes32 blockHash,
+        bytes32 appHash,
+        bytes32 bridgeRoot,
+        bytes32 forceRoot
+    );
 
     function setUp() public {
         asr = new MockASR();
@@ -137,10 +158,10 @@ contract PostAnchorTest is Test {
     function test_push_forwardsFixedDepositAndEmits() public {
         asr.setAnchorGame(address(game));
         uint256 height = 12345;
-        game.set(height, W, F);
+        game.set(height, B, A, W, F);
 
         vm.expectEmit(true, true, false, true, address(postAnchor));
-        emit RootsEnqueued(address(game), height, W, F);
+        emit RootsEnqueued(address(game), height, B, A, W, F);
         postAnchor.push();
 
         assertEq(portal.callCount(), 1);
@@ -148,23 +169,33 @@ contract PostAnchorTest is Test {
         assertEq(portal.lastValue(), 0, "value must be zero");
         assertEq(portal.lastGasLimit(), PUSH_GAS);
         assertFalse(portal.lastIsCreation());
-        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (W, F, height)));
+        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (height, B, A, W, F)));
+        // The canonical standard-ABI calldata for record is 4-byte selector + 5 x 32-byte words.
+        assertEq(portal.lastData().length, 164, "record calldata is 164 bytes");
     }
 
     function test_push_succeedsAboveUint64Max() public {
         asr.setAnchorGame(address(game));
         uint256 height = uint256(type(uint64).max) + 1;
-        game.set(height, W, F);
+        game.set(height, B, A, W, F);
         postAnchor.push();
         assertEq(portal.lastGasLimit(), PUSH_GAS);
-        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (W, F, height)));
+        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (height, B, A, W, F)));
         assertEq(portal.callCount(), 1);
+    }
+
+    /// @notice Zero block hash and app hash are legal and forwarded verbatim.
+    function test_push_forwardsZeroBlockAndAppHash() public {
+        asr.setAnchorGame(address(game));
+        game.set(uint256(42), bytes32(0), bytes32(0), W, F);
+        postAnchor.push();
+        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (uint256(42), bytes32(0), bytes32(0), W, F)));
     }
 
     /// @notice Permissionless parity: any caller reaches the same delivery, no privilege granted.
     function test_push_permissionlessCallerParity() public {
         asr.setAnchorGame(address(game));
-        game.set(uint256(777), W, F);
+        game.set(uint256(777), B, A, W, F);
         vm.prank(address(0xD00D));
         postAnchor.push();
         assertEq(portal.callCount(), 1);
@@ -172,33 +203,38 @@ contract PostAnchorTest is Test {
     }
 
     function test_push_afterASRAdvancesUsesNewAnchor() public {
-        game.set(uint256(100), W, F);
+        game.set(uint256(100), B, A, W, F);
         asr.setAnchorGame(address(game));
         postAnchor.push();
-        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (W, F, uint256(100))));
+        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (uint256(100), B, A, W, F)));
 
-        bytes32 newerW = keccak256("newer withdrawalRoot");
+        bytes32 newerB = keccak256("newer blockHash");
+        bytes32 newerA = keccak256("newer appHash");
+        bytes32 newerW = keccak256("newer bridgeRoot");
         bytes32 newerF = keccak256("newer forceRoot");
-        newerGame.set(uint256(200), newerW, newerF);
+        newerGame.set(uint256(200), newerB, newerA, newerW, newerF);
         asr.setAnchorGame(address(newerGame));
         postAnchor.push();
 
         assertEq(portal.callCount(), 2);
-        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (newerW, newerF, uint256(200))));
+        assertEq(
+            portal.lastData(), abi.encodeCall(ITZRootManager.record, (uint256(200), newerB, newerA, newerW, newerF))
+        );
     }
 
     function testFuzz_push_forwardsCallerIndependentFixedDeposit(
         address caller,
         uint256 height,
-        bytes32 withdrawalRoot,
+        bytes32 blockHash,
+        bytes32 appHash,
+        bytes32 bridgeRoot,
         bytes32 forceRoot
     ) public {
         vm.assume(caller != address(0));
         vm.assume(height > 0);
-        vm.assume(withdrawalRoot != forceRoot);
 
         asr.setAnchorGame(address(game));
-        game.set(height, withdrawalRoot, forceRoot);
+        game.set(height, blockHash, appHash, bridgeRoot, forceRoot);
 
         vm.prank(caller);
         postAnchor.push();
@@ -208,49 +244,55 @@ contract PostAnchorTest is Test {
         assertEq(portal.lastValue(), 0);
         assertEq(portal.lastGasLimit(), PUSH_GAS);
         assertFalse(portal.lastIsCreation());
-        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (withdrawalRoot, forceRoot, height)));
+        assertEq(
+            portal.lastData(),
+            abi.encodeCall(ITZRootManager.record, (height, blockHash, appHash, bridgeRoot, forceRoot))
+        );
     }
 
     function test_push_sameAnchorTwiceEnqueuesTwiceForTargetChainRetry() public {
         asr.setAnchorGame(address(game));
-        game.set(uint256(100), W, F);
+        game.set(uint256(100), B, A, W, F);
 
         postAnchor.push();
         postAnchor.push();
 
         assertEq(portal.callCount(), 2, "same anchor must remain retryable");
-        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (W, F, uint256(100))));
+        assertEq(portal.lastData(), abi.encodeCall(ITZRootManager.record, (uint256(100), B, A, W, F)));
     }
 
     function test_push_doesNotMutateForwarderStorage() public {
         bytes32 slot0Before = vm.load(address(postAnchor), bytes32(uint256(0)));
 
         asr.setAnchorGame(address(game));
-        game.set(uint256(100), W, F);
+        game.set(uint256(100), B, A, W, F);
         postAnchor.push();
 
         assertEq(vm.load(address(postAnchor), bytes32(uint256(0))), slot0Before);
     }
 
     function test_push_alwaysForwardsCurrentASRAnchorWithoutLocalWatermark() public {
-        newerGame.set(uint256(200), W, F);
+        newerGame.set(uint256(200), B, A, W, F);
         asr.setAnchorGame(address(newerGame));
         postAnchor.push();
 
-        game.set(uint256(100), keccak256("old-w"), keccak256("old-f"));
+        game.set(uint256(100), keccak256("old-b"), keccak256("old-a"), keccak256("old-w"), keccak256("old-f"));
         asr.setAnchorGame(address(game));
         postAnchor.push();
 
         assertEq(portal.callCount(), 2);
         assertEq(
             portal.lastData(),
-            abi.encodeCall(ITZRootManager.record, (keccak256("old-w"), keccak256("old-f"), uint256(100)))
+            abi.encodeCall(
+                ITZRootManager.record,
+                (uint256(100), keccak256("old-b"), keccak256("old-a"), keccak256("old-w"), keccak256("old-f"))
+            )
         );
     }
 
     function test_push_portalRevertBubbles() public {
         asr.setAnchorGame(address(game));
-        game.set(uint256(1), W, F);
+        game.set(uint256(1), B, A, W, F);
         portal.setShouldRevert(true);
         vm.expectRevert(bytes("portal down"));
         postAnchor.push();
@@ -265,7 +307,7 @@ contract PostAnchorTest is Test {
     /// @notice Payable-surface negative smoke: push() is non-payable; a nonzero-value call reverts.
     function test_push_rejectsValue() public {
         asr.setAnchorGame(address(game));
-        game.set(uint256(1), W, F);
+        game.set(uint256(1), B, A, W, F);
         (bool ok,) = address(postAnchor).call{value: 1 wei}(abi.encodeWithSignature("push()"));
         assertFalse(ok, "push must reject msg.value");
     }

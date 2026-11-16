@@ -11,11 +11,11 @@ import {ITZRootManager} from "src/fp/interfaces/ITZRootManager.sol";
 import {InvalidASR, InvalidPortal, InvalidRootManager, InvalidPushGasLimit, NoAnchorGame} from "src/fp/lib/Errors.sol";
 
 /// @title PostAnchor
-/// @notice Fixed, owner-less L1 forwarder. On each call it reads the current anchor game
-///         from the registry (never from the caller), reads that game's roots and height, and
-///         enqueues one fixed cross-chain delivery through the portal. It holds no mutable
-///         delivery watermark because an L1 enqueue does not prove target-chain execution;
-///         duplicate and stale deliveries are handled by the target-chain root manager.
+/// @notice Fixed, owner-less L1 forwarder. On each call it reads the current anchor game from the
+///         registry (never from the caller), reads that one game's height and four committed
+///         checkpoint hashes, and enqueues one fixed cross-chain delivery through the portal. It
+///         holds no mutable delivery watermark because an L1 enqueue does not prove target-chain
+///         execution; duplicate and stale deliveries are handled by the target-chain root manager.
 contract PostAnchor is IPostAnchor {
     /// @notice The anchor state registry that selects and validates the current anchor game.
     IAnchorStateRegistry public immutable ASR;
@@ -30,13 +30,22 @@ contract PostAnchor is IPostAnchor {
     /// @notice The execution gas limit purchased for the target-chain record call.
     uint64 public immutable PUSH_GAS_LIMIT;
 
-    /// @notice Emitted when a delivery is accepted by the L1 portal. This is an enqueue signal,
-    ///         not a landing proof: the target-chain record executes later, asynchronously.
-    /// @param game The anchor game whose roots were forwarded.
-    /// @param l2BlockNumber The forwarded height.
-    /// @param withdrawalRoot The forwarded withdrawal root.
+    /// @notice Emitted when a delivery is accepted by the L1 portal. This is an enqueue signal, not
+    ///         a landing proof: the target-chain record executes later, asynchronously.
+    /// @param game The anchor game whose checkpoint was forwarded.
+    /// @param blockHeight The forwarded checkpoint height.
+    /// @param blockHash The forwarded block hash.
+    /// @param appHash The forwarded app hash.
+    /// @param bridgeRoot The forwarded bridge root.
     /// @param forceRoot The forwarded force root.
-    event RootsEnqueued(address indexed game, uint256 indexed l2BlockNumber, bytes32 withdrawalRoot, bytes32 forceRoot);
+    event RootsEnqueued(
+        address indexed game,
+        uint256 indexed blockHeight,
+        bytes32 blockHash,
+        bytes32 appHash,
+        bytes32 bridgeRoot,
+        bytes32 forceRoot
+    );
 
     /// @param asr_ The anchor state registry (must have contract code).
     /// @param xlPortal_ The L1 portal (must have contract code).
@@ -59,18 +68,23 @@ contract PostAnchor is IPostAnchor {
         IDisputeGame game = IDisputeGame(address(ASR.anchorGame()));
         if (address(game) == address(0)) revert NoAnchorGame();
 
+        // Read the height and all four committed hashes from the one current anchor game. Each hash
+        // getter reverts if the anchor game lacks the four-preimage layout; this matches the
+        // pre-existing bridge/force-root reads and adds no new failure mode.
         uint256 height = game.l2SequenceNumber();
-        bytes32 w = ITZClaimGame(address(game)).withdrawalRoot();
+        bytes32 b = ITZClaimGame(address(game)).blockHash();
+        bytes32 a = ITZClaimGame(address(game)).appHash();
+        bytes32 w = ITZClaimGame(address(game)).bridgeRoot();
         bytes32 f = ITZClaimGame(address(game)).forceRoot();
 
-        // Enqueue exactly one fixed delivery: fixed target, zero value, fixed gas, not a
-        // creation, and the frozen record(w, f, height) calldata. No field is caller-controlled.
+        // Enqueue exactly one fixed delivery: fixed target, zero value, fixed gas, not a creation,
+        // and the frozen record(height, b, a, w, f) calldata. No field is caller-controlled.
         // Repeated calls intentionally enqueue again so a delivery that did not execute on the
         // target chain can be retried permissionlessly.
         XL_PORTAL.depositTransaction(
-            XL_ROOT_MANAGER, 0, PUSH_GAS_LIMIT, false, abi.encodeCall(ITZRootManager.record, (w, f, height))
+            XL_ROOT_MANAGER, 0, PUSH_GAS_LIMIT, false, abi.encodeCall(ITZRootManager.record, (height, b, a, w, f))
         );
 
-        emit RootsEnqueued(address(game), height, w, f);
+        emit RootsEnqueued(address(game), height, b, a, w, f);
     }
 }

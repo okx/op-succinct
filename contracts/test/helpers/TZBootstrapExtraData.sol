@@ -15,14 +15,14 @@ pragma solidity ^0.8.15;
 ///        0x20    4     parentIndex
 ///        0x24    32    blockHash
 ///        0x44    32    appHash
-///        0x64    32    withdrawalRoot
+///        0x64    32    bridgeRoot
 ///        0x84    32    forceRoot
 ///
-///      and it binds `rootClaim == keccak256(blockHash . appHash . withdrawalRoot . forceRoot)`.
+///      and it binds `rootClaim == keccak256(blockHash . appHash . bridgeRoot . forceRoot)`.
 ///      A legacy implementation (`hasRootClaimPreimage_ == false`) accepts only the 36-byte
 ///      `l2SequenceNumber . parentIndex` layout. Both layouts and the commitment field order mirror
 ///      the on-chain `initialize()` length guard and commitment check exactly, and the four preimage
-///      offsets match the on-chain getters (blockHash, appHash, withdrawalRoot, forceRoot at CWIA
+///      offsets match the on-chain getters (blockHash, appHash, bridgeRoot, forceRoot at CWIA
 ///      offsets 0x78, 0x98, 0xB8, 0xD8, i.e. extraData offsets 0x24, 0x44, 0x64, 0x84).
 library TZBootstrapExtraData {
     /// @notice Byte length of the legacy (non-four-preimage) `extraData` payload.
@@ -44,7 +44,7 @@ library TZBootstrapExtraData {
     /// @param parentIndex The parent game index; `type(uint32).max` starts from the current anchor.
     /// @param blockHash The committed block hash preimage.
     /// @param appHash The committed app hash preimage.
-    /// @param withdrawalRoot The committed withdrawal root preimage.
+    /// @param bridgeRoot The committed bridge root preimage.
     /// @param forceRoot The committed force root preimage.
     /// @return payload The 164-byte extended payload, laid out to match the on-chain preimage getters.
     function encodeExtended(
@@ -52,24 +52,24 @@ library TZBootstrapExtraData {
         uint32 parentIndex,
         bytes32 blockHash,
         bytes32 appHash,
-        bytes32 withdrawalRoot,
+        bytes32 bridgeRoot,
         bytes32 forceRoot
     ) internal pure returns (bytes memory payload) {
-        payload = abi.encodePacked(l2SequenceNumber, parentIndex, blockHash, appHash, withdrawalRoot, forceRoot);
+        payload = abi.encodePacked(l2SequenceNumber, parentIndex, blockHash, appHash, bridgeRoot, forceRoot);
     }
 
     /// @notice Computes the extended `rootClaim` exactly as the on-chain game verifies it.
-    /// @dev Fixed field order: blockHash, appHash, withdrawalRoot, forceRoot.
+    /// @dev Fixed field order: blockHash, appHash, bridgeRoot, forceRoot.
     /// @param blockHash The committed block hash preimage.
     /// @param appHash The committed app hash preimage.
-    /// @param withdrawalRoot The committed withdrawal root preimage.
+    /// @param bridgeRoot The committed bridge root preimage.
     /// @param forceRoot The committed force root preimage.
-    /// @return rootClaim `keccak256(blockHash . appHash . withdrawalRoot . forceRoot)`.
-    function commitRootClaim(bytes32 blockHash, bytes32 appHash, bytes32 withdrawalRoot, bytes32 forceRoot)
+    /// @return rootClaim `keccak256(blockHash . appHash . bridgeRoot . forceRoot)`.
+    function commitRootClaim(bytes32 blockHash, bytes32 appHash, bytes32 bridgeRoot, bytes32 forceRoot)
         internal
         pure
         returns (bytes32 rootClaim)
     {
-        rootClaim = keccak256(abi.encodePacked(blockHash, appHash, withdrawalRoot, forceRoot));
+        rootClaim = keccak256(abi.encodePacked(blockHash, appHash, bridgeRoot, forceRoot));
     }
 }
