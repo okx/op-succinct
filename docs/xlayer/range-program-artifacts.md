@@ -42,10 +42,12 @@ okx/sp1 fork recorded in `Cargo.lock`.
 
 The job ended with `script_failure` only because its drift check found the rebuilt binaries
 different from the files then committed; the two rebuilt binaries are exactly the files recorded
-in section 1. A CI build is environment-sensitive: a `web`-triggered pipeline of the same commit
-used a different `CARGO_HOME` and produced different bytes, because the registry source path is
-embedded in the binary. The artifact adopted here is the `merge_request_event` build of this
-source tree, which is also the pipeline type whose drift check consumes it.
+in section 1. An embedded source-path difference and a resulting byte difference were observed
+between a `web`-triggered build and a `merge_request_event` build of the same commit; the cause of
+that difference has not been isolated. The artifact adopted here is the `merge_request_event`
+build of this source tree, which is also the pipeline type whose drift check consumes it. In the
+pipeline run recorded for this change (pipeline `16373173`), the drift check rebuilt both ELFs and
+reported that they match the committed files.
 
 ## 3. Byte-level artifact integrity
 
@@ -66,10 +68,11 @@ The committed files were compared byte-for-byte against these entries (`cmp`) an
 | `elf/range-elf-embedded` | 7,300,496 | `f8cbd267af6e25994e3c37c3268fca57942516ffd6ef8b3bd12b595dc0d87916` | Local SP1 CLI (`cargo prove`) build of commit `9f91d7d0b9ec05b60f185e55700df8a5bcc33652` with path remapping |
 | `elf/aggregation-elf` | 771,408 | `3cdcd394c013384c3666e08d9bedb33952b273a4d6971a2a5a5aa375e51a8297` | Unchanged file from the target branch |
 
-The previous range ELF was produced outside the CI Docker builder. Because the CI drift check
-compares rebuilt bytes against the committed file, that difference was reported as drift on every
-run. Both files are now the Docker builder's own output, so a rebuild of the same source tree in
-the same pipeline type reproduces the committed bytes and the drift check reports nothing.
+The previous range ELF was produced outside the CI Docker builder, and the CI drift check compares
+rebuilt bytes against the committed file. Both files are now the Docker builder's own output. In
+the pipeline run recorded for this change (pipeline `16373173`), the drift check found both
+committed ELFs matching its rebuild. This record states that observed result only; it does not
+claim that builds of the same type are reproducible in general.
 
 ## 5. Dependency and branch context
 
