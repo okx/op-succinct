@@ -121,7 +121,9 @@ Measured with rustc 1.97.0-nightly (7c3c88f42 2026-05-14) and the workspace lock
 The range commitment changes with the range ELF and the aggregation vkey changes with the
 aggregation ELF; in this update both files changed, so both values rotate. Deployment-side
 configuration — on-chain immutables and environment values — is owned by the deployment process
-and is not changed by this record.
+and is not changed by this record. The repository-tracked testnet configuration file, which a
+testnet deployment script reads, has its two ELF-derived fields updated in place to the values
+above; its other fields are retained (section 8).
 
 ## 7. Rollup config hash
 
@@ -140,15 +142,44 @@ computation and is not presented as one.
 
 ## 8. Tracked static configuration
 
-`contracts/testnet/opsuccinctfdgconfig.json` carries static `rollupConfigHash`,
-`rangeVkeyCommitment` and `aggregationVkey` values that the testnet deployment script
-(`contracts/script/fp/DeployOPSuccinctLiteTestnet.s.sol`) reads into `SP1Config`. The upgrade path
-reads the same values from the environment, and the dispute game stores them as on-chain
-immutables.
+`contracts/testnet/opsuccinctfdgconfig.json` is a repository-tracked, static testnet deployment
+input. The testnet fault-dispute-game deploy script
+`contracts/script/fp/DeployOPSuccinctLiteTestnet.s.sol` reads it with
+`readFDGJson("testnet/opsuccinctfdgconfig.json")`, copies `rollupConfigHash`, `aggregationVkey` and
+`rangeVkeyCommitment` into `SP1Config`, and passes them to the `OPSuccinctFaultDisputeGame`
+constructor. The generic and lite deploy scripts read a contracts-root copy instead, the upgrade
+script reads the same three values from the environment, and a deployed game stores them as
+on-chain immutables. Editing this file executes nothing and changes no deployed contract; running a
+deploy script is a separate step and is not performed here.
 
-Those static values do not correspond to the ELF bytes recorded here, and this change does not
-modify that file: whether that testnet configuration is a target of this artifact update is
-outside this record. The divergence is disclosed so that it is not mistaken for a match.
+Two of its fields are derived from the embedded ELF bytes and rotate with this change; they are set
+to the values measured in section 6:
+
+| Field | Previous value | Current value |
+|---|---|---|
+| `rangeVkeyCommitment` | `0x3f0914400d4a8eb2488defa97d9da17833a1c8b42fda59cc5996d1c44554d5d0` | `0x45bd1547534cb6093b6606765fd91a7f15def34f7b21932e0e3aeef348cb0455` |
+| `aggregationVkey` | `0x000226bca14e2ed117d333539fae5c91d299f33f74f13aefc3185f1798a4f911` | `0x00756250376ecfc39574a2bd675181d8984b3f74db78aaee1494e9ecb4ab1fe9` |
+
+The other seventeen fields are unchanged, including `rollupConfigHash`
+`0x3ed3598c92b6cd8bc44d3dba15ab51beb45bfd0093dcaf998a659a9ad1dcc851`. That field is not an ELF
+property: it is `SHA256(serde_json::to_string_pretty(RollupConfig))` over a `RollupConfig` fetched
+at run time from the L2 node RPC (section 7), so no ELF byte is an input and it must not be
+adjusted to match a rebuild.
+
+Derivation of the two updated fields, from the same source paths as section 6: `aggregation_vkey`
+is `agg_pk.verifying_key().bytes32()` over the embedded `AGGREGATION_ELF`, and
+`range_vkey_commitment` is `u32_to_u8(range_vk.hash_u32())` over the embedded range ELF, in
+`scripts/utils/src/config_common.rs`. This is the same pair that
+`cargo run --release -p op-succinct-scripts --bin config` prints.
+
+Retained uncertainty: the file is a maintained copy rather than an unmodified generator output
+(its key order differs from the current generator's struct order), and the correspondence of its
+retained `rollupConfigHash` and chain-derived fields to any particular chain is not demonstrated by
+this work. The file is updated as a testnet deployment input only; this record does not assert that
+it is deployment-ready, and no deployment, RPC call or chain call is made.
+
+The historical on-chain values recorded in `docs/xlayer-zkfp-test-background.md` are a separate
+record and are not edited.
 
 ## 9. Verification boundary
 
@@ -156,6 +187,8 @@ Measured and recorded here:
 
 - archive and per-entry hashes/sizes, byte-for-byte identity of the committed files;
 - the two verification keys for the previous and the current ELF sets, with the tool versions;
+- the previous and current values of the two ELF-derived fields in the tracked testnet
+  configuration, with a diff limited to those two lines (section 8);
 - the manifest/compile checks below.
 
 Compile checks run on this tree:
@@ -168,8 +201,8 @@ Compile checks run on this tree:
 | `cargo test -p op-succinct-client-utils --lib` | pass — 22 tests passed |
 
 Not performed: proof generation, joint range/aggregation proof verification, state-root or
-output-root comparison, RPC or chain calls, deployment, and any rollup of remote or on-chain
-configuration.
+output-root comparison, RPC or chain calls, deployment, regeneration of the testnet configuration
+from a live-chain path, and any rollup of remote or on-chain configuration.
 
 Cross-program note: the aggregation guest does not embed the range vkey. It receives
 `multi_block_vkey: [u32; 8]` in its inputs and verifies each range proof against
