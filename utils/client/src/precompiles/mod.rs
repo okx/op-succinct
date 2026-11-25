@@ -1,7 +1,7 @@
 //! [`PrecompileProvider`] for FPVM-accelerated OP Stack precompiles.
 
 use alloc::string::String;
-use alloy_primitives::Address;
+use alloy_primitives::{map::AddressSet, Address};
 use op_revm::{precompiles::OpPrecompiles, OpSpecId};
 use revm::{
     context::{Cfg, ContextTr},
@@ -174,7 +174,7 @@ where
     }
 
     #[inline]
-    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
+    fn warm_addresses(&self) -> &AddressSet {
         self.inner.warm_addresses()
     }
 
@@ -252,6 +252,7 @@ mod tests {
             return_memory_offset: 0..0,
             reservoir: 0,
             known_bytecode: (B256::ZERO, Bytecode::default()),
+            charged_new_account_state_gas: false,
         }
     }
 
@@ -389,6 +390,7 @@ mod tests {
             return_memory_offset: 0..0,
             reservoir: 0,
             known_bytecode: (B256::ZERO, Bytecode::default()),
+            charged_new_account_state_gas: false,
         };
 
         let result = precompiles.run(&mut ctx, &call_inputs).unwrap();
@@ -512,11 +514,15 @@ mod tests {
 
             let op_addresses: Vec<_> =
                 <OpPrecompiles as PrecompileProvider<TestContext>>::warm_addresses(&op_precompiles)
+                    .iter()
+                    .copied()
                     .collect();
             let zkvm_addresses: Vec<_> =
                 <OpZkvmPrecompiles as PrecompileProvider<TestContext>>::warm_addresses(
                     &zkvm_precompiles,
                 )
+                .iter()
+                .copied()
                 .collect();
 
             assert_eq!(
@@ -553,6 +559,8 @@ mod tests {
             let op_precompiles = OpPrecompiles::new_with_spec(spec);
             let op_addresses: Vec<_> =
                 <OpPrecompiles as PrecompileProvider<TestContext>>::warm_addresses(&op_precompiles)
+                    .iter()
+                    .copied()
                     .collect();
 
             for address in op_addresses {

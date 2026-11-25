@@ -8,7 +8,7 @@ use alloy_op_evm::{
 };
 use op_revm::{L1BlockInfo, OpBuilder, OpHaltReason, OpSpecId, OpTransaction};
 use revm::{
-    context::{result::EVMError, BlockEnv, CfgEnv},
+    context::{result::EVMError, BlockEnv, CfgEnv, DBErrorMarker},
     inspector::NoOpInspector,
     Context, Inspector, MainContext,
 };
@@ -70,7 +70,7 @@ impl EvmFactory for ZkvmOpEvmFactory {
     type Evm<DB: Database, I: Inspector<OpEvmContext<DB>>> = OpEvm<DB, I, OpZkvmPrecompiles>;
     type Context<DB: Database> = OpEvmContext<DB>;
     type Tx = OpTx;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
+    type Error<DBError: DBErrorMarker> = EVMError<DBError, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
